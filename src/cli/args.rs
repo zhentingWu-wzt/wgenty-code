@@ -87,15 +87,29 @@ impl Cli {
                 self.run_skills(action).await?;
             }
             #[cfg(feature = "daemon")]
-            Some(super::Commands::Daemon { port }) => {
-                crate::daemon::run(state, *port).await?;
-            }
+            Some(super::Commands::Daemon { action, port }) => match action {
+                None => crate::daemon::run(state, *port).await?,
+                Some(super::DaemonCommands::Status) => {
+                    super::daemon_admin::status(*port).await?;
+                }
+                Some(super::DaemonCommands::Stop) => {
+                    super::daemon_admin::stop(*port).await?;
+                }
+            },
             #[cfg(not(feature = "daemon"))]
-            Some(super::Commands::Daemon { .. }) => {
-                return Err(anyhow::anyhow!(
-                    "Daemon feature is not enabled. Rebuild with: cargo build --features daemon"
-                ));
-            }
+            Some(super::Commands::Daemon { action, port }) => match action {
+                Some(super::DaemonCommands::Status) => {
+                    super::daemon_admin::status(*port).await?;
+                }
+                Some(super::DaemonCommands::Stop) => {
+                    super::daemon_admin::stop(*port).await?;
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Daemon feature is not enabled. Rebuild with: cargo build --features daemon"
+                    ));
+                }
+            },
             Some(super::Commands::Subagent { action }) => {
                 super::subagent::run(&state, action).await?;
             }

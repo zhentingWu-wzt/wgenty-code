@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added (Daemon lifecycle)
+
+- CLI 新增 `wgenty-code daemon status` / `wgenty-code daemon stop`：status 输出
+  discovery 文件状态（端口/PID/心跳/token 一致性）并探测健康端点；stop 通过新的
+  鉴权端点 `POST /api/v1/shutdown` 触发优雅退出（与 SIGINT 同路径，清理 token 与
+  discovery 文件），并等待 daemon 停止应答。内嵌 daemon（TUI fallback）同样响应该端点。
+- TUI 的 `DaemonClient` 在请求收到 401 时自动重读 `~/.wgenty-code/daemon.token` 并重试
+  一次：daemon 重启后旧 TUI 不再因启动时缓存的 token 失效而全部 401（覆盖发消息、
+  SSE 事件流、chat、viewer 创建、session 保存等路径）。
+- TUI spawn 外部 daemon 后的健康探测从裸 TCP connect 升级为校验
+  `GET /api/v1/health` 返回合法的 wgenty health body，避免误连占用 8371 端口的
+  无关进程。
+
 ### Added (Desktop packaging)
 
 - Desktop 打包链路打通：`tauri.conf.json` 的 `bundle.externalBin` 配置

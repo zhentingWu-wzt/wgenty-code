@@ -76,21 +76,26 @@ pub struct ModelSwitchResult {
     pub provider: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DaemonClient {
     /// Client for SSE streaming requests (no timeout — streams can run for minutes).
-    http: Arc<std::sync::OnceLock<reqwest::Client>>,
+    http: Arc<std::sync::RwLock<Option<reqwest::Client>>>,
     /// Separate client for short-lived tool/API requests, avoiding connection-pool
     /// conflicts with the long-lived SSE streaming connection.
-    http_tools: Arc<std::sync::OnceLock<reqwest::Client>>,
+    http_tools: Arc<std::sync::RwLock<Option<reqwest::Client>>>,
     /// Client for long-running tools (`task`/`delegate`) whose subagents can run
     /// for many minutes. No timeout — the tool-level and subagent-level timeouts
     /// are the real ceilings, not the HTTP client (a 300s client timeout was
     /// killing legitimate subagent runs mid-flight).
-    http_long: Arc<std::sync::OnceLock<reqwest::Client>>,
+    http_long: Arc<std::sync::RwLock<Option<reqwest::Client>>>,
     base_url: String,
-    /// Default headers (auth token) shared across all lazily-created clients.
-    default_headers: HeaderMap,
+    /// Bearer token for daemon auth, captured from the token file at
+    /// construction and re-read from disk on 401 (the daemon generates a fresh
+    /// token on every start, so a daemon restart invalidates the captured one).
+    auth_token: Arc<std::sync::RwLock<Option<String>>>,
+    /// Source of the current on-disk token. Injectable so tests can simulate
+    /// a daemon restart (fresh token) without touching the real token file.
+    token_reader: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     /// Trusted-UI viewer bearer token, obtained once from `POST /api/v1/ui/viewers`
     /// and refreshed only after a daemon restart (401/404). Sent as the
     /// `X-Wgenty-Viewer-Token` header on scoped agent requests. Stored behind
@@ -98,45 +103,90 @@ pub struct DaemonClient {
     viewer_token: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
+impl std::fmt::Debug for DaemonClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print tokens; the client pools and viewer token carry no
+        // useful debug state beyond the endpoint.
+        f.debug_struct("DaemonClient")
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
+}
+
 impl DaemonClient {
     pub fn new(base_url: String) -> Self {
-        // Read auth token from token file (if present). The headers are stored
-        // and used when each client is lazily created on first use.
-        let mut default_headers = HeaderMap::new();
-        if let Some(token) = crate::utils::read_daemon_token() {
-            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
-                default_headers.insert(AUTHORIZATION, val);
-            }
-        }
+        Self::with_token_reader(base_url, Arc::new(crate::utils::read_daemon_token))
+    }
 
+    fn with_token_reader(
+        base_url: String,
+        token_reader: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) -> Self {
         // Clients are created lazily on first use to avoid blocking the first
         // rendered frame. reqwest::Client::builder().build() initialises the
         // TLS backend and connection pool, which can take 200-300ms.
+        let auth_token = token_reader();
         Self {
-            http: Arc::new(std::sync::OnceLock::new()),
-            http_tools: Arc::new(std::sync::OnceLock::new()),
-            http_long: Arc::new(std::sync::OnceLock::new()),
+            http: Arc::new(std::sync::RwLock::new(None)),
+            http_tools: Arc::new(std::sync::RwLock::new(None)),
+            http_long: Arc::new(std::sync::RwLock::new(None)),
             base_url: base_url.trim_end_matches('/').to_string(),
-            default_headers,
+            auth_token: Arc::new(std::sync::RwLock::new(auth_token)),
+            token_reader,
             viewer_token: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
+    /// Default headers (auth token) snapshot for one lazily-created client,
+    /// built from the *current* token so a client rebuilt after
+    /// [`refresh_auth_from_disk`](Self::refresh_auth_from_disk) picks up the
+    /// new credentials.
+    fn default_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(token) = self
+            .auth_token
+            .read()
+            .expect("auth token lock poisoned")
+            .as_ref()
+        {
+            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+                headers.insert(AUTHORIZATION, val);
+            }
+        }
+        headers
+    }
+
+    /// Return the cached client in `slot`, building it (with the current auth
+    /// token) on first use. `reqwest::Client` clones share the underlying
+    /// connection pool, so cloning per call is cheap.
+    fn cached_or_build(
+        slot: &std::sync::RwLock<Option<reqwest::Client>>,
+        build: impl FnOnce() -> reqwest::Client,
+    ) -> reqwest::Client {
+        if let Some(client) = slot.read().expect("daemon client lock poisoned").as_ref() {
+            return client.clone();
+        }
+        slot.write()
+            .expect("daemon client lock poisoned")
+            .get_or_insert_with(build)
+            .clone()
+    }
+
     /// Lazily create the SSE streaming client (no timeout).
-    pub fn http(&self) -> &reqwest::Client {
-        self.http.get_or_init(|| {
+    pub fn http(&self) -> reqwest::Client {
+        Self::cached_or_build(&self.http, || {
             reqwest::Client::builder()
-                .default_headers(self.default_headers.clone())
+                .default_headers(self.default_headers())
                 .build()
                 .expect("reqwest client build")
         })
     }
 
     /// Lazily create the tool/API client (300s timeout, no idle pool).
-    pub fn http_tools(&self) -> &reqwest::Client {
-        self.http_tools.get_or_init(|| {
+    pub fn http_tools(&self) -> reqwest::Client {
+        Self::cached_or_build(&self.http_tools, || {
             reqwest::Client::builder()
-                .default_headers(self.default_headers.clone())
+                .default_headers(self.default_headers())
                 .timeout(std::time::Duration::from_secs(300))
                 .pool_max_idle_per_host(0) // don't keep idle connections - always fresh
                 .build()
@@ -145,23 +195,66 @@ impl DaemonClient {
     }
 
     /// Lazily create the long-running tool client (no timeout, no idle pool).
-    pub fn http_long(&self) -> &reqwest::Client {
-        self.http_long.get_or_init(|| {
+    pub fn http_long(&self) -> reqwest::Client {
+        Self::cached_or_build(&self.http_long, || {
             reqwest::Client::builder()
-                .default_headers(self.default_headers.clone())
+                .default_headers(self.default_headers())
                 .pool_max_idle_per_host(0)
                 .build()
                 .expect("reqwest long client build")
         })
     }
 
+    /// Re-read the bearer token from the on-disk token file. When it changed
+    /// (a restarted daemon generated a fresh token), drop the cached HTTP
+    /// clients so they rebuild lazily with the new credentials. Returns true
+    /// when the token actually changed.
+    fn refresh_auth_from_disk(&self) -> bool {
+        let new_token = (self.token_reader)();
+        let changed = {
+            let mut current = self.auth_token.write().expect("auth token lock poisoned");
+            if *current == new_token {
+                false
+            } else {
+                *current = new_token;
+                true
+            }
+        };
+        if changed {
+            *self.http.write().expect("daemon client lock poisoned") = None;
+            *self
+                .http_tools
+                .write()
+                .expect("daemon client lock poisoned") = None;
+            *self.http_long.write().expect("daemon client lock poisoned") = None;
+            tracing::info!("daemon auth token changed on disk; rebuilt HTTP clients");
+        }
+        changed
+    }
+
+    /// Send a request, retrying once with a disk-refreshed bearer token when
+    /// the daemon answers 401. A 401 from the localhost daemon almost always
+    /// means the daemon was restarted and now expects the fresh token while
+    /// this client still holds the one captured at construction.
+    async fn send_with_auth_retry(
+        &self,
+        build: impl Fn(&Self) -> reqwest::RequestBuilder,
+    ) -> anyhow::Result<Response> {
+        let resp = build(self).send().await?;
+        if resp.status() == StatusCode::UNAUTHORIZED && self.refresh_auth_from_disk() {
+            return build(self)
+                .send()
+                .await
+                .context("retry request with refreshed daemon token");
+        }
+        Ok(resp)
+    }
+
     /// POST /api/v1/ui/viewers — obtain a trusted-UI viewer token.
     pub async fn create_viewer(&self) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/ui/viewers", self.base_url);
         let resp = self
-            .http_tools()
-            .post(&url)
-            .send()
+            .send_with_auth_retry(|c| c.http_tools().post(&url))
             .await
             .context("create trusted UI viewer")?;
         if !resp.status().is_success() {
@@ -405,11 +498,12 @@ impl DaemonClient {
             plan_mode,
         };
         let resp = self
-            .http()
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+            .send_with_auth_retry(|c| {
+                c.http()
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            })
             .await?;
 
         if !resp.status().is_success() {
@@ -444,11 +538,12 @@ impl DaemonClient {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/run", self.base_url, encoded);
         let resp = self
-            .http_tools()
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "message": message, "plan_mode": plan_mode }))
-            .send()
+            .send_with_auth_retry(|c| {
+                c.http_tools()
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .json(&serde_json::json!({ "message": message, "plan_mode": plan_mode }))
+            })
             .await
             .map_err(|error| RunSessionError {
                 status: None,
@@ -484,11 +579,15 @@ impl DaemonClient {
     ) -> anyhow::Result<reqwest::Response> {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/events", self.base_url, encoded);
-        let mut request = self.http().get(&url);
-        if let Some(after) = after {
-            request = request.query(&[("after", after)]);
-        }
-        let resp = request.send().await?;
+        let resp = self
+            .send_with_auth_retry(|c| {
+                let mut request = c.http().get(&url);
+                if let Some(after) = after {
+                    request = request.query(&[("after", after)]);
+                }
+                request
+            })
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
@@ -505,7 +604,7 @@ impl DaemonClient {
             "{}/api/v1/subagents/trace/stream?session_id={}",
             self.base_url, encoded
         );
-        let resp = self.http().get(&url).send().await?;
+        let resp = self.send_with_auth_retry(|c| c.http().get(&url)).await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
@@ -525,7 +624,9 @@ impl DaemonClient {
     ) -> anyhow::Result<CancelRunOutcome> {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/cancel", self.base_url, encoded);
-        let resp = self.http_tools().post(&url).send().await?;
+        let resp = self
+            .send_with_auth_retry(|c| c.http_tools().post(&url))
+            .await?;
         if resp.status().is_success() {
             return Ok(CancelRunOutcome::Cancelled);
         }
@@ -963,8 +1064,6 @@ impl DaemonClient {
             "messages": messages,
             "ui_messages": ui_messages,
         });
-        let http_tools = self.http_tools();
-
         let mut last_err: Option<anyhow::Error> = None;
         for attempt in 0..MAX_RETRIES {
             if attempt > 0 {
@@ -974,7 +1073,8 @@ impl DaemonClient {
                 ))
                 .await;
             }
-            match http_tools
+            match self
+                .http_tools()
                 .put(&url)
                 .header("Content-Type", "application/json")
                 .json(&body)
@@ -988,6 +1088,12 @@ impl DaemonClient {
                 Ok(resp) => {
                     let status = resp.status();
                     last_err = Some(anyhow::anyhow!("Failed to save session ({})", status));
+                    // 401 = daemon restarted with a fresh token; re-read it
+                    // from disk and retry instead of dropping the session save.
+                    if status == StatusCode::UNAUTHORIZED && self.refresh_auth_from_disk() {
+                        tracing::warn!("save_session got 401; refreshed daemon token, retrying");
+                        continue;
+                    }
                     if status.is_server_error() {
                         tracing::warn!(
                             "save_session attempt {}/{} failed with {}: will retry",
@@ -1058,9 +1164,7 @@ impl DaemonClient {
     ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<GlobalEventWire>>> {
         let url = format!("{}/api/v1/events", self.base_url);
         let resp = self
-            .http()
-            .get(&url)
-            .send()
+            .send_with_auth_retry(|c| c.http().get(&url))
             .await
             .context("connect global event stream")?;
         if !resp.status().is_success() {
@@ -1458,6 +1562,109 @@ mod tests {
         assert!(error.to_string().contains("500 Internal Server Error"));
         assert_eq!(state.viewer_creations.load(Ordering::SeqCst), 1);
         assert_eq!(state.scoped_requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    /// Simulates a daemon restart: the server only accepts the *new* bearer
+    /// token while the client was constructed with the old one. The first
+    /// attempt 401s, the client re-reads the (mocked) on-disk token and the
+    /// retried request succeeds.
+    #[tokio::test]
+    async fn run_session_retries_once_with_refreshed_token_after_401() {
+        let disk_token = Arc::new(std::sync::RwLock::new("old-token".to_string()));
+        let requests = Arc::new(AtomicUsize::new(0));
+
+        let handler_disk_token = disk_token.clone();
+        let handler_requests = requests.clone();
+        let app = Router::new().route(
+            "/api/v1/sessions/:id/run",
+            post(move |headers: HeaderMap| {
+                let disk_token = handler_disk_token.clone();
+                let requests = handler_requests.clone();
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let supplied = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.strip_prefix("Bearer "));
+                    if supplied == Some("new-token") {
+                        (StatusCode::OK, Json(serde_json::json!({"run_id": "r1"})))
+                    } else {
+                        // The "restart" lands the new token on disk before
+                        // rejecting the old one.
+                        *disk_token.write().expect("disk token lock") = "new-token".to_string();
+                        (StatusCode::UNAUTHORIZED, Json(serde_json::json!({})))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind auth-retry test server");
+        let address = listener.local_addr().expect("read test server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve auth-retry test server");
+        });
+
+        let reader_disk_token = disk_token.clone();
+        let client = DaemonClient::with_token_reader(
+            format!("http://{address}"),
+            Arc::new(move || Some(reader_disk_token.read().expect("disk token lock").clone())),
+        );
+
+        let run_id = client
+            .run_session("session-a", "hello", false)
+            .await
+            .expect("run_session recovers from 401 via refreshed token");
+
+        assert_eq!(run_id, "r1");
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    /// When the on-disk token did not change, the 401 is surfaced as-is
+    /// (single attempt) instead of retrying in a loop.
+    #[tokio::test]
+    async fn run_session_does_not_retry_401_when_token_unchanged() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let handler_requests = requests.clone();
+        let app = Router::new().route(
+            "/api/v1/sessions/:id/run",
+            post(move || {
+                let requests = handler_requests.clone();
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::UNAUTHORIZED, Json(serde_json::json!({})))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind no-retry test server");
+        let address = listener.local_addr().expect("read test server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve no-retry test server");
+        });
+
+        let client = DaemonClient::with_token_reader(
+            format!("http://{address}"),
+            Arc::new(|| Some("same-token".to_string())),
+        );
+
+        let error = client
+            .run_session("session-a", "hello", false)
+            .await
+            .expect_err("surface the 401 without retrying");
+
+        assert!(
+            error.to_string().contains("401"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
         server.abort();
     }
 }

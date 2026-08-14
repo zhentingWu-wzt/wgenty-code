@@ -64,6 +64,18 @@ pub async fn health() -> Json<HealthResponse> {
     })
 }
 
+// ── Shutdown ─────────────────────────────────────────────────────────────────
+
+/// POST /api/v1/shutdown — request a graceful daemon shutdown. Backs
+/// `wgenty-code daemon stop`; protected by the same bearer token as every
+/// other non-health endpoint. The server's shutdown future listens on
+/// `shutdown_notify` and runs the normal cleanup (token/discovery files).
+pub async fn shutdown(State(state): State<Arc<DaemonState>>) -> Json<serde_json::Value> {
+    tracing::info!("shutdown requested via API");
+    state.shutdown_notify.notify_one();
+    Json(serde_json::json!({ "shutting_down": true }))
+}
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 pub async fn get_config(State(state): State<Arc<DaemonState>>) -> Json<ConfigResponse> {

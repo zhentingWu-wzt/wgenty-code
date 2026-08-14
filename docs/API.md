@@ -24,7 +24,7 @@ Full CLI reference: `wgenty-code --help`
 | `sandbox` | Sandbox control |
 | `agent` | Run agent subcommand |
 | `init` | Initialize project |
-| `daemon` | Start HTTP daemon |
+| `daemon` | Start HTTP daemon; `daemon status` / `daemon stop` inspect and stop it |
 
 ## Daemon HTTP API
 
@@ -34,9 +34,21 @@ Start the daemon:
 wgenty-code daemon --port 8371
 ```
 
+Manage a running daemon (works in any build; reads the discovery/token files
+and talks HTTP to the daemon process):
+
+```bash
+wgenty-code daemon status   # discovery file state + health probe
+wgenty-code daemon stop     # graceful shutdown via POST /api/v1/shutdown
+```
+
 All endpoints except `GET /api/v1/health` require `Authorization: Bearer <token>`.
 The token is generated at startup and written to `~/.wgenty-code/daemon.token`
 (mode `0600`).
+
+`POST /api/v1/shutdown` requests a graceful shutdown (same effect as SIGINT:
+in-flight requests finish, then the token/discovery files are removed).
+It backs `wgenty-code daemon stop` and answers `{"shutting_down": true}`.
 
 ### Session event stream (resume / replay)
 

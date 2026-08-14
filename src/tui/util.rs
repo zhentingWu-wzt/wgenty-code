@@ -106,9 +106,9 @@ pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<S
 }
 
 /// Spawn `current_exe() daemon --port <port>` as a detached child process
-/// and poll until the port accepts TCP connections. Returns the base URL on
-/// success, or `None` if the process couldn't spawn or the port never came
-/// up (timeout / bind failure / daemon crash).
+/// and poll until the daemon's health endpoint answers. Returns the base URL
+/// on success, or `None` if the process couldn't spawn or the daemon never
+/// came up (timeout / bind failure / crash / foreign process on the port).
 #[cfg(feature = "daemon")]
 async fn spawn_external_daemon(port: u16) -> Option<String> {
     let exe = std::env::current_exe().ok()?;
@@ -131,7 +131,14 @@ async fn spawn_external_daemon(port: u16) -> Option<String> {
     // process is now fully independent and survives TUI exit.
     drop(child);
 
-    // Poll the port until it accepts connections (daemon bound + listening).
+    // Poll the health endpoint until the daemon serves HTTP. A bare TCP
+    // connect is not enough: the port may be held by a foreign process, and
+    // attaching to it would surface later as auth (401) or protocol errors.
+    let health_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .ok()?;
+    let base_url = format!("http://127.0.0.1:{}", port);
     let mut interval_ms = 200u64;
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_secs(HEALTH_POLL_TIMEOUT_SECS);
@@ -140,11 +147,11 @@ async fn spawn_external_daemon(port: u16) -> Option<String> {
             tracing::warn!(port, "external daemon health poll timed out");
             return None;
         }
-        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+        if crate::utils::http::probe_daemon_health(&health_client, &base_url)
             .await
-            .is_ok()
+            .is_some()
         {
-            return Some(format!("http://127.0.0.1:{}", port));
+            return Some(base_url);
         }
         tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
         interval_ms = (interval_ms * 2).min(2000);
@@ -184,6 +191,7 @@ async fn spawn_embedded_daemon(
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
     crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
+    let shutdown_notify = daemon_state.shutdown_notify.clone();
     let (health, protected) = routes::create_routers(daemon_state, api_token);
     crate::utils::startup_timing::mark("daemon: routers created");
     let app = health.merge(protected).layer(
@@ -213,8 +221,13 @@ async fn spawn_embedded_daemon(
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
+            .with_graceful_shutdown(async move {
+                tokio::select! {
+                    // TUI exit path.
+                    _ = shutdown_rx => {}
+                    // POST /api/v1/shutdown (`wgenty-code daemon stop`).
+                    () = shutdown_notify.notified() => {}
+                }
             })
             .await
             .ok();
