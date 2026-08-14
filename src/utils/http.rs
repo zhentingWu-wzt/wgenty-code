@@ -14,6 +14,26 @@ use std::sync::OnceLock;
 const DEFAULT_UA: &str = "wgenty-code/1.0";
 const WEB_SEARCH_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+/// Parsed body of the daemon's public `GET /api/v1/health`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DaemonHealth {
+    pub status: String,
+    pub version: String,
+}
+
+/// GET `{base_url}/api/v1/health` and return the parsed body when the peer
+/// is really a wgenty daemon (HTTP 200 + well-formed health body). A bare
+/// TCP connect is not enough: the port may be held by a foreign process, and
+/// attaching to it would surface later as auth (401) or protocol errors.
+pub async fn probe_daemon_health(client: &reqwest::Client, base_url: &str) -> Option<DaemonHealth> {
+    let url = format!("{}/api/v1/health", base_url.trim_end_matches('/'));
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<DaemonHealth>().await.ok()
+}
+
 /// Return the shared general-purpose client with no total timeout.
 ///
 /// This preserves `reqwest::Client::new()` semantics for callers that manage

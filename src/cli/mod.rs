@@ -7,6 +7,7 @@
 pub mod args;
 pub mod branding;
 pub mod commands;
+pub mod daemon_admin;
 pub mod headless_runtime;
 pub mod org_graph;
 pub mod subagent;
@@ -187,6 +188,9 @@ pub enum Commands {
 
     /// Start the daemon HTTP API server
     Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonCommands>,
+
         /// Port to listen on
         #[arg(long, default_value = "8371")]
         port: u16,
@@ -203,6 +207,14 @@ pub enum Commands {
         #[command(subcommand)]
         action: OrgGraphCommands,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DaemonCommands {
+    /// Show the running daemon's status (discovery file + health probe)
+    Status,
+    /// Gracefully stop the running daemon (API-triggered shutdown)
+    Stop,
 }
 
 #[derive(Subcommand, Debug)]

@@ -487,6 +487,10 @@ pub struct DaemonState {
     /// Tracks connected thin clients and triggers graceful shutdown
     /// when the last client disconnects.
     pub active_clients: Arc<ActiveClientTracker>,
+    /// Signalled by `POST /api/v1/shutdown` (`wgenty-code daemon stop`) to
+    /// request a graceful shutdown; the server's shutdown future listens on
+    /// this alongside Ctrl-C and the thin-client idle timeout.
+    pub shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 impl DaemonState {
@@ -937,6 +941,7 @@ impl DaemonState {
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             active_clients: Arc::new(ActiveClientTracker::new()),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             http_client,
             http_client_stream,
         }

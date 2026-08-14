@@ -148,6 +148,7 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     // disconnects, start a grace-period timer. If no client reconnects
     // within that window, signal the Axum server to shut down gracefully.
     let active_clients = daemon_state.active_clients.clone();
+    let shutdown_notify = daemon_state.shutdown_notify.clone();
     let shutdown_signal = async move {
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
@@ -184,6 +185,12 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
                 }
                 _ = &mut ctrl_c => {
                     tracing::info!("received SIGINT; initiating graceful shutdown");
+                    active_clients.initiate_shutdown();
+                    break;
+                }
+                // POST /api/v1/shutdown (`wgenty-code daemon stop`).
+                () = shutdown_notify.notified() => {
+                    tracing::info!("shutdown requested via API; initiating graceful shutdown");
                     active_clients.initiate_shutdown();
                     break;
                 }
