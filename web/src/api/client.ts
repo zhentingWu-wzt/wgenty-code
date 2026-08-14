@@ -101,9 +101,15 @@ export class DaemonClient {
       })();
       // Clear the in-flight promise on settle so a failure can be retried;
       // viewerToken (set only on success) survives for subsequent calls.
-      this.viewerPromise.finally(() => {
-        this.viewerPromise = null;
-      });
+      // The `.catch` only handles the promise *derived* from `.finally` —
+      // the original's rejection stays with its caller; without it, a failed
+      // viewer bootstrap (daemon unreachable) surfaces as an unhandled
+      // rejection (e.g. it fails the vitest run).
+      this.viewerPromise
+        .finally(() => {
+          this.viewerPromise = null;
+        })
+        .catch(() => {});
     }
     return this.viewerPromise;
   }
