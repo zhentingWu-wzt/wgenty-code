@@ -26,6 +26,10 @@ pub(crate) fn agent_routes() -> Router<Arc<DaemonState>> {
     Router::new()
         .route("/api/v1/ui/viewers", post(handlers::create_viewer))
         .route("/api/v1/agents/self", get(handlers::get_agent_self))
+        .route(
+            "/api/v1/agents/directory",
+            get(handlers::get_agent_directory),
+        )
         .route("/api/v1/agents/children", get(handlers::get_agent_children))
         .route(
             "/api/v1/agents/children/:capability",

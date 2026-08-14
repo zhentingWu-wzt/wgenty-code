@@ -1212,10 +1212,6 @@ impl AgentCoordinator {
     /// Hierarchy records only: progress cross-fill (tokens/elapsed/round)
     /// stays in the daemon handler layer, mirroring `assemble_local_view`'s
     /// separation of concerns.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into get_agent_directory in Task 2")
-    )]
     pub(crate) async fn trusted_ui_directory(
         &self,
         session: &SessionId,

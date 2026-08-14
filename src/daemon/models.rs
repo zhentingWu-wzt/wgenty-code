@@ -417,6 +417,48 @@ pub struct LocalAgentViewResponse {
     pub children: Vec<DirectChildResponse>,
 }
 
+/// Recursive directory entry for the panel's whole-tree polling view:
+/// hierarchy record plus cross-filled progress metrics. Deliberately carries
+/// no messages or trace ids — it is a lightweight directory, not a focus view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDirectoryEntry {
+    pub agent_id: String,
+    pub status: AgentLifecycleStatus,
+    #[serde(default)]
+    pub label: String,
+    /// Terminal summary text, if the agent wrote one.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Cumulative tokens consumed by this agent (0 until progress is reported).
+    #[serde(default)]
+    pub cumulative_tokens: u64,
+    /// Unix epoch ms when this agent started (0 if unknown).
+    #[serde(default)]
+    pub started_at: i64,
+    /// Elapsed wall-clock ms; live for running agents (recomputed by the daemon).
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    /// Current round index, if reported by the subagent loop.
+    #[serde(default)]
+    pub round: Option<usize>,
+    /// Maximum rounds configured for this agent.
+    #[serde(default)]
+    pub max_rounds: Option<usize>,
+    /// Trusted hierarchy depth of this agent (root at zero).
+    #[serde(default)]
+    pub depth: usize,
+    /// Child entries, sorted by agent_id ascending.
+    pub children: Vec<AgentDirectoryEntry>,
+}
+
+/// Response to `GET /api/v1/agents/directory`: the recursive agent tree for
+/// one session, rooted at the session's root agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDirectoryResponse {
+    pub session_id: String,
+    pub root: AgentDirectoryEntry,
+}
+
 /// Response to `POST /api/v1/ui/viewers`: a bearer token returned once. The
 /// daemon stores only the HMAC digest of the token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
