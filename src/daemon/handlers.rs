@@ -1723,6 +1723,76 @@ pub async fn get_agent_children(
     get_agent_self(State(state), Query(params), headers).await
 }
 
+/// Converts a store directory entry into its DTO form, recursively
+/// cross-filling progress metrics (tokens/timers/rounds) from the session
+/// progress map. Entries without progress (typically the root) get defaults.
+fn to_directory_entry(
+    entry: crate::agent::store::DirectoryEntry,
+    progress: &HashMap<String, crate::agent::SubagentProgress>,
+) -> AgentDirectoryEntry {
+    let node = progress.get(entry.agent_id.as_str());
+    let children = entry
+        .children
+        .into_iter()
+        .map(|child| to_directory_entry(child, progress))
+        .collect();
+    AgentDirectoryEntry {
+        agent_id: entry.agent_id.as_str().to_string(),
+        status: entry.status,
+        label: entry.label,
+        summary: entry.summary,
+        cumulative_tokens: node.map(|p| p.cumulative_tokens).unwrap_or(0),
+        started_at: node.map(|p| p.started_at).unwrap_or(0),
+        elapsed_ms: live_elapsed_ms(node),
+        round: node.and_then(|p| p.round),
+        max_rounds: node.and_then(|p| p.max_rounds),
+        depth: entry.depth,
+        children,
+    }
+}
+
+/// `GET /api/v1/agents/directory?session_id=<id>` -- recursive read-only
+/// whole-tree projection for panel polling. Same trust gate as
+/// `get_agent_self` (viewer token, then session); progress cross-fill happens
+/// here rather than in the store.
+pub async fn get_agent_directory(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<AgentDirectoryResponse>, StatusCode> {
+    resolve_viewer_from_headers(&state, &headers)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: the directory must belong to a real session —
+    // missing session_id is a client bug, not a default.
+    let session_id = params
+        .get("session_id")
+        .map(|s| s.as_str())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let root = state
+        .root_context(session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Clone only this session's progress so the read guard is released
+    // before the recursive store walk below (pattern: `build_local_view`).
+    let session_progress = {
+        let progress_store = state.subagent_progress.read().await;
+        progress_store
+            .get(root.session_id.as_str())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let directory = state
+        .coordinator
+        .trusted_ui_directory(&root.session_id, &root.agent_id)
+        .await
+        .map_err(map_scoped_coordinator_error)?;
+    Ok(Json(AgentDirectoryResponse {
+        session_id: root.session_id.as_str().to_string(),
+        root: to_directory_entry(directory, &session_progress),
+    }))
+}
+
 /// `GET /api/v1/agents/children/:capability?session_id=<id>` -- navigate into
 /// the direct child bound by `capability`. Returns that child's local view
 /// (self + its direct children), with fresh navigate capabilities.
@@ -2769,6 +2839,269 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stale_response.status(), StatusCode::NOT_FOUND);
+
+        server.abort();
+    }
+
+    /// Minimal [`crate::agent::SubagentProgress`] for directory cross-fill
+    /// tests: only the fields the handler reads are populated.
+    fn directory_progress(
+        agent_id: &str,
+        status: crate::agent::SubagentStatus,
+        started_at: i64,
+        elapsed_ms: u64,
+        cumulative_tokens: u64,
+        round: Option<usize>,
+        max_rounds: Option<usize>,
+    ) -> crate::agent::SubagentProgress {
+        crate::agent::SubagentProgress {
+            node_id: agent_id.to_string(),
+            parent_id: None,
+            label: agent_id.to_string(),
+            status,
+            round,
+            max_rounds,
+            current_tool: None,
+            current_params: None,
+            action_log: Vec::new(),
+            text_snapshot: None,
+            started_at,
+            elapsed_ms,
+            metadata: None,
+            progress_delta: None,
+            token_budget_k: None,
+            cumulative_tokens,
+            error_details: None,
+            events: Vec::new(),
+            messages: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_directory_endpoint_serves_recursive_tree_with_progress_crossfill() {
+        use crate::agent::SpawnChildRequest;
+        use crate::config::Settings;
+        use crate::daemon::models::{AgentDirectoryResponse, CreateViewerResponse};
+        use crate::state::AppState;
+        use std::collections::HashMap;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        settings.storage.transcript.db_path = temp
+            .path()
+            .join("subagent-transcripts.db")
+            .to_string_lossy()
+            .into_owned();
+        // This test exercises a root -> child -> grandchild chain (depth 3),
+        // but the product default disables subagent recursion (max_depth=1).
+        // Raise the limit here so the directory scenario under test can run.
+        settings.agent.subagent.max_depth = 3;
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let root = state.root_context("session").await.unwrap();
+        assert_eq!(
+            state.coordinator.advance_generation(&root.session_id).await,
+            1
+        );
+        let child = state
+            .coordinator
+            .reserve_child(&root, SpawnChildRequest::new("child"))
+            .await
+            .unwrap()
+            .context;
+        let grandchild = state
+            .coordinator
+            .reserve_child(&child, SpawnChildRequest::new("grandchild"))
+            .await
+            .unwrap()
+            .context;
+        // Complete the child through the public coordinator surface; the
+        // directory must keep terminal agents visible.
+        state
+            .coordinator
+            .finish_child(
+                &child,
+                crate::agent::ChildTerminal::Completed {
+                    summary: "child finished".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        // Cross-fill source: seed the legacy progress store with entries for
+        // the terminal child (stored elapsed wins) and the running grandchild
+        // (elapsed recomputed live from started_at).
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut entries = HashMap::new();
+        entries.insert(
+            child.agent_id.as_str().to_string(),
+            directory_progress(
+                child.agent_id.as_str(),
+                crate::agent::SubagentStatus::Completed,
+                now_ms - 60_000,
+                12_000,
+                4_321,
+                Some(3),
+                Some(5),
+            ),
+        );
+        entries.insert(
+            grandchild.agent_id.as_str().to_string(),
+            directory_progress(
+                grandchild.agent_id.as_str(),
+                crate::agent::SubagentStatus::Running,
+                now_ms - 10_000,
+                0,
+                999,
+                Some(2),
+                Some(7),
+            ),
+        );
+        state
+            .subagent_progress
+            .write()
+            .await
+            .insert(root.session_id.as_str().to_string(), entries);
+
+        let app = crate::daemon::routes::agent_routes().with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = reqwest::Client::new();
+
+        let viewer = client
+            .post(format!("{base_url}/api/v1/ui/viewers"))
+            .send()
+            .await
+            .unwrap()
+            .json::<CreateViewerResponse>()
+            .await
+            .unwrap()
+            .viewer_token;
+        let response = client
+            .get(format!(
+                "{base_url}/api/v1/agents/directory?session_id=session"
+            ))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let directory = response.json::<AgentDirectoryResponse>().await.unwrap();
+        assert_eq!(directory.session_id, "session");
+        assert_eq!(directory.root.agent_id, root.agent_id.as_str());
+        assert_eq!(directory.root.depth, 0);
+        // The root agent has no progress entry: defaults, not fake metrics.
+        assert_eq!(directory.root.cumulative_tokens, 0);
+        assert_eq!(directory.root.started_at, 0);
+        assert_eq!(directory.root.round, None);
+        assert_eq!(directory.root.children.len(), 1);
+
+        let child_entry = &directory.root.children[0];
+        assert_eq!(child_entry.agent_id, child.agent_id.as_str());
+        assert_eq!(child_entry.depth, 1);
+        assert_eq!(
+            child_entry.status,
+            crate::agent::AgentLifecycleStatus::Completed
+        );
+        assert_eq!(child_entry.summary.as_deref(), Some("child finished"));
+        // Progress cross-fill from the legacy store.
+        assert_eq!(child_entry.cumulative_tokens, 4_321);
+        assert_eq!(child_entry.round, Some(3));
+        assert_eq!(child_entry.max_rounds, Some(5));
+        // Terminal agents keep their stored elapsed value.
+        assert_eq!(child_entry.elapsed_ms, 12_000);
+
+        assert_eq!(child_entry.children.len(), 1);
+        let grandchild_entry = &child_entry.children[0];
+        assert_eq!(grandchild_entry.agent_id, grandchild.agent_id.as_str());
+        assert_eq!(grandchild_entry.depth, 2);
+        assert_eq!(grandchild_entry.cumulative_tokens, 999);
+        assert_eq!(grandchild_entry.round, Some(2));
+        assert_eq!(grandchild_entry.max_rounds, Some(7));
+        // Running agents get a live-recomputed timer from started_at.
+        assert!(grandchild_entry.elapsed_ms >= 10_000);
+        assert!(grandchild_entry.children.is_empty());
+
+        // Missing session_id is a client bug, not a denial: 400.
+        let missing = client
+            .get(format!("{base_url}/api/v1/agents/directory"))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+        // Unknown viewer token maps to the same stable 404 as the other
+        // scoped endpoints.
+        let unknown_viewer = client
+            .get(format!(
+                "{base_url}/api/v1/agents/directory?session_id=session"
+            ))
+            .header(VIEWER_TOKEN_HEADER, "not-a-viewer")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unknown_viewer.status(), StatusCode::NOT_FOUND);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn agent_directory_endpoint_returns_empty_tree_for_root_only_session() {
+        use crate::config::Settings;
+        use crate::daemon::models::AgentDirectoryResponse;
+        use crate::state::AppState;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        settings.storage.transcript.db_path = temp
+            .path()
+            .join("subagent-transcripts.db")
+            .to_string_lossy()
+            .into_owned();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let root = state.root_context("empty").await.unwrap();
+
+        let app = crate::daemon::routes::agent_routes().with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = reqwest::Client::new();
+
+        let viewer = client
+            .post(format!("{base_url}/api/v1/ui/viewers"))
+            .send()
+            .await
+            .unwrap()
+            .json::<crate::daemon::models::CreateViewerResponse>()
+            .await
+            .unwrap()
+            .viewer_token;
+        let response = client
+            .get(format!(
+                "{base_url}/api/v1/agents/directory?session_id=empty"
+            ))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.text().await.unwrap();
+        let directory: AgentDirectoryResponse = serde_json::from_str(&raw).unwrap();
+        assert_eq!(directory.session_id, "empty");
+        assert_eq!(directory.root.agent_id, root.agent_id.as_str());
+        assert!(directory.root.children.is_empty());
+        // The polling payload is hierarchy + metrics only: no messages or
+        // trace ids anywhere in the wire format.
+        assert!(!raw.contains("messages"));
+        assert!(!raw.contains("trace_id"));
 
         server.abort();
     }
