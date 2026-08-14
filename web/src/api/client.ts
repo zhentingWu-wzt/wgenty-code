@@ -13,6 +13,7 @@
  */
 import type {
   AddMcpServerRequest,
+  AgentDirectoryResponse,
   CheckpointInfo,
   ConfigResponse,
   CreateSessionRequest,
@@ -353,6 +354,18 @@ export class DaemonClient {
     return jsonOrThrow(
       await fetch(
         `${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`,
+        { headers },
+      ),
+    );
+  }
+
+  /** `GET /agents/directory?session_id=<id>` -- full recursive subagent tree
+   *  for the session (root agent plus nested children, with depth). */
+  async getAgentDirectory(sessionId: string): Promise<AgentDirectoryResponse> {
+    const headers = await this.agentHeaders();
+    return jsonOrThrow(
+      await fetch(
+        `${this.base}/agents/directory?session_id=${encodeURIComponent(sessionId)}`,
         { headers },
       ),
     );
