@@ -250,6 +250,66 @@ export interface TraceEvent {
   question?: QuestionPayload;
 }
 
+// ── Scoped agent views (subagent local view + transcript) ───────────────────
+
+/** Mirrors `AgentLifecycleStatus` (serde variant names). Kept as a loose string
+ *  union so unknown future variants still render without a type error. */
+export type AgentLifecycleStatus =
+  | "idle"
+  | "running"
+  | "thinking"
+  | "awaiting_approval"
+  | "awaiting_input"
+  | "completed"
+  | "done"
+  | "failed"
+  | "cancelled"
+  | (string & {});
+
+/** Self projection in a scoped agent view. Mirrors `SelfAgentResponse`. */
+export interface SelfAgentResponse {
+  agent_id: string;
+  status: AgentLifecycleStatus;
+  label: string;
+  text_snapshot?: string | null;
+  cumulative_tokens: number;
+  started_at: number;
+  elapsed_ms: number;
+  round?: number | null;
+  max_rounds?: number | null;
+  /** Model messages captured by the progress callback. */
+  messages: ChatMessage[];
+}
+
+/** Direct-child projection with an opaque navigation capability. Mirrors
+ *  `DirectChildResponse`. */
+export interface DirectChildResponse {
+  agent_id: string;
+  status: AgentLifecycleStatus;
+  label: string;
+  summary?: string | null;
+  navigation_capability: string;
+  text_snapshot?: string | null;
+  cumulative_tokens: number;
+  started_at: number;
+  elapsed_ms: number;
+  round?: number | null;
+  max_rounds?: number | null;
+  messages: ChatMessage[];
+}
+
+/** Local view: self plus direct children only. Mirrors
+ *  `LocalAgentViewResponse`. */
+export interface LocalAgentViewResponse {
+  self_view: SelfAgentResponse;
+  children: DirectChildResponse[];
+}
+
+/** `POST /api/v1/ui/viewers` response. */
+export interface CreateViewerResponse {
+  viewer_token: string;
+}
+
 // ── ask_user_question (server-side interaction) ──────────────────────────────
 
 export interface QuestionOption {

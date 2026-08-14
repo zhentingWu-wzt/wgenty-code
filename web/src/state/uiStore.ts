@@ -16,6 +16,14 @@ export type RightPanelId =
   | "subagents"
   | "inspector";
 
+/** Metadata for a subagent detail tab (`subagent:<nodeId>`). */
+export interface SubagentTabMeta {
+  nodeId: string;
+  label: string;
+  /** Root daemon session id the subagent belongs to (capability API param). */
+  rootSessionId: string;
+}
+
 interface UiState {
   theme: ThemeMode;
   leftCollapsed: boolean;
@@ -37,6 +45,14 @@ interface UiState {
   /** 把 id 移动到 targetId 的位置（向下拖时落在其后）。 */
   moveTab: (id: string, targetId: string) => void;
   pruneTabs: (ids: string[]) => void;
+
+  /** 统一活动 tab：session id 或 `subagent:<nodeId>`。null = 无活动 tab。 */
+  activeTabId: string | null;
+  setActiveTab: (id: string | null) => void;
+  /** subagent 详情 tab 元数据，key = tab id（`subagent:<nodeId>`）。 */
+  subagentTabs: Record<string, SubagentTabMeta>;
+  /** 打开（或聚焦）一个 subagent 详情 tab 并激活。 */
+  openSubagentTab: (meta: SubagentTabMeta) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -64,7 +80,16 @@ export const useUiStore = create<UiState>((set) => ({
       const openTabs = s.openTabs.filter((t) => t !== id);
       // 优先右侧邻居，删尾 tab 时取新的末尾。idx < 0 时 id 本就不在，无需激活切换。
       next = idx < 0 ? null : (openTabs[Math.min(idx, openTabs.length - 1)] ?? null);
-      return { openTabs };
+      // subagent tab 关闭时顺带清理其元数据。
+      const subagentTabs =
+        id.startsWith("subagent:") && s.subagentTabs[id]
+          ? (() => {
+              const c = { ...s.subagentTabs };
+              delete c[id];
+              return c;
+            })()
+          : s.subagentTabs;
+      return { openTabs, subagentTabs };
     });
     return next;
   },
@@ -79,4 +104,19 @@ export const useUiStore = create<UiState>((set) => ({
     }),
   pruneTabs: (ids) =>
     set((s) => ({ openTabs: s.openTabs.filter((t) => !ids.includes(t)) })),
+
+  activeTabId: null,
+  setActiveTab: (activeTabId) => set({ activeTabId }),
+  subagentTabs: {},
+  openSubagentTab: (meta) => {
+    const tabId = `subagent:${meta.nodeId}`;
+    set((s) => {
+      const openTabs = s.openTabs.includes(tabId) ? s.openTabs : [...s.openTabs, tabId];
+      return {
+        openTabs,
+        subagentTabs: { ...s.subagentTabs, [tabId]: meta },
+        activeTabId: tabId,
+      };
+    });
+  },
 }));

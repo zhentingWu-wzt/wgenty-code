@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { X } from "lucide-react";
+import { Network, X } from "lucide-react";
 import { useSessionManager, type SessionStatus } from "../../state/sessionManager";
 import { useUiStore } from "../../state/uiStore";
 import { cn } from "../../lib/utils";
@@ -12,19 +12,37 @@ const STATUS_DOT: Record<SessionStatus, string> = {
   error: "bg-danger",
 };
 
-/** 会话 tab 栏：每个打开的会话一个 tab。点击激活、中键/X 关闭、HTML5 拖拽排序。 */
+/** subagent 详情 tab id 前缀。 */
+const SUBAGENT_PREFIX = "subagent:";
+
+/** 会话 tab 栏：每个打开的会话或 subagent 详情一个 tab。点击激活、中键/X
+ *  关闭、HTML5 拖拽排序。subagent tab 用 Network 图标，会话 tab 用状态点。 */
 export function SessionTabBar() {
   const openTabs = useUiStore((s) => s.openTabs);
   const entries = useSessionManager((s) => s.entries);
-  const activeId = useSessionManager((s) => s.activeId);
+  const subagentTabs = useUiStore((s) => s.subagentTabs);
+  const activeTabId = useUiStore((s) => s.activeTabId);
   const dragId = useRef<string | null>(null);
 
-  const activate = (id: string) => useSessionManager.getState().setActive(id);
+  const activate = (id: string) => {
+    if (id.startsWith(SUBAGENT_PREFIX)) {
+      // subagent tab 只切活动 tab，不动活跃会话（Composer 仍指当前会话）。
+      useUiStore.getState().setActiveTab(id);
+    } else {
+      // 会话激活由 uiSync 同步 activeTabId。
+      useSessionManager.getState().setActive(id);
+    }
+  };
 
   const close = (id: string) => {
-    const mgr = useSessionManager.getState();
-    const next = useUiStore.getState().closeTab(id);
-    if (mgr.activeId === id && next) mgr.setActive(next);
+    const ui = useUiStore.getState();
+    const next = ui.closeTab(id);
+    if (ui.activeTabId !== id || !next) return;
+    if (next.startsWith(SUBAGENT_PREFIX)) {
+      ui.setActiveTab(next);
+    } else {
+      useSessionManager.getState().setActive(next);
+    }
   };
 
   if (openTabs.length === 0) return null;
@@ -33,9 +51,12 @@ export function SessionTabBar() {
     <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-sidebar">
       <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto px-1">
         {openTabs.map((id) => {
-          const entry = entries[id];
-          if (!entry) return null;
-          const active = id === activeId;
+          const isSubagent = id.startsWith(SUBAGENT_PREFIX);
+          const meta = isSubagent ? subagentTabs[id] : undefined;
+          const entry = !isSubagent ? entries[id] : undefined;
+          if (!meta && !entry) return null;
+          const active = id === activeTabId;
+          const title = meta?.label ?? entry?.name ?? id;
           return (
             <div
               key={id}
@@ -64,12 +85,21 @@ export function SessionTabBar() {
                 if (e.button === 1) close(id);
               }}
             >
-              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[entry.status])} />
-              <span className="truncate">{entry.name}</span>
+              {isSubagent ? (
+                <Network size={12} className="shrink-0 text-primary" />
+              ) : (
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 shrink-0 rounded-full",
+                    entry ? STATUS_DOT[entry.status] : "",
+                  )}
+                />
+              )}
+              <span className="truncate">{title}</span>
               <button
                 type="button"
                 data-close
-                aria-label={`Close ${entry.name}`}
+                aria-label={`Close ${title}`}
                 className="ml-0.5 hidden rounded-sm p-0.5 hover:bg-accent group-hover:block"
                 onClick={(e) => {
                   e.stopPropagation();

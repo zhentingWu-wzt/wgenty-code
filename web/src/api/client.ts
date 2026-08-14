@@ -16,12 +16,14 @@ import type {
   CheckpointInfo,
   ConfigResponse,
   CreateSessionRequest,
+  CreateViewerResponse,
   ExecuteToolRequest,
   ExecuteToolResponse,
   GetTodosResponse,
   HealthResponse,
   ListModelsResponse,
   ListTasksResponse,
+  LocalAgentViewResponse,
   McpServerInfo,
   MemoryListQuery,
   MemoryListResponse,
@@ -78,6 +80,38 @@ export class DaemonClient {
    * daemon origin.
    */
   constructor(private readonly base = "/api/v1") {}
+
+  // ── Trusted UI viewer (scoped-agent endpoints) ─────────────────────────────
+
+  /** Cached viewer bearer token (`POST /ui/viewers`). Scoped-agent endpoints
+   *  require it in the `x-wgenty-viewer-token` header. Created lazily on first
+   *  use; concurrent callers share a single in-flight request. */
+  private viewerToken: string | null = null;
+  private viewerPromise: Promise<string> | null = null;
+
+  async ensureViewer(): Promise<string> {
+    if (this.viewerToken) return this.viewerToken;
+    if (!this.viewerPromise) {
+      this.viewerPromise = (async () => {
+        const res = await fetch(`${this.base}/ui/viewers`, { method: "POST" });
+        const r = await jsonOrThrow<CreateViewerResponse>(res);
+        this.viewerToken = r.viewer_token;
+        return r.viewer_token;
+      })();
+      // Clear the in-flight promise on settle so a failure can be retried;
+      // viewerToken (set only on success) survives for subsequent calls.
+      this.viewerPromise.finally(() => {
+        this.viewerPromise = null;
+      });
+    }
+    return this.viewerPromise;
+  }
+
+  /** Headers carrying the viewer token, awaited once per request. */
+  private async agentHeaders(): Promise<Record<string, string>> {
+    const token = await this.ensureViewer();
+    return { "x-wgenty-viewer-token": token };
+  }
 
   // ── Health / config ────────────────────────────────────────────────────────
 
@@ -308,6 +342,66 @@ export class DaemonClient {
       throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
     }
     return { body: res.body };
+  }
+
+  // ── Scoped agent views (subagent local view + transcript + cancel) ─────────
+
+  /** `GET /agents/self?session_id=<id>` -- root local view (self + direct
+   *  children, each with a fresh navigation capability). */
+  async getAgentSelf(sessionId: string): Promise<LocalAgentViewResponse> {
+    const headers = await this.agentHeaders();
+    return jsonOrThrow(
+      await fetch(
+        `${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`,
+        { headers },
+      ),
+    );
+  }
+
+  /** `GET /agents/children/:capability?session_id=<id>` -- navigate one level
+   *  into the child bound by `capability`; returns that child's local view. */
+  async navigateAgentView(
+    sessionId: string,
+    capability: string,
+  ): Promise<LocalAgentViewResponse> {
+    const headers = await this.agentHeaders();
+    return jsonOrThrow(
+      await fetch(
+        `${this.base}/agents/children/${encodeURIComponent(capability)}?session_id=${encodeURIComponent(sessionId)}`,
+        { headers },
+      ),
+    );
+  }
+
+  /** `GET /agents/children/:capability/transcript?session_id=<id>` -- read the
+   *  transcript of the direct child bound by `capability`. */
+  async getChildTranscript(
+    sessionId: string,
+    capability: string,
+  ): Promise<{ transcript: unknown }> {
+    const headers = await this.agentHeaders();
+    return jsonOrThrow(
+      await fetch(
+        `${this.base}/agents/children/${encodeURIComponent(capability)}/transcript?session_id=${encodeURIComponent(sessionId)}`,
+        { headers },
+      ),
+    );
+  }
+
+  /** `POST /agents/children/:capability/cancel?session_id=<id>` -- cancel the
+   *  direct child bound by `capability`. Returns true on 204. */
+  async cancelChild(sessionId: string, capability: string): Promise<void> {
+    const headers = await this.agentHeaders();
+    const res = await fetch(
+      `${this.base}/agents/children/${encodeURIComponent(capability)}/cancel?session_id=${encodeURIComponent(sessionId)}`,
+      { method: "POST", headers },
+    );
+    if (!res.ok) {
+      throw new DaemonError(
+        (await res.text().catch(() => "")) || `${res.status} ${res.statusText}`,
+        res.status,
+      );
+    }
   }
 
   // ── Command center: projects / worktrees / skills / checkpoints ────────────

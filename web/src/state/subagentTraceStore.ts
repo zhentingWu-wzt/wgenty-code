@@ -13,6 +13,9 @@ import type { TraceEvent } from "../api/types";
 export interface SubagentNode {
   nodeId: string;
   parentId: string | null;
+  /** Root daemon session id this subagent belongs to (used as the
+   *  `session_id` query param for the capability-scoped agent API). */
+  sessionId: string;
   label: string;
   status: string;
   round: number | null;
@@ -40,6 +43,7 @@ export const useSubagentTraceStore = create<SubagentTraceState>((set, get) => ({
     const node: SubagentNode = {
       nodeId: ev.node_id,
       parentId: ev.parent_id ?? null,
+      sessionId: ev.session_id,
       label: ev.label,
       status: ev.status,
       round: ev.round ?? null,
@@ -103,4 +107,29 @@ export function buildChildrenMap(
   }
 
   return { roots, children };
+}
+
+/**
+ * Reconstruct the ancestor chain of agent ids for `nodeId`, root-first
+ * (root ... target). Returns `[]` if the node is unknown. Used to navigate the
+ * capability-scoped agent API from the root session down to a target subagent:
+ * each level's navigation capability is discovered from its parent's local
+ * view, so the caller must walk the chain one `navigateAgentView` at a time.
+ */
+export function buildAncestorChain(
+  nodes: Map<string, SubagentNode>,
+  nodeId: string,
+): string[] {
+  const chain: string[] = [];
+  if (!nodes.has(nodeId)) return chain;
+  const seen = new Set<string>();
+  let n: SubagentNode | undefined = nodes.get(nodeId);
+  while (n && !seen.has(n.nodeId)) {
+    seen.add(n.nodeId);
+    chain.push(n.nodeId);
+    if (!n.parentId) break;
+    n = nodes.get(n.parentId);
+  }
+  chain.reverse(); // root-first
+  return chain;
 }

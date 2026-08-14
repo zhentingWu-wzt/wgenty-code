@@ -10,14 +10,16 @@ function seed() {
   const a = mgr.createLocalSession("Alpha");
   const b = mgr.createLocalSession("Beta");
   useSessionManager.getState().setActive(a);
-  useUiStore.setState({ openTabs: [a, b] });
+  // Mirror what startUiSync does in the real app: activating a session also
+  // sets the unified active tab.
+  useUiStore.setState({ openTabs: [a, b], activeTabId: a, subagentTabs: {} });
   return { a, b };
 }
 
 describe("SessionTabBar", () => {
   beforeEach(() => {
     useSessionManager.setState({ entries: {}, order: [], activeId: null });
-    useUiStore.setState({ openTabs: [] });
+    useUiStore.setState({ openTabs: [], activeTabId: null, subagentTabs: {} });
   });
 
   it("renders a tab per open session, marks the active one", () => {
