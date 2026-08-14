@@ -11,6 +11,10 @@ import {
   buildAncestorChain,
   useSubagentTraceStore,
 } from "../../state/subagentTraceStore";
+import {
+  directoryAncestorChain,
+  useSubagentDirectoryStore,
+} from "../../state/subagentDirectoryStore";
 import { useUiStore } from "../../state/uiStore";
 import { cn } from "../../lib/utils";
 import { Button } from "../../components/ui/button";
@@ -21,9 +25,11 @@ import { Button } from "../../components/ui/button";
  * Loads the subagent's local view (self + direct children) by walking the
  * capability-scoped agent API from the root session down to the target:
  *   getAgentSelf -> navigateAgentView (per ancestor level) -> target view.
- * The ancestor chain is reconstructed from the live trace tree; if the tree
- * has been cleared (turn ended), the chain is empty and the panel reports the
- * subagent as no longer live (capabilities are generation-bound and expired).
+ * The ancestor chain is reconstructed from the per-session directory tree
+ * (durable across turns, reloads, and trace-store clears); the live trace
+ * tree is only a fallback for nodes not yet present in the last directory
+ * poll. Only when both sources lack the node does the panel report it as not
+ * found in the session's agent tree.
  *
  * Self messages are rendered as a read-only transcript. Direct children are
  * listed and open their own detail tab on click. transcript/cancel are
@@ -72,12 +78,21 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
   const [cancelling, setCancelling] = useState(false);
 
   const load = useCallback(async () => {
-    const chain = buildAncestorChain(
-      useSubagentTraceStore.getState().nodes,
-      nodeId,
-    );
+    // Prefer the durable per-session directory tree; fall back to the volatile
+    // trace store when the directory has not loaded yet or is missing a
+    // just-spawned node (poll lag).
+    const dirTree =
+      useSubagentDirectoryStore.getState().bySession[rootSessionId]?.tree ??
+      null;
+    let chain = directoryAncestorChain(dirTree, nodeId);
     if (chain.length === 0) {
-      setError("该 subagent 的实时上下文已不可用（当前轮次已结束，capability 已过期）。");
+      chain = buildAncestorChain(
+        useSubagentTraceStore.getState().nodes,
+        nodeId,
+      );
+    }
+    if (chain.length === 0) {
+      setError("未在当前会话的代理树中找到该 subagent（会话可能已重启或记录已被清理）。");
       setView(null);
       setLoading(false);
       return;

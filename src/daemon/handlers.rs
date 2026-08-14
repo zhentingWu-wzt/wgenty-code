@@ -3050,6 +3050,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_directory_keeps_terminal_children_navigable_after_generation_reset() {
+        use crate::agent::SpawnChildRequest;
+        use crate::config::Settings;
+        use crate::daemon::models::{
+            AgentDirectoryResponse, CreateViewerResponse, LocalAgentViewResponse,
+        };
+        use crate::state::AppState;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        settings.storage.transcript.db_path = temp
+            .path()
+            .join("subagent-transcripts.db")
+            .to_string_lossy()
+            .into_owned();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let root = state.root_context("session").await.unwrap();
+        let child = state
+            .coordinator
+            .reserve_child(&root, SpawnChildRequest::new("child"))
+            .await
+            .unwrap()
+            .context;
+        state
+            .coordinator
+            .finish_child(
+                &child,
+                crate::agent::ChildTerminal::Completed {
+                    summary: "child finished".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let app = crate::daemon::routes::agent_routes().with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = reqwest::Client::new();
+
+        let viewer = client
+            .post(format!("{base_url}/api/v1/ui/viewers"))
+            .send()
+            .await
+            .unwrap()
+            .json::<CreateViewerResponse>()
+            .await
+            .unwrap()
+            .viewer_token;
+
+        // A new turn advances the generation, cancelling obsolete subtrees —
+        // but terminal records must stay visible and navigable (regression:
+        // detail panels must keep opening completed subagents after the turn
+        // ends; the records are not deleted by the reset).
+        let reset = client
+            .post(format!("{base_url}/api/v1/agents/generation/reset"))
+            .json(&serde_json::json!({"session_id": "session"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reset.status(), StatusCode::OK);
+
+        let response = client
+            .get(format!(
+                "{base_url}/api/v1/agents/directory?session_id=session"
+            ))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let directory = response.json::<AgentDirectoryResponse>().await.unwrap();
+        assert_eq!(directory.root.children.len(), 1);
+        assert_eq!(
+            directory.root.children[0].status,
+            crate::agent::AgentLifecycleStatus::Completed
+        );
+        assert_eq!(directory.root.children[0].agent_id, child.agent_id.as_str());
+
+        // Fresh navigation capability for the terminal child still resolves:
+        // /agents/self re-issues it and the scoped children endpoint accepts
+        // it, so detail tabs keep working past the turn boundary.
+        let self_response = client
+            .get(format!("{base_url}/api/v1/agents/self?session_id=session"))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(self_response.status(), StatusCode::OK);
+        let view = self_response
+            .json::<LocalAgentViewResponse>()
+            .await
+            .unwrap();
+        assert_eq!(view.children.len(), 1);
+        let cap = view.children[0].navigation_capability.clone();
+        let nav = client
+            .get(format!(
+                "{base_url}/api/v1/agents/children/{cap}?session_id=session"
+            ))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(nav.status(), StatusCode::OK);
+        let nav_view = nav.json::<LocalAgentViewResponse>().await.unwrap();
+        assert_eq!(nav_view.self_view.agent_id, child.agent_id.as_str());
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn agent_directory_endpoint_returns_empty_tree_for_root_only_session() {
         use crate::config::Settings;
         use crate::daemon::models::AgentDirectoryResponse;

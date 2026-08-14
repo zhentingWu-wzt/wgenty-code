@@ -371,3 +371,24 @@ cd web && npm run typecheck && npm run test && npm run lint
 - 轮询与 root_context 惰性创建副作用:directory 对从未见过的 session_id
   会 ensure_root(root_context 语义),与 get_agent_self 一致,无新增风险。
 - 回退:整链路纯增量,无现有行为依赖 directory;revert commit 即可。
+
+## 修订 1(2026-08-14,用户 bug 报告后)
+
+**Bug 现象**: 右侧列表(SSE push)里的 subagent 点击开 tab 报
+「实时上下文已不可用(capability 已过期)」。」
+
+**根因**: SubagentDetailPanel.tsx:75 的祖先链只从 trace store 取;
+subagentTraceStore.ts:62 的全局清树逻辑(异 session root 事件)、页面刷新、
+daemon 重启都会让链归零。后端记录仍在:generation 重置仅取消在跑子代理并
+持久化终态(task_group.rs 只清 groups 不清 records),导航对终态子代理仍可用。
+报错文案误导,真正故障是前端数据源选错。
+
+**修订内容**:
+1. Task 2 集成测试追加: reserve child -> reset_agent_generation ->
+   directory 仍含该 child(Cancelled/Done);对终态 child 的导航仍 200。
+2. Task 5 范围扩展: SubagentDetailPanel 祖先链改用 directory 树
+   (directory 未加载时回退 trace store 一次);两源皆空时报错文案改为
+   「未在当前会话的代理树中找到该 subagent(会话可能已重启或记录已被清理)」;
+   trace store 仅做 currentTool 实时装饰。
+3. 遗留(本期不做): daemon 重启后 records 全丢,跨重启历史详情需 SQLite
+   transcript 按 session 直查;聊天区内联子代理实时进度不在本期。

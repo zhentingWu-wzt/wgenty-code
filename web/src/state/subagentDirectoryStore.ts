@@ -77,3 +77,27 @@ export function flattenCount(tree: AgentDirectoryEntry | null): {
   if (tree) visit(tree);
   return { running, total };
 }
+
+/**
+ * Root-first path of agent ids from the tree's root down to `nodeId`
+ * (inclusive). Returns [] when the id is not present. This is the durable
+ * replacement for the trace-store `buildAncestorChain`: the directory tree
+ * survives turn boundaries, trace-store clears, and page reloads, so detail
+ * panels can navigate to completed subagents long after their turn ended.
+ */
+export function directoryAncestorChain(
+  tree: AgentDirectoryEntry | null,
+  nodeId: string,
+): string[] {
+  if (!tree) return [];
+  const visit = (node: AgentDirectoryEntry, path: string[]): string[] | null => {
+    const next = [...path, node.agent_id];
+    if (node.agent_id === nodeId) return next;
+    for (const child of node.children) {
+      const found = visit(child, next);
+      if (found) return found;
+    }
+    return null;
+  };
+  return visit(tree, []) ?? [];
+}
