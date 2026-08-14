@@ -340,7 +340,9 @@ impl EventSink for DaemonEventSink {
 // ── RootToolPort (Task 3) ────────────────────────────────────────────────────
 
 use crate::agent::runtime::ports::{InteractionPort, ToolPort, ToolRequest, ToolResponse};
-use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+#[cfg(test)]
+use crate::agent::SessionId;
+use crate::agent::{AgentExecutionContext, ToolContext, ToolInvocationId};
 use crate::api::ToolDefinition;
 use crate::daemon::state::DaemonState;
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
@@ -421,7 +423,13 @@ impl RootToolPort {
     /// effective working root (see [`DaemonState::effective_session_root`]):
     /// tool path resolution, the permission-policy boundary, and checkpoint
     /// storage all follow it.
-    pub fn new(state: &DaemonState, session_id: &str, run_id: &str, root: PathBuf) -> Self {
+    pub fn new(
+        state: &DaemonState,
+        session_id: &str,
+        run_id: &str,
+        root: PathBuf,
+        agent: AgentExecutionContext,
+    ) -> Self {
         let (checkpoint_manager, checkpoint_store) = state.checkpoints_for_project(&root);
         Self {
             registry: Arc::clone(&state.tool_registry),
@@ -429,8 +437,8 @@ impl RootToolPort {
             session_rules: state.tool_executor.session_rules_handle(),
             bridge: Arc::clone(&state.permission_bridge),
             interaction_bridge: Arc::clone(&state.interaction_bridge),
+            agent,
             permission_modes: state.permission_modes.clone(),
-            agent: AgentExecutionContext::root(SessionId::new(session_id)),
             root,
             checkpoint_manager,
             checkpoint_store,
@@ -1431,7 +1439,16 @@ async fn run_session_turn(
     // > the session's project > main working_dir). Tool path resolution, the
     // permission-policy boundary, and checkpoint storage all follow it.
     let root = state.effective_session_root(session_id).await;
-    let tools = RootToolPort::new(state, session_id, run_id, root.clone());
+    let tools = {
+        let agent = match state.root_context(session_id).await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                sink.emit(RuntimeEvent::StreamError(format!("root context: {e}")));
+                return false;
+            }
+        };
+        RootToolPort::new(state, session_id, run_id, root.clone(), agent)
+    };
 
     // 5. System prompt — same PromptContext chain as the headless runtime,
     // with cwd = the session's effective root. Retain `layers` for the
