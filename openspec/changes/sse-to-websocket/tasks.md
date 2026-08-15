@@ -14,11 +14,20 @@
      timers and tick fires promptly when idle; (2) self-review independence
      recorded here. Spec review: independent PASS (round 1). -->
 
+<!-- task 2.3 review: coordinator self-review (deviation accepted, same basis as
+     2.2 — subagent infra failures; user approved executing-plans). Findings:
+     auth semantics match design §3.1 (query-first, header fallback, empty-expected
+     guard, 401 body identical to require_auth); 4001 rotation guard on tick;
+     route before route_layers per design (in-handler auth, idle accounting is
+     2.4); comparison not constant-time but matches existing require_auth posture
+     (loopback + high-entropy token). Also reverted an unauthorized auth.rs
+     modification left by a misbehaving reviewer agent (disclosed in commit). -->
+
 ## 2. Daemon: WebSocket 推送端点
 
 - [x] 2.1 新增 `src/daemon/ws_push.rs`：单连接任务 `select!` 三路事件源（trace hub broadcast、全局事件 bus、上行控制消息），按 D2 信封协议序列化下行消息
 - [x] 2.2 实现 `subscribe`/`unsubscribe` 上行控制消息：per-session 订阅表、`after` 游标续传、`subscribed` 应答（含 latest_seq）、断开自动清理订阅
-- [ ] 2.3 WS 握手认证：`GET /api/v1/ws?token=…` 复用 require_auth 语义（query 参数提取适配），无效凭证与受保护路由同构拒绝；注册路由
+- [x] 2.3 WS 握手认证：`GET /api/v1/ws?token=…` 复用 require_auth 语义（query 参数提取适配），无效凭证与受保护路由同构拒绝；注册路由
 - [ ] 2.4 空闲关机计数：WS 连接存续期间计入 `active_clients`（握手成功计入、断开解除），heartbeat 信封按 keepalive 节拍发送
 - [ ] 2.5 daemon 集成测试：信封类型完整性、订阅游标续传（断开重订阅不丢不重）、认证拒绝、SSE 与 WS 客户端并存等价
 
