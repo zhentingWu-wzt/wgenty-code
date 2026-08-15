@@ -197,12 +197,13 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
         )
-        // WebSocket push channel. Registered BEFORE the auth/activity
-        // route_layers: browser WebSocket APIs cannot set headers, so this
-        // endpoint authenticates in-handler (query `token` first, then the
-        // Authorization header fallback) with the same rejection shape as
-        // `require_auth`. Idle-shutdown accounting is task 2.4 (register on
-        // upgrade), so it must not run through `touch_activity` here.
+        // WebSocket push channel. Sits behind the auth/activity route_layers
+        // like every protected route (axum wraps routes registered before a
+        // `route_layer`); `require_auth` accepts the `?token=` query fallback
+        // (design §3.1) because browser WebSocket APIs cannot set headers,
+        // and the handler re-checks credentials in-handler with the same
+        // rejection shape. Idle-shutdown accounting registers the connection
+        // as an active client on upgrade (task 2.4).
         .route("/api/v1/ws", get(ws_push::ws_handler))
         // Session server-side runs (spawn / cancel an agent turn, live SSE events)
         .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
