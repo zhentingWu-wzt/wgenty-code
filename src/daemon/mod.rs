@@ -21,6 +21,7 @@ pub(crate) mod session_admin;
 pub(crate) mod skills_api;
 pub mod state;
 pub(crate) mod worktrees;
+pub(crate) mod ws_push;
 
 use crate::state::AppState;
 use axum::extract::DefaultBodyLimit;
