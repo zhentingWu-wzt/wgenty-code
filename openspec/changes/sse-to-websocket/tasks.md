@@ -1,6 +1,6 @@
 ## 1. Daemon: 会话事件订阅内部 API
 
-- [ ] 1.1 从 `GET /sessions/:id/events` SSE handler 中抽出「按 session 订阅事件（可选 after 游标）」的内部 API（同一事件 buffer 与 replay 语义），SSE handler 改为调用该 API，行为不变
+- [x] 1.1 从 `GET /sessions/:id/events` SSE handler 中抽出「按 session 订阅事件（可选 after 游标）」的内部 API（同一事件 buffer 与 replay 语义），SSE handler 改为调用该 API，行为不变
 - [ ] 1.2 为抽出的内部 API 补充/迁移单元测试（游标续传、sync_lost、多订阅者）
 
 ## 2. Daemon: WebSocket 推送端点
