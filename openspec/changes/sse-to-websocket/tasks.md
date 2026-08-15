@@ -41,19 +41,37 @@
 
 ## 3. Web: WS 通道模块
 
-- [ ] 3.1 新增 `web/src/api/wsChannel.ts`：单例连接、指数退避重连、`resolveDaemonDirect` 直连优先 + 同源回退（`ws://` URL 派生）、按 type 分发事件总线
-- [ ] 3.2 引用计数订阅 API：`subscribeSession(sessionId, handler)` 返回退订函数；重连后按各订阅 cursor 自动重新 subscribe；trace 缺口经 `traceReplay`（REST）补齐
-- [ ] 3.3 单元测试：连接/重连状态机、订阅引用计数、游标续传去重、退订后不收事件
+- [x] 3.1 新增 `web/src/api/wsChannel.ts`：单例连接、指数退避重连、`resolveDaemonDirect` 直连优先 + 同源回退（`ws://` URL 派生）、按 type 分发事件总线
+- [x] 3.2 引用计数订阅 API：`subscribeSession(sessionId, handler)` 返回退订函数；重连后按各订阅 cursor 自动重新 subscribe；trace 缺口经 `traceReplay`（REST）补齐
+- [x] 3.3 单元测试：连接/重连状态机、订阅引用计数、游标续传去重、退订后不收事件
+
+<!-- tasks 3.1-3.3 (f9c195ff): traceReplay gap fill lands via the channel's
+     onReconnected callback (4.2 wires it in usePermissionTrace) — same
+     mechanics as the task text, split at the natural layer boundary. -->
 
 ## 4. Web: 消费点切换
 
-- [ ] 4.1 `App.tsx` heartbeat：EventSource 替换为 WS 连接存续（连接即心跳），清理 heartbeat SSE 代码路径
-- [ ] 4.2 `usePermissionTrace`：SSE 解析循环替换为 `trace` 信封订阅；冷启动 replay 逻辑保持
-- [ ] 4.3 `useContinuationObserver`：`globalEvents` SSE 替换为 `global` 信封订阅，`task_group_result` → `observeDaemonRun` 行为不变
-- [ ] 4.4 `runSessionTurn`/`observeDaemonRun`：`sessionEvents` SSE 替换为 `subscribeSession(daemonId, after=lastSeq)`，`sync_lost` 与 stop 语义保持；`fetchStream` SSE 路径保留不删
-- [ ] 4.5 适配现有 web 测试（4 个消费点的 mock 从 SSE 假流改为 WS 信封假流）
+- [x] 4.1 `App.tsx` heartbeat：EventSource 替换为 WS 连接存续（连接即心跳），清理 heartbeat SSE 代码路径
+- [x] 4.2 `usePermissionTrace`：SSE 解析循环替换为 `trace` 信封订阅；冷启动 replay 逻辑保持
+- [x] 4.3 `useContinuationObserver`：`globalEvents` SSE 替换为 `global` 信封订阅，`task_group_result` → `observeDaemonRun` 行为不变
+- [x] 4.4 `runSessionTurn`/`observeDaemonRun`：`sessionEvents` SSE 替换为 `subscribeSession(daemonId, after=lastSeq)`，`sync_lost` 与 stop 语义保持；`fetchStream` SSE 路径保留不删
+- [x] 4.5 适配现有 web 测试（4 个消费点的 mock 从 SSE 假流改为 WS 信封假流）
+
+<!-- tasks 4.1-4.5 (28a797c6): after= cursor resume now lives inside wsChannel
+     (auto-resubscribe from the tracked cursor); awaitTurnOverWs adds a 60s
+     sustained-outage watchdog as the SSE eventless-drop guard's successor.
+     sessionRunner tests drive a mocked wsChannel with deterministic delivery. -->
 
 ## 5. 构建设施与验收
 
-- [ ] 5.1 `vite.config.ts` 代理增加 `/api` 的 `ws: true` 转发；验证 dev 直连与代理两条 WS 路径
+- [x] 5.1 `vite.config.ts` 代理增加 `/api` 的 `ws: true` 转发；验证 dev 直连与代理两条 WS 路径
 - [ ] 5.2 端到端验收：单条 WS 承载全部推送（devtools 无 SSE 连接）；subagent 密集场景无 `stream connect timed out`；daemon 重启后自动重连恢复；SSE 端点仍可独立工作
+
+<!-- 5.1 (a6e58d43): proxyReqWs injects the token (upgrades never emit
+     proxyReq). 5.2 automated portions verified: real-daemon E2E (isolated
+     HOME) — query-token handshake 101 / wrong+missing 401; SSE /events
+     independently serves 200; reconnect covered by wsChannel unit tests +
+     wire-level integration tests; full gates green (cargo 1738 lib + 200
+     integration, web 138, fmt/clippy/tsc/eslint). REMAINING (needs a browser
+     session): devtools shows zero SSE connections with the app open;
+     subagent-dense scenario stays free of `stream connect timed out`. -->
