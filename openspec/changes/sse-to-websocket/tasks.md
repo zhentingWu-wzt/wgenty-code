@@ -37,7 +37,7 @@
 - [x] 2.2 实现 `subscribe`/`unsubscribe` 上行控制消息：per-session 订阅表、`after` 游标续传、`subscribed` 应答（含 latest_seq）、断开自动清理订阅
 - [x] 2.3 WS 握手认证：`GET /api/v1/ws?token=…` 复用 require_auth 语义（query 参数提取适配），无效凭证与受保护路由同构拒绝；注册路由
 - [x] 2.4 空闲关机计数：WS 连接存续期间计入 `active_clients`（握手成功计入、断开解除），heartbeat 信封按 keepalive 节拍发送
-- [ ] 2.5 daemon 集成测试：信封类型完整性、订阅游标续传（断开重订阅不丢不重）、认证拒绝、SSE 与 WS 客户端并存等价
+- [x] 2.5 daemon 集成测试：信封类型完整性、订阅游标续传（断开重订阅不丢不重）、认证拒绝、SSE 与 WS 客户端并存等价
 
 ## 3. Web: WS 通道模块
 
