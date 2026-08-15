@@ -1971,6 +1971,116 @@ mod tests {
         assert_eq!(seam, 10);
     }
 
+    /// Cursor resume (`after=3`): replay covers `seq > after` only, then the
+    /// live tail continues from `seam_seq` with no duplicate and no gap.
+    #[test]
+    fn subscribe_cursor_replay_seams_into_live_without_gap_or_dup() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(8)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 3..=6 {
+                buf.push(ev(seq));
+            }
+        }
+        let (hub, _keep) = tokio::sync::broadcast::channel(16);
+
+        let mut sub = subscribe_session_events(Some(3), &buffer, &hub);
+        let replayed: Vec<u64> = match &sub.catch_up {
+            CatchUp::Replay(events) => events.iter().map(|e| e.seq).collect(),
+            other => panic!("expected Replay after cursor resume, got {other:?}"),
+        };
+        assert_eq!(replayed, vec![4, 5, 6]);
+        assert_eq!(sub.seam_seq, 6);
+
+        // Live publishes after subscription. A duplicate of the seam event
+        // must be filtered out; events after the seam must flow through.
+        hub.send(ev(6)).expect("hub send");
+        hub.send(ev(7)).expect("hub send");
+        hub.send(ev(8)).expect("hub send");
+
+        let mut live = Vec::new();
+        while let Ok(event) = sub.live.try_recv() {
+            if event.seq > sub.seam_seq {
+                live.push(event.seq);
+            }
+        }
+        assert_eq!(live, vec![7, 8]);
+
+        // Seam invariant: replay ∪ live is exactly 4..=8 — contiguous,
+        // nothing duplicated, nothing dropped.
+        let mut combined = replayed;
+        combined.extend(live);
+        assert_eq!(combined, vec![4, 5, 6, 7, 8]);
+    }
+
+    /// Cursor slipped out of the replay window → `SyncLost{latest_seq}` with
+    /// the seam advanced to `latest_seq`; an empty buffer (fresh daemon)
+    /// reports `latest_seq: 0`.
+    #[test]
+    fn subscribe_sync_lost_on_stale_cursor_and_empty_buffer() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 3..=6 {
+                buf.push(ev(seq));
+            }
+        }
+        let (hub, _keep) = tokio::sync::broadcast::channel(16);
+
+        // `after = 1`: 1 + 1 < oldest_seq(3) → the cursor is gone.
+        let sub = subscribe_session_events(Some(1), &buffer, &hub);
+        assert!(matches!(sub.catch_up, CatchUp::SyncLost { latest_seq: 6 }));
+        assert_eq!(sub.seam_seq, 6);
+
+        // Empty buffer → nothing to resume from.
+        let empty = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        let sub = subscribe_session_events(Some(9), &empty, &hub);
+        assert!(matches!(sub.catch_up, CatchUp::SyncLost { latest_seq: 0 }));
+        assert_eq!(sub.seam_seq, 0);
+    }
+
+    /// Two subscribers on the same hub see the identical live sequence and
+    /// draining one never consumes the other's events.
+    #[test]
+    fn multiple_subscribers_receive_identical_independent_sequence() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(8)));
+        let (hub, _keep) = tokio::sync::broadcast::channel(16);
+
+        let mut sub_a = subscribe_session_events(None, &buffer, &hub);
+        let mut sub_b = subscribe_session_events(None, &buffer, &hub);
+        assert!(matches!(sub_a.catch_up, CatchUp::LiveOnly));
+        assert!(matches!(sub_b.catch_up, CatchUp::LiveOnly));
+
+        for seq in 1..=5 {
+            hub.send(ev(seq)).expect("hub send");
+        }
+
+        let mut a_seqs = Vec::new();
+        while let Ok(event) = sub_a.live.try_recv() {
+            a_seqs.push(event.seq);
+        }
+        let mut b_seqs = Vec::new();
+        while let Ok(event) = sub_b.live.try_recv() {
+            b_seqs.push(event.seq);
+        }
+
+        assert_eq!(a_seqs, vec![1, 2, 3, 4, 5]);
+        assert_eq!(b_seqs, vec![1, 2, 3, 4, 5]);
+    }
+
+    /// On an empty buffer `plan_lagged_resync` has no newer cursor to jump to,
+    /// so it keeps the current seam and reports that as `latest_seq`.
+    #[test]
+    fn lagged_resync_on_empty_buffer_keeps_seam() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        let mut seam = 7;
+        let sync = plan_lagged_resync("s", &mut seam, &buffer);
+        assert_eq!(sync.kind, SessionEventKind::SyncLost);
+        assert_eq!(sync.data["reason"], "lagged");
+        assert_eq!(sync.data["latest_seq"], 7);
+        assert_eq!(seam, 7);
+    }
+
     #[test]
     fn buffer_evicts_oldest_when_full() {
         let mut buf = SessionEventBuffer::new(3);
