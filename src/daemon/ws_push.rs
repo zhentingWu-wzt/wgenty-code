@@ -7,8 +7,8 @@
 //! write half so serialization/sending never blocks a `select!` branch.
 //!
 //! Task 2.1 ships the skeleton only: the per-connection session subscription
-//! table is an empty placeholder and subscribe/unsubscribe handling lands in
-//! task 2.2; route registration and auth land in task 2.3.
+//! table is not implemented yet (it lands with subscribe/unsubscribe handling
+//! in task 2.2); route registration and auth land in task 2.3.
 
 use crate::daemon::global_events::GlobalEvent;
 use crate::daemon::run_loop::SessionEvent;
@@ -56,14 +56,6 @@ pub(crate) enum ClientMessage {
     },
     /// Unsubscribe from a session.
     Unsubscribe { session_id: String },
-}
-
-/// Per-connection session subscription table. Task 2.2 fills this in with the
-/// real `HashMap<SessionId, SubState>` and subscribe/unsubscribe handling;
-/// task 2.1 leaves it empty, so the pump forwards no session events yet.
-#[derive(Default)]
-struct SessionSubscriptions {
-    _task_2_2: (),
 }
 
 /// `GET /api/v1/ws` handler (design §3.1/§4).
@@ -152,17 +144,15 @@ async fn event_pump(
     outbound_tx: mpsc::Sender<Message>,
     heartbeat: Duration,
 ) {
-    let subscriptions = SessionSubscriptions::default();
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
 
     loop {
         tokio::select! {
             res = session_rx.recv() => match res {
                 Ok(ev) => {
-                    // Task 2.2: filter by the subscription table and dedup
-                    // `seq <= seam_seq`. Task 2.1 keeps the table empty, so
-                    // every session event is dropped until subscribe lands.
-                    let _ = (&subscriptions, &ev);
+                    // Task 2.2: subscription table lands here; all session
+                    // events are dropped until then.
+                    let _ = ev;
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     // Task 2.2: single-connection sync_lost via plan_lagged_resync.
@@ -367,8 +357,8 @@ mod tests {
     }
 
     /// 连接循环（select 五路）的构造 + 消息出队顺序：不起真 WS 连接，用
-    /// mpsc/broadcast 驱动。trace → global 依发送顺序出队；session（空订阅表）
-    /// 与 ctrl（2.2 才实现）为无操作，不产生出站消息。
+    /// mpsc/broadcast 驱动。trace → global 依发送顺序出队；session（2.2 才有
+    /// 订阅表）与 ctrl（2.2 才实现）为无操作，不产生出站消息。
     #[tokio::test]
     async fn event_pump_forwards_trace_then_global_in_order() {
         let (session_tx, session_rx) = broadcast::channel(16);
@@ -407,8 +397,8 @@ mod tests {
             )
         );
 
-        // 上行控制消息（2.2 才实现 subscribe/unsubscribe）与空订阅表下的
-        // session 事件都应被安静消费，不崩、不额外出站。
+        // 上行控制消息（2.2 才实现 subscribe/unsubscribe）与 session 事件
+        //（2.2 才有订阅表）都应被安静消费，不崩、不额外出站。
         ctrl_tx
             .send(ClientMessage::Subscribe {
                 session_id: "s1".to_string(),
