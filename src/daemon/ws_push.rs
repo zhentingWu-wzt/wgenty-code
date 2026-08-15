@@ -134,6 +134,36 @@ pub(crate) fn authorize_ws(expected: &str, query_token: Option<&str>, headers: &
     provided == Some(expected)
 }
 
+/// Counts an authenticated ws connection as an active thin client so the
+/// idle-shutdown timer keeps deferring while the connection is open (task
+/// 2.4, design §3.1). Created only after [`authorize_ws`] passes — a
+/// rejected handshake is not a client. `Drop` unregisters on every exit
+/// path (socket error, pump exit, panic unwind). When registration was
+/// refused (daemon already shutting down) drop is a no-op, so the count
+/// never underflows.
+struct ActiveClientGuard {
+    state: Arc<DaemonState>,
+    registered: bool,
+}
+
+impl ActiveClientGuard {
+    fn new(state: &Arc<DaemonState>) -> Self {
+        let registered = state.active_clients.register_client();
+        Self {
+            state: state.clone(),
+            registered,
+        }
+    }
+}
+
+impl Drop for ActiveClientGuard {
+    fn drop(&mut self) {
+        if self.registered {
+            self.state.active_clients.unregister_client();
+        }
+    }
+}
+
 pub(crate) async fn ws_handler(
     State(state): State<Arc<DaemonState>>,
     Query(query): Query<WsAuthQuery>,
@@ -149,8 +179,14 @@ pub(crate) async fn ws_handler(
             .into_response();
     }
 
+    let active_client = ActiveClientGuard::new(&state);
     ws.max_message_size(16 * 1024 * 1024)
-        .on_upgrade(move |socket| connection_loop(state, Arc::from(expected.as_str()), socket))
+        .on_upgrade(move |socket| {
+            // Held for the connection's lifetime; dropped when this future
+            // ends, releasing the active-client count.
+            let _active_client = active_client;
+            connection_loop(state, Arc::from(expected.as_str()), socket)
+        })
 }
 
 /// Per-connection task: split the socket into a writer half (serialized
@@ -1137,5 +1173,94 @@ mod tests {
         // 未初始化（期望值为空）：即使凭证匹配也拒绝一切
         assert!(!authorize_ws("", Some(""), &HeaderMap::new()));
         assert!(!authorize_ws("", None, &bearer("")));
+    }
+
+    /// 2.4：guard 在连接存续期间计入 active_clients，任意退出路径（含
+    /// panic unwind）Drop 解除；注册被拒（daemon 已在关闭中）时 Drop 不
+    /// 下溢计数。
+    #[tokio::test]
+    async fn active_client_guard_counts_connection_lifetime() {
+        let state = test_state().await;
+        assert_eq!(state.active_clients.client_count(), 0);
+        {
+            let _guard = ActiveClientGuard::new(&state);
+            assert_eq!(state.active_clients.client_count(), 1);
+            let _second = ActiveClientGuard::new(&state);
+            assert_eq!(state.active_clients.client_count(), 2);
+        }
+        assert_eq!(
+            state.active_clients.client_count(),
+            0,
+            "两个 guard 全部 Drop 后归零"
+        );
+
+        state.active_clients.initiate_shutdown();
+        {
+            let refused = ActiveClientGuard::new(&state);
+            assert!(!refused.registered, "关闭中的注册被拒");
+            assert_eq!(state.active_clients.client_count(), 0);
+        }
+        assert_eq!(
+            state.active_clients.client_count(),
+            0,
+            "被拒注册的 guard Drop 不得下溢"
+        );
+    }
+
+    /// Wire-level regression (production path): axum `route_layer` wraps
+    /// routes registered BEFORE the layer call, so `/api/v1/ws` sits behind
+    /// the `require_auth` middleware like every protected route. A browser
+    /// handshake carries the token only as `?token=` (no Authorization
+    /// header), so the middleware must accept the query-token fallback
+    /// (design §3.1) or the handshake 401's before the in-handler auth can
+    /// run. Drives the real assembled router over a raw TCP socket; task
+    /// 2.5 adds the full tungstenite coverage.
+    #[tokio::test]
+    async fn ws_query_token_handshake_over_real_wire() {
+        use crate::daemon::routes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let state = test_state().await;
+        state.set_api_token("wstok".to_string());
+        let (health, protected) = routes::create_routers(state, "wstok".to_string());
+        let app = health.merge(protected);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app.into_make_service()).await;
+        });
+
+        let handshake = |token: &str| {
+            let path = if token.is_empty() {
+                "/api/v1/ws".to_string()
+            } else {
+                format!("/api/v1/ws?token={token}")
+            };
+            async move {
+                let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                let request = format!(
+                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\n\
+                     Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                     Sec-WebSocket-Version: 13\r\n\r\n"
+                );
+                stream.write_all(request.as_bytes()).await.unwrap();
+                let mut buf = vec![0u8; 1024];
+                let n = stream.read(&mut buf).await.unwrap();
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                head.split_whitespace()
+                    .nth(1)
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(0)
+            }
+        };
+
+        // Browser path: query token only → upgrade succeeds.
+        assert_eq!(handshake("wstok").await, 101);
+        // No credentials → rejected before upgrade.
+        assert_eq!(handshake("").await, 401);
+        // Wrong token → rejected with the same isomorphic 401.
+        assert_eq!(handshake("wrong").await, 401);
+
+        server.abort();
     }
 }
