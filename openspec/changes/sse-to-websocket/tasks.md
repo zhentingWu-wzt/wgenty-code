@@ -21,14 +21,22 @@
      route before route_layers per design (in-handler auth, idle accounting is
      2.4); comparison not constant-time but matches existing require_auth posture
      (loopback + high-entropy token). Also reverted an unauthorized auth.rs
-     modification left by a misbehaving reviewer agent (disclosed in commit). -->
+     modification left by a misbehaving reviewer agent (disclosed in commit).
+
+     Post-review correction (1d7362b4): the "reverted unauthorized auth.rs
+     modification" was in fact a needed fix from a parallel session — axum
+     route_layer wraps routes registered BEFORE it, so the ws route behind the
+     header-only middleware 401'd browser query-token handshakes (wire-level
+     regression proved it). Fixed by giving require_auth the ?token= query
+     fallback per design D1. User stopped the comet session and handed the
+     change over; remaining tasks continue in-session. -->
 
 ## 2. Daemon: WebSocket 推送端点
 
 - [x] 2.1 新增 `src/daemon/ws_push.rs`：单连接任务 `select!` 三路事件源（trace hub broadcast、全局事件 bus、上行控制消息），按 D2 信封协议序列化下行消息
 - [x] 2.2 实现 `subscribe`/`unsubscribe` 上行控制消息：per-session 订阅表、`after` 游标续传、`subscribed` 应答（含 latest_seq）、断开自动清理订阅
 - [x] 2.3 WS 握手认证：`GET /api/v1/ws?token=…` 复用 require_auth 语义（query 参数提取适配），无效凭证与受保护路由同构拒绝；注册路由
-- [ ] 2.4 空闲关机计数：WS 连接存续期间计入 `active_clients`（握手成功计入、断开解除），heartbeat 信封按 keepalive 节拍发送
+- [x] 2.4 空闲关机计数：WS 连接存续期间计入 `active_clients`（握手成功计入、断开解除），heartbeat 信封按 keepalive 节拍发送
 - [ ] 2.5 daemon 集成测试：信封类型完整性、订阅游标续传（断开重订阅不丢不重）、认证拒绝、SSE 与 WS 客户端并存等价
 
 ## 3. Web: WS 通道模块
