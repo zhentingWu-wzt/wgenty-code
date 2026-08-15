@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (Daemon lifecycle)
+
+- 双实例竞态：旧 daemon 退出时无条件删除 `daemon.token` / `daemon.json`，会把仍在
+  运行的新实例的鉴权文件删掉（token 只在启动时写一次，不会重写）——web/TUI 全部
+  401 表现为"无法连接 daemon"，且因无 client 连接触发空闲关闭把新实例也杀掉。
+  三处清理点（daemon 退出、TUI 内嵌 daemon 退出、`kill_predecessor` 强杀后）均改为
+  所有权检查：仅当文件内容仍属于本实例（token 匹配 / pid 匹配）才删除。
+- vite dev proxy 读取 token 增加兜底：`daemon.token` 缺失时回退读 `daemon.json`
+  里的 token（discovery 文件由存活 daemon 的心跳每 30s 重写，更可靠）。
+- 优雅关闭永久悬挂：hyper 的 graceful shutdown 会等在途连接结束，而 SSE 长连接
+  （session events、trace 流、client 心跳）按设计永不主动结束——收到关闭请求后
+  进程变成僵尸（日志有 "initiating graceful shutdown" 但进程不退，旧实例堆积）。
+  现对排空阶段加 5s 兜底，超时强制退出。
+- `kill_predecessor` 误判旧实例已停止：此前以"健康探测失败"判定 down，但优雅关闭
+  中的 daemon 会立即停止 accept（探测失败）而进程仍在排空——于是提前宣告成功，
+  从不走到 SIGTERM/SIGKILL 升级，僵尸得以堆积。现改为同时确认 PID 已退出
+  （`kill -0` / `tasklist`），否则照常升级强杀。
+
+### Fixed (Subagent 结果回传)
+
+- **subagent 结果不实时通知主 agent（web 场景）**：`task` 工具是异步派发，
+  子代理终态结果汇入 coordinator 的 task-group 后，此前只有 TUI 客户端
+  轮询 `POST /agents/task-groups/claim` 来领取并发起综合轮；web 没有任何
+  claim 调用，daemon 自身的 run loop 也不感知 task-group——结果永远滞留，
+  主 agent 直到用户再发消息也拿不到。现改为 daemon 侧闭环：
+  - coordinator 在 group 就绪（全部直接子代理结果齐）时通过 broadcast
+    发出就绪 ping；
+  - daemon 的 continuation 调度器收到 ping 后自行 claim 就绪组并发起
+    synthesis 轮（`<child-results>` 消息格式与 TUI 一致）；会话正忙时跳过，
+    由 RunFinished 事件兜底重查；尊重 failed-save 屏障；
+  - claim 后照常广播 `task_group_result` 全局事件；
+  - web 新增 `useContinuationObserver`：订阅全局事件流
+    `GET /api/v1/events`，收到 `task_group_result` 后通过
+    `observeDaemonRun` 实时附着该会话的事件流渲染综合轮（此前 web 只渲染
+    自己发起的 run，daemon 发起的轮次刷新前不可见）。
+  TUI 的轮询路径保留，与 daemon claim 之间由 exactly-once 语义保证不重复。
+
+### Fixed (Web 通讯韧性)
+
+- **页面彻底卡死的传输层根因**：旧代码每轮 turn 泄漏一条 SSE 长连接（reader 从不
+  cancel），加上 HMR websocket、心跳、两条 trace 流，常驻连接累积到 Chrome 单域名
+  6 条 HTTP/1.1 上限后，所有新请求（发送、停止、健康检查）被浏览器永久排队——
+  表现为"发消息没响应、点停止也没反应"。修复组合：
+  - 长连接 SSE（session events、trace 流）改为**直连 daemon origin**
+    （`127.0.0.1:8371`，经 vite 新中间件 `/__daemon-info` 下发端口和 token），
+    与页面 origin 的连接配额分离；短请求仍走 vite 代理；
+  - 取消 session-scoped trace 流，冷启动恢复改用一次性 REST
+    `GET /subagents/trace/replay`（daemon 新增端点），常驻流每页再减一条；
+  - turn 的 reader 在结束时正确 cancel，不再泄漏连接；
+  - `runSession` / 订阅 fetch 增加 15s 超时兜底，被饿死的请求报可感知错误而非永久悬挂。
+  - 直连 daemon 被浏览器拦截（CORS / Private Network Access）时回退同源 vite 代理，
+    仅网络层 TypeError 触发回退，用户停止与看门狗 abort 仍照常生效。
+  - **`usePermissionTrace` 的 trace 流在每次会话切换时泄漏一条连接**（effect 依赖
+    `activeId`，cleanup 只翻转标记位，而 keepalive-only 流的 `reader.read()` 永不
+    返回，旧连接永久存活）——切换 4-5 次会话后直连 origin 的 6 连接预算被泄漏流
+    占满，发消息时 `sessionEvents` 连接被浏览器排队，15s 看门狗报
+    "stream connect timed out"。修复：流 effect 只依赖 `client`，cleanup 用
+    AbortController 真正中止在途 fetch（`traceStream` 新增 signal 参数）；会话切换
+    的一次性 replay 拆成独立 effect，不再重启流。
+- **"Failed to fetch" 的 daemon 侧根因**：CORS origin 白名单只写了
+  localhost/127.0.0.1:3000/5173，而 vite 常以 `--host` 运行——端口被占时用 5174、
+  或经局域网 IP / 主机名访问时，浏览器直接拦死跨域请求（网络层 TypeError，
+  daemon 日志里看不到任何请求）。daemon 仅监听回环且所有接口都要 bearer token，
+  origin 白名单无安全收益，已改为允许任意 origin 并应答
+  `Access-Control-Allow-Private-Network: true`（Chrome PNA 预检要求）。
+- 停止按钮失效：`stopRunning` 此前只 abort 一个未接入任何 fetch 的控制器且不清
+  `isRunning`；现在 abort 信号接入 subscribe/run 请求，且立即停止运行状态。
+- 每个 turn 结束后 UI 永远卡在 running：重读循环改为内层 `for(;;)` 后漏了在
+  `turn_done`/`turn_error` 时跳出——测试假流会关闭所以单测全过，但真实 daemon 的
+  SSE 在 turn 结束后保持打开（15s keepalive），读循环永远阻塞在下一次 `read()`。
+  现已在收到终态事件处理完缓冲后立即跳出，并新增"流不关闭也能完成 turn"的回归测试。
+
+- 发消息偶发"没有响应"：`runSessionTurn` 改为**先订阅事件流再 POST /run**（此前顺序
+  相反，快速 turn 会在订阅前的间隙内完成，live-only 流漏掉 `turn_done`，UI 永远卡在
+  running）；事件流中途断开后按 `after=<lastSeq>` 重连续传（daemon 重放缺失事件），
+  连续空断连退避后抛出可感知的 transport 错误；按 `run_id` 过滤旧 run 的残留事件、
+  按 `seq` 去除重放接缝重复；`sync_lost` 控制帧对齐游标。
+- 审批弹窗刷新/重连后消失、daemon 无限期等待：trace 流每次（重）连成功后拉取一次
+  `GET /tools/pending-permissions` 重新填充弹窗（`usePermissionTrace`）。
+- "Always allow" 点了仍反复弹：web 此前不传 `session_rule`，daemon 无法持久化规则；
+  `resolveSubagentPermission` 现在携带 `session_rule`。
+
+### Changed (Daemon lifecycle)
+
+- daemon 空闲自动关闭改为活动时间驱动：无 thin client 心跳连接**且** 300s 内无任何
+  已认证 API 请求时优雅退出（此前为最后客户端断开后 10s，且从未有客户端连过的
+  daemon 永不退出）。活动时间窗口从 daemon 启动起算，孤儿 daemon 也会自动回收；
+  公共 `/health` 探测不计为活动。
+- `wgenty-code daemon` 启动时若发现仍在运行的旧 daemon（discovery 文件 + 健康探测
+  确认），先经 `POST /api/v1/shutdown` 优雅停止，无响应则按 PID 升级 SIGTERM →
+  SIGKILL，保证每次启动都运行当前二进制，不再复用陈旧的常驻进程。
+- TUI 现在也算 thin client：启动后经 `DaemonClient::spawn_heartbeat_keeper` 持有
+  `/api/v1/client/heartbeat` 连接（断线指数退避重连），挂着的 TUI 即使不发请求
+  也会阻止 daemon 空闲关闭；TUI 退出后连接断开，空闲计时才开始。
+
+### Fixed (Subagent trace)
+
+- `task` 工具保存 transcript 时持久化终态 `summary`（此前硬编码 `None`），冷启动
+  trace 回放（`trace_event_from_header`）现在能把子代理结果文本送达重连/刷新后的
+  SSE 客户端；端到端验证：live 终态事件与 session-scoped 回放均携带 `result`。
+
 ### Added (Daemon lifecycle)
 
 - CLI 新增 `wgenty-code daemon status` / `wgenty-code daemon stop`：status 输出

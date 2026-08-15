@@ -23,10 +23,22 @@ function readDaemonToken(): string | null {
   // or stale file simply means the browser will see 401s until the daemon runs.
   const tokenPath = resolve(homedir(), ".wgenty-code", "daemon.token");
   try {
-    return readFileSync(tokenPath, "utf8").trim();
+    const token = readFileSync(tokenPath, "utf8").trim();
+    if (token) return token;
   } catch {
-    return null;
+    // Fall through to the discovery file.
   }
+  // Fallback: the discovery file (daemon.json) also carries the token and is
+  // rewritten by the live daemon's heartbeat every 30s — it survives races
+  // where a shutting-down instance removed the standalone token file.
+  const discoveryPath = resolve(homedir(), ".wgenty-code", "daemon.json");
+  try {
+    const parsed = JSON.parse(readFileSync(discoveryPath, "utf8"));
+    if (typeof parsed.token === "string" && parsed.token) return parsed.token;
+  } catch {
+    // Missing or corrupt — no token available.
+  }
+  return null;
 }
 
 function readDaemonPort(): number {
@@ -47,7 +59,30 @@ function readDaemonPort(): number {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      // `GET /__daemon-info` → { port, token } read fresh from the daemon's
+      // state files. The page uses this to open its LONG-LIVED SSE streams
+      // directly against the daemon origin (127.0.0.1:<port>) instead of
+      // through this dev server: browsers cap HTTP/1.1 at ~6 connections per
+      // origin, and every permanent stream (HMR websocket, heartbeat, trace
+      // SSE, session SSE) through the proxy eats one — a few tabs/turns
+      // starve every other request ("send does nothing"). Short API calls
+      // still go through the proxy. The token never leaves the loopback
+      // machine (same trust boundary as desktop's fetch injection).
+      name: "daemon-info",
+      configureServer(server) {
+        server.middlewares.use("/__daemon-info", (_req, res) => {
+          res.setHeader("content-type", "application/json");
+          res.end(
+            JSON.stringify({ port: readDaemonPort(), token: readDaemonToken() }),
+          );
+        });
+      },
+    },
+  ],
   server: {
     port: 5173, // 5173 is already in the daemon's CORS allow-list (src/daemon/mod.rs).
     proxy: {

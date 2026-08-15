@@ -351,6 +351,13 @@ pub struct AgentCoordinator {
     /// cannot spawn children. The persistent root is never recorded here and
     /// therefore resolves to the `GeneralPurpose` contract (can spawn).
     node_types: Arc<RwLock<HashMap<(SessionId, AgentId), crate::org_graph::NodeType>>>,
+    /// Fan-out for "a task group just became ready (all direct-child results
+    /// recorded)". Carries the session id. The daemon's continuation scheduler
+    /// subscribes and turns ready root groups into synthesis runs, so clients
+    /// don't have to poll `claim_ready_root_group` to notice completed
+    /// subagent work. Pings are hints, not state: receivers re-verify
+    /// readiness by claiming, so lagging or loss is harmless.
+    ready_group_tx: tokio::sync::broadcast::Sender<SessionId>,
 }
 
 impl AgentCoordinator {
@@ -374,7 +381,15 @@ impl AgentCoordinator {
                 &crate::config::agent::SubagentLimits::default(),
             )),
             node_types: Arc::new(RwLock::new(HashMap::new())),
+            ready_group_tx: tokio::sync::broadcast::channel(64).0,
         }
+    }
+
+    /// Subscribe to task-group readiness pings (see the `ready_group_tx`
+    /// field docs). The receiver lagging only means redundant pings are
+    /// dropped — readiness is always re-checked via a claim.
+    pub fn subscribe_ready_groups(&self) -> tokio::sync::broadcast::Receiver<SessionId> {
+        self.ready_group_tx.subscribe()
     }
 
     /// Mark that a fallback has been used for the given key (a child id for
@@ -947,6 +962,13 @@ impl AgentCoordinator {
         match self.task_groups.record_result(&group_id, result).await {
             Ok(()) | Err(TaskGroupError::ResultAlreadyRecorded { .. }) => {
                 self.child_groups.write().await.remove(&child_key);
+                // Notify listeners right at the readiness transition so the
+                // daemon can deliver the completed group to the root agent
+                // without client-side polling. No-subscriber is normal (TUI
+                // claims by polling); the send result is intentionally ignored.
+                if self.task_groups.group_is_ready(&group_id).await {
+                    let _ = self.ready_group_tx.send(child.session_id.clone());
+                }
                 Ok(())
             }
             Err(error) => Err(error.into()),
@@ -2319,6 +2341,43 @@ mod tests {
         assert_eq!(delivery.results[0].summary, "done");
         assert_eq!(coordinator.child_group_count().await, 0);
         assert_eq!(coordinator.owner_group_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn readiness_ping_fires_only_when_the_group_becomes_ready() {
+        let coordinator = test_coordinator(4, 3);
+        let mut pings = coordinator.subscribe_ready_groups();
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let first = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("a"), group.clone())
+            .await
+            .unwrap();
+        let second = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("b"), group.clone())
+            .await
+            .unwrap();
+
+        // One of two children finished: no ping yet.
+        coordinator
+            .finish_child(&first.context, ChildTerminal::completed("a done"))
+            .await
+            .unwrap();
+        assert!(pings.try_recv().is_err(), "no ping before readiness");
+
+        // Last child finishes: exactly one ping naming the session.
+        coordinator
+            .finish_child(&second.context, ChildTerminal::completed("b done"))
+            .await
+            .unwrap();
+        let session = tokio::time::timeout(Duration::from_secs(1), pings.recv())
+            .await
+            .expect("readiness ping within timeout")
+            .expect("ping channel open");
+        assert_eq!(session, SessionId::new("s"));
     }
 
     #[tokio::test]

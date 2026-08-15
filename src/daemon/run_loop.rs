@@ -860,6 +860,21 @@ pub(crate) enum BackgroundSchedulerEvent {
         run_id: String,
         final_save_succeeded: bool,
     },
+    /// A task group transitioned to all-results-recorded (pinged by the
+    /// coordinator). Hints only — readiness is re-verified by claiming.
+    TaskGroupReady {
+        session_id: String,
+    },
+}
+
+impl BackgroundSchedulerEvent {
+    fn session_id(&self) -> &str {
+        match self {
+            Self::ResultReady { session_id }
+            | Self::RunFinished { session_id, .. }
+            | Self::TaskGroupReady { session_id } => session_id,
+        }
+    }
 }
 
 struct BackgroundContinuation {
@@ -917,6 +932,107 @@ fn structured_background_continuation(
     .to_string()
 }
 
+/// User message carrying a claimed task-group delivery into a synthesis turn.
+/// Mirrors the TUI's `process_continuation` format so the model sees the same
+/// contract regardless of which client (or the daemon) initiated the turn.
+fn structured_task_group_continuation(results: &[crate::agent::ChildResult]) -> String {
+    let batch = serde_json::to_string(results)
+        .unwrap_or_else(|e| format!("{{\"serialize_error\":\"{e}\"}}"));
+    format!(
+        "<child-results>\n{batch}\n</child-results>\n\n\
+         A background subagent group completed. Synthesize these results into your current \
+         work and continue; do not repeat the subagent's steps.\n\n\
+         Continue from the delivered subagent results."
+    )
+}
+
+/// Try to turn one ready root task group into a daemon-owned synthesis run.
+/// This is the server-side counterpart of the TUI's `poll_ready_task_groups`:
+/// without it, a completed subagent group strands in the coordinator whenever
+/// no polling client (TUI) is attached — e.g. web sessions.
+///
+/// Returns `None` (leaving the group ready for a later attempt) when the
+/// session is busy, blocked by a failed-save barrier, or has no ready group.
+async fn prepare_task_group_continuation(
+    state: &Arc<DaemonState>,
+    session_id: &str,
+) -> Option<BackgroundContinuation> {
+    // Same durability barrier as background-result continuations: a failed
+    // final save must be retried by an explicit run before any synthesized
+    // history is layered on top.
+    if state.background_continuation_is_blocked(session_id).await {
+        return None;
+    }
+    state.resolve_session(session_id).await.as_ref()?;
+
+    // Serialize with user-driven runs: if a turn is active the group stays
+    // ready and is re-attempted from the `RunFinished` re-check.
+    let run_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    let next_run = SessionRun {
+        run_id: run_id.clone(),
+        cancel: cancel.clone(),
+        started_at: Instant::now(),
+    };
+    if state.session_runs.claim(session_id, next_run).is_err() {
+        return None;
+    }
+
+    let root = match state.root_context(session_id).await {
+        Ok(root) => root,
+        Err(error) => {
+            tracing::warn!(%session_id, %error, "task-group continuation: no root context");
+            state.session_runs.finish(session_id, &run_id);
+            return None;
+        }
+    };
+    let generation = state.coordinator.current_generation(&root.session_id).await;
+    let delivery = match state
+        .coordinator
+        .claim_ready_root_group(&root, generation)
+        .await
+    {
+        Ok(delivery) => delivery,
+        Err(error) => {
+            tracing::warn!(%session_id, %error, "task-group continuation: claim failed");
+            state.session_runs.finish(session_id, &run_id);
+            return None;
+        }
+    };
+    let Some(delivery) = delivery else {
+        state.session_runs.finish(session_id, &run_id);
+        return None;
+    };
+
+    // Mirror the client-driven claim endpoint's broadcast so listening UIs
+    // refresh their subagent panels regardless of who claimed.
+    let project = state.effective_session_root(session_id).await;
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::TaskGroupResult,
+        serde_json::json!({
+            "task_group_id": delivery.group_id.as_str(),
+            "session_id": session_id,
+            "generation": delivery.generation,
+            "project": project,
+            "result_count": delivery.results.len(),
+            "statuses": delivery.results.iter().map(|r| r.status).collect::<Vec<_>>(),
+        }),
+    );
+
+    tracing::info!(
+        %session_id,
+        group_id = %delivery.group_id.as_str(),
+        results = delivery.results.len(),
+        "daemon claimed ready task group; spawning synthesis continuation"
+    );
+    Some(BackgroundContinuation {
+        session_id: session_id.to_string(),
+        run_id,
+        cancel,
+        message: structured_task_group_continuation(&delivery.results),
+    })
+}
+
 /// Prepare one scheduler event. Results move to a recoverable claim here and
 /// are acknowledged only after `run_session_turn` persists its start message.
 /// `RunFinished` is emitted after the turn returns, so normal handoff still
@@ -932,6 +1048,10 @@ async fn prepare_background_continuation(
             run_id,
             final_save_succeeded,
         } => (session_id, Some((run_id, final_save_succeeded))),
+        // The scheduler loop routes this variant to
+        // `prepare_task_group_continuation` instead; handled here only for
+        // exhaustiveness.
+        BackgroundSchedulerEvent::TaskGroupReady { session_id } => (session_id, None),
     };
 
     // A run that exited before acknowledging its start-save never consumed
@@ -1041,7 +1161,21 @@ pub(crate) fn spawn_background_continuation_scheduler(
             let Some(state) = state.upgrade() else {
                 break;
             };
-            if let Some(continuation) = prepare_background_continuation(&state, event).await {
+            let session_id = event.session_id().to_string();
+            let continuation = match event {
+                BackgroundSchedulerEvent::TaskGroupReady { .. } => {
+                    prepare_task_group_continuation(&state, &session_id).await
+                }
+                event => match prepare_background_continuation(&state, event).await {
+                    Some(continuation) => Some(continuation),
+                    // No background-result continuation happened (nothing
+                    // pending, blocked, or the claim moved on). The session may
+                    // be idle now with a ready task group waiting — e.g. the
+                    // group completed while this run was still active.
+                    None => prepare_task_group_continuation(&state, &session_id).await,
+                },
+            };
+            if let Some(continuation) = continuation {
                 spawn_claimed_session_turn(
                     state,
                     continuation.session_id,
@@ -2207,6 +2341,86 @@ mod tests {
             .await
             .expect("save test session");
         state
+    }
+
+    /// Drive a session-a root task group to readiness: one child, finished.
+    async fn make_ready_root_group(state: &Arc<DaemonState>) {
+        let root = state.root_context("session-a").await.expect("root context");
+        let group = state
+            .coordinator
+            .current_or_create_root_group(&root, "turn-1")
+            .await
+            .expect("root group");
+        let child = state
+            .coordinator
+            .reserve_child_in_group(&root, crate::agent::SpawnChildRequest::new("work"), group)
+            .await
+            .expect("child reservation");
+        state
+            .coordinator
+            .finish_child(
+                &child.context,
+                crate::agent::ChildTerminal::completed("subagent done"),
+            )
+            .await
+            .expect("finish child");
+    }
+
+    #[tokio::test]
+    async fn ready_task_group_yields_synthesis_continuation() {
+        let state = continuation_test_state().await;
+        make_ready_root_group(&state).await;
+
+        let continuation = prepare_task_group_continuation(&state, "session-a")
+            .await
+            .expect("ready root group should produce a continuation");
+        assert!(continuation.message.contains("<child-results>"));
+        assert!(continuation.message.contains("subagent done"));
+        // The continuation owns the session run.
+        assert!(state.session_runs.is_active("session-a"));
+
+        // The group was claimed exactly once: after the continuation's run
+        // releases, a second attempt finds nothing ready and must release the
+        // run claim it took while checking.
+        state.session_runs.finish("session-a", &continuation.run_id);
+        assert!(prepare_task_group_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert!(!state.session_runs.is_active("session-a"));
+    }
+
+    #[tokio::test]
+    async fn task_group_continuation_waits_for_an_idle_session() {
+        let state = continuation_test_state().await;
+        make_ready_root_group(&state).await;
+
+        // A user-driven run owns the session: the group stays ready, no
+        // continuation is prepared.
+        state
+            .session_runs
+            .claim("session-a", test_run("user-run"))
+            .expect("claim user run");
+        assert!(prepare_task_group_continuation(&state, "session-a")
+            .await
+            .is_none());
+
+        // Once the run finishes, the ready group is delivered.
+        state.session_runs.finish("session-a", "user-run");
+        let continuation = prepare_task_group_continuation(&state, "session-a")
+            .await
+            .expect("idle session with a ready group should continue");
+        assert!(continuation.message.contains("subagent done"));
+    }
+
+    #[tokio::test]
+    async fn task_group_continuation_respects_the_failed_save_barrier() {
+        let state = continuation_test_state().await;
+        make_ready_root_group(&state).await;
+        state.block_background_continuation("session-a").await;
+        assert!(prepare_task_group_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert!(!state.session_runs.is_active("session-a"));
     }
 
     #[test]

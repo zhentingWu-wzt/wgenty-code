@@ -126,22 +126,173 @@ pub async fn stop(cli_port: u16) -> anyhow::Result<()> {
     }
 
     println!("Shutdown requested; waiting for the daemon to exit...");
-    let deadline = std::time::Instant::now() + SHUTDOWN_CONFIRM_TIMEOUT;
+    wait_until_down(&client, &base_url, SHUTDOWN_CONFIRM_TIMEOUT).await;
+    Ok(())
+}
+
+/// Poll until the daemon stops answering health probes (or the timeout
+/// elapses). Shared by `stop` and `kill_predecessor`.
+async fn wait_until_down(client: &reqwest::Client, base_url: &str, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
     loop {
-        if crate::utils::http::probe_daemon_health(&client, &base_url)
+        if crate::utils::http::probe_daemon_health(client, base_url)
             .await
             .is_none()
         {
-            println!("Daemon on 127.0.0.1:{port} stopped.");
-            return Ok(());
+            println!("Daemon on {base_url} stopped.");
+            return;
         }
         if std::time::Instant::now() > deadline {
             println!(
-                "Shutdown requested, but the daemon is still answering after {}s.",
-                SHUTDOWN_CONFIRM_TIMEOUT.as_secs()
+                "Daemon on {base_url} is still answering after {}s.",
+                timeout.as_secs()
             );
-            return Ok(());
+            return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+}
+
+/// Pre-start step for `wgenty-code daemon`: if a previous daemon is still
+/// healthy on its discovered port, stop it first so every launch runs the
+/// current binary (a stale long-lived daemon otherwise keeps serving old
+/// code). Tries the graceful shutdown API, then escalates to SIGTERM and
+/// SIGKILL by PID. A stale discovery file (nothing answering) is a no-op.
+pub async fn kill_predecessor() -> anyhow::Result<()> {
+    let Some(file) = crate::utils::discovery::read_discovery_file() else {
+        return Ok(());
+    };
+    let base_url = format!("http://127.0.0.1:{}", file.port);
+    let client = admin_client()?;
+    if crate::utils::http::probe_daemon_health(&client, &base_url)
+        .await
+        .is_none()
+    {
+        return Ok(()); // stale discovery file; nothing is running
+    }
+    if file.pid == std::process::id() {
+        return Ok(()); // defensive: never kill ourselves
+    }
+
+    println!(
+        "Stopping previous daemon (pid {}, port {}) before restart...",
+        file.pid, file.port
+    );
+
+    // 1. Graceful: the old daemon removes its token/discovery files itself.
+    // "Down" must mean the PID is gone, not just that the port stopped
+    // answering: a daemon in graceful shutdown stops accepting immediately
+    // but may still be draining long-lived SSE streams — declaring success
+    // here on the health probe alone is what let zombie daemons accumulate.
+    let _ = client
+        .post(format!("{base_url}/api/v1/shutdown"))
+        .bearer_auth(&file.token)
+        .send()
+        .await;
+    wait_until_down_quiet(&client, &base_url, std::time::Duration::from_secs(6)).await;
+    if crate::utils::http::probe_daemon_health(&client, &base_url)
+        .await
+        .is_none()
+        && !process_alive(file.pid)
+    {
+        println!("Previous daemon stopped.");
+        return Ok(());
+    }
+
+    // 2. SIGTERM, then SIGKILL (unresponsive pre-shutdown-endpoint builds).
+    terminate_process(file.pid, false);
+    wait_until_down_quiet(&client, &base_url, std::time::Duration::from_secs(3)).await;
+    if crate::utils::http::probe_daemon_health(&client, &base_url)
+        .await
+        .is_none()
+        && !process_alive(file.pid)
+    {
+        println!("Previous daemon terminated.");
+        return Ok(());
+    }
+
+    terminate_process(file.pid, true);
+    wait_until_down_quiet(&client, &base_url, std::time::Duration::from_secs(2)).await;
+    if crate::utils::http::probe_daemon_health(&client, &base_url)
+        .await
+        .is_some()
+    {
+        anyhow::bail!(
+            "failed to stop previous daemon (pid {}); port {} is still in use",
+            file.pid,
+            file.port
+        );
+    }
+    // A force-killed daemon could not clean up its state files; drop them so
+    // the new instance does not inherit a stale token/discovery pair. The
+    // ownership checks guard the narrow race where a fresh daemon already
+    // started (and rewrote the files) between our kill and this cleanup.
+    let _ = crate::utils::remove_daemon_token_if_matches(&file.token);
+    let _ = crate::utils::discovery::remove_discovery_file_if_pid(file.pid);
+    println!("Previous daemon killed.");
+    Ok(())
+}
+
+/// Like [`wait_until_down`] but silent (escalation steps report their own
+/// final outcome).
+async fn wait_until_down_quiet(
+    client: &reqwest::Client,
+    base_url: &str,
+    timeout: std::time::Duration,
+) {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() <= deadline {
+        if crate::utils::http::probe_daemon_health(client, base_url)
+            .await
+            .is_none()
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Check whether `pid` still exists (sends no real signal).
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    // tasklist exits 0 even when nothing matches; inspect the output.
+    let pid = pid.to_string();
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid))
+        .unwrap_or(false)
+}
+
+/// Send SIGTERM (`force = false`) or SIGKILL (`force = true`) to `pid`.
+#[cfg(unix)]
+fn terminate_process(pid: u32, force: bool) {
+    let sig = if force { "-9" } else { "-TERM" };
+    let _ = std::process::Command::new("kill")
+        .arg(sig)
+        .arg(pid.to_string())
+        .status();
+}
+
+/// Windows has no signal granularity; `taskkill /F` is the only option.
+#[cfg(windows)]
+fn terminate_process(pid: u32, force: bool) {
+    let pid = pid.to_string();
+    let mut args = vec!["/PID", pid.as_str(), "/T"];
+    if force {
+        args.push("/F");
+    }
+    let _ = std::process::Command::new("taskkill").args(args).status();
 }

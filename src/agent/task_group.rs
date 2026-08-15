@@ -207,6 +207,19 @@ impl TaskGroupStore {
         Ok(())
     }
 
+    /// Whether the group exists and every registered child has a terminal
+    /// result (i.e. it is deliverable via one of the claim methods). Used by
+    /// the coordinator to fan out a readiness notification right at the
+    /// transition, so listeners don't have to poll.
+    pub async fn group_is_ready(&self, group_id: &TaskGroupId) -> bool {
+        self.inner
+            .read()
+            .await
+            .groups
+            .get(group_id)
+            .is_some_and(Self::is_ready)
+    }
+
     /// Converts every unfinished child in an expired active group to a timeout.
     pub async fn expire_due_groups(&self, now: Instant) -> Result<usize, TaskGroupError> {
         let mut state = self.inner.write().await;

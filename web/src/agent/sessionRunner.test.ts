@@ -18,13 +18,30 @@ function fakeEventStream(events: SessionEvent[]): ReadableStream<Uint8Array> {
   });
 }
 
-/** Minimal fake client: only the methods runSessionTurn touches. */
+/** A stream that delivers events but NEVER closes — mirrors the real daemon,
+ *  which keeps the per-session SSE open (keepalives) after the turn ends. */
+function openEventStream(events: SessionEvent[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const chunks = events.map((ev) => encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+  return new ReadableStream({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(c);
+      // Intentionally no controller.close().
+    },
+  });
+}
+
+/** Minimal fake client: only the methods runSessionTurn touches. Each
+ *  subscription gets a FRESH stream: the first delivers `events`, later ones
+ *  (reconnects) deliver `reconnectEvents`. */
 function fakeClient(opts: {
   runId?: string;
   events?: SessionEvent[];
+  reconnectEvents?: SessionEvent[];
   runRejects?: Error;
 }): Pick<DaemonClient, "runSession" | "sessionEvents" | "cancelRun" | "createSession"> {
   const sessionId = "daemon-s1";
+  let subscribes = 0;
   return {
     createSession: vi.fn().mockResolvedValue({ id: sessionId, name: "s1" }) as never,
     runSession: opts.runRejects
@@ -33,8 +50,10 @@ function fakeClient(opts: {
           run_id: opts.runId ?? "r1",
           session_id: sessionId,
         }) as never),
-    sessionEvents: vi.fn().mockResolvedValue({
-      body: fakeEventStream(opts.events ?? []),
+    sessionEvents: vi.fn().mockImplementation(() => {
+      subscribes += 1;
+      const evs = subscribes === 1 ? (opts.events ?? []) : (opts.reconnectEvents ?? []);
+      return Promise.resolve({ body: fakeEventStream(evs) });
     }) as never,
     cancelRun: vi.fn().mockResolvedValue(undefined) as never,
   };
@@ -80,7 +99,7 @@ describe("runSessionTurn (server-side observer)", () => {
     expect(store.messages.some((m) => m.content === "Hello, world")).toBe(true);
     expect(store.isRunning).toBe(false);
     expect(useSessionManager.getState().entries[id].status).toBe("idle");
-    expect(client.runSession).toHaveBeenCalledWith("daemon-s1", "hi");
+    expect(client.runSession).toHaveBeenCalledWith("daemon-s1", "hi", expect.any(AbortSignal));
   });
 
   it("tool_start + tool_result renders as a tool exec card", async () => {
@@ -240,6 +259,9 @@ describe("runSessionTurn (server-side observer)", () => {
         makeEvent(1, "content_delta", { text: "partial" }),
         // No turn_done — the turn is still "running" when we cancel.
       ],
+      // The daemon answers a cancel with a terminal event; the resubscription
+      // (after the first stream closed) replays/delivers it.
+      reconnectEvents: [makeEvent(2, "turn_done", { finish_reason: "cancelled" })],
     });
     const id = useSessionManager.getState().createLocalSession("s1");
     // Start the turn but don't await (it's still streaming).
@@ -250,6 +272,77 @@ describe("runSessionTurn (server-side observer)", () => {
     await p;
 
     expect(client.cancelRun).toHaveBeenCalledWith("daemon-s1");
+    expect(useSessionManager.getState().entries[id].status).toBe("idle");
+  });
+
+  it("subscribes to the event stream BEFORE POST /run (no missed fast turns)", async () => {
+    // Regression: subscribing after POST /run let a fast turn's whole event
+    // batch (turn_done included) fire before the live-only stream attached —
+    // the reader then waited forever ("sent a message, nothing happens").
+    const order: string[] = [];
+    const client = fakeClient({});
+    (client.sessionEvents as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push("subscribe");
+      return Promise.resolve({
+        body: fakeEventStream([makeEvent(1, "turn_done", { finish_reason: "stop" })]),
+      });
+    });
+    (client.runSession as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push("run");
+      return Promise.resolve({ run_id: "r1", session_id: "daemon-s1" });
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "hi");
+
+    expect(order).toEqual(["subscribe", "run"]);
+  });
+
+  it("resubscribes with after=<lastSeq> when the stream drops mid-turn", async () => {
+    const client = fakeClient({
+      events: [makeEvent(1, "content_delta", { text: "partial" })],
+      reconnectEvents: [
+        // Stale terminal event from an older run — must NOT end our turn.
+        { ...makeEvent(2, "turn_done", { finish_reason: "stop" }), run_id: "old-run" },
+        makeEvent(2, "content_delta", { text: " rest" }),
+        makeEvent(3, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+
+    // Second subscription resumes after the last seq we actually saw.
+    expect(client.sessionEvents).toHaveBeenNthCalledWith(
+      2,
+      "daemon-s1",
+      1,
+      expect.any(AbortSignal),
+    );
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.messages.some((m) => m.content === "partial rest")).toBe(true);
+    expect(store.isRunning).toBe(false);
+    expect(useSessionManager.getState().entries[id].status).toBe("idle");
+  });
+
+  it("completes the turn even when the daemon keeps the stream open", async () => {
+    // Regression: the real daemon never closes the per-session SSE after a
+    // turn (keepalives keep flowing). The reader must exit on turn_done, not
+    // on stream close — otherwise every turn hangs in "running" forever and
+    // the Stop button appears dead too.
+    const client = fakeClient({});
+    (client.sessionEvents as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      Promise.resolve({
+        body: openEventStream([
+          makeEvent(1, "content_delta", { text: "answer" }),
+          makeEvent(2, "turn_done", { finish_reason: "stop" }),
+        ]),
+      }),
+    );
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.messages.some((m) => m.content === "answer")).toBe(true);
+    expect(store.isRunning).toBe(false);
     expect(useSessionManager.getState().entries[id].status).toBe("idle");
   });
 });

@@ -540,7 +540,14 @@ export type SessionEventKind =
   | "turn_done"
   | "turn_error"
   | "save"
-  | "turn_context";
+  | "turn_context"
+  /** Control plane (seq 0, empty run_id): the replay window no longer covers
+   *  the client's cursor; realign to data.latest_seq and keep reading. */
+  | "sync_lost"
+  /** Root tool Ask / ask_user_question notifications (web consumes the same
+   *  prompts via the trace stream; tolerated here for forward-compat). */
+  | "permission_required"
+  | "ask_user";
 
 /** Mirrors SessionEvent (src/daemon/run_loop.rs:26). Server-side run broadcasts
  *  these on GET /sessions/:id/events (SSE). data shape varies by kind. */
@@ -556,6 +563,22 @@ export interface SessionEvent {
 export interface RunResponse {
   run_id: string;
   session_id: string;
+}
+
+/** Mirrors PendingSubagentPermission (src/daemon/models.rs) — one blocked
+ *  policy-Ask waiter, from GET /tools/pending-permissions. */
+export interface PendingSubagentPermission {
+  request_id: string;
+  from: string;
+  kind: string;
+  tool: string;
+  policy_reason: string;
+  session_rule: string;
+  human_summary: string;
+}
+
+export interface ListPendingPermissionsResponse {
+  pending: PendingSubagentPermission[];
 }
 
 // ── Filesystem browsing (web directory picker) ──────────────────────────────

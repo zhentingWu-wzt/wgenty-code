@@ -1185,6 +1185,39 @@ impl DaemonClient {
         let resp = self.http_tools().get(&url).send().await?;
         Ok(resp.json().await?)
     }
+
+    /// GET /api/v1/client/heartbeat — public SSE keepalive endpoint. The
+    /// daemon counts the TUI as a connected thin client for as long as the
+    /// response stream stays open.
+    async fn connect_heartbeat(&self) -> Result<Response, reqwest::Error> {
+        let url = format!("{}/api/v1/client/heartbeat", self.base_url);
+        self.http().get(&url).send().await
+    }
+
+    /// Spawn a background task holding the heartbeat connection for the
+    /// process lifetime. A running TUI counts as a thin client, so the
+    /// daemon's idle shutdown stays suspended even when the TUI sits idle at
+    /// the prompt (no API requests); when the TUI exits, the connection
+    /// drops and the daemon's idle timer starts. Reconnects with exponential
+    /// backoff (1s → 30s) so a daemon restart doesn't permanently detach the
+    /// TUI's presence. Detached: the task dies with the process.
+    pub fn spawn_heartbeat_keeper(&self) {
+        let client = self.clone();
+        tokio::spawn(async move {
+            let mut backoff = std::time::Duration::from_secs(1);
+            loop {
+                if let Ok(resp) = client.connect_heartbeat().await {
+                    backoff = std::time::Duration::from_secs(1);
+                    // Hold the connection open, discarding keepalives, until
+                    // the server closes it or the connection drops.
+                    let mut stream = resp.bytes_stream();
+                    while let Some(Ok(_)) = futures::StreamExt::next(&mut stream).await {}
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+            }
+        });
+    }
 }
 
 /// `GET /api/v1/tasks/progress` response (mirrors daemon model).

@@ -95,58 +95,112 @@ export async function runSessionTurn(
   let outcome: "ok" | "stopped" | "error" = "ok";
 
   try {
-    // 3. POST /run — daemon spawns the turn and returns immediately.
-    await client.runSession(daemonId, text);
+    // 3. Subscribe BEFORE starting the run. Without `after=` the events
+    //    stream is live-only, so subscribing after POST /run can miss the
+    //    whole turn — a fast turn finishes in the gap, and the reader would
+    //    then wait forever for a turn_done that already fired (the "sent a
+    //    message, nothing happens" race). The subscribe itself has a 15s
+    //    connect watchdog inside the client; a wedged connection surfaces
+    //    as a transport error instead of an eternal hang.
+    let events = await client.sessionEvents(daemonId, undefined, abort.signal);
+    const { run_id: runId } = await client.runSession(daemonId, text, abort.signal);
 
-    // 4. Subscribe to the SSE event stream and mirror events into the store.
-    const { body } = await client.sessionEvents(daemonId);
-    const reader = body.getReader();
-    let buffer = "";
+    // 4. Read the event stream, mirroring events into the store. Reconnect
+    //    with `after=<lastSeq>` when the stream drops mid-turn: the daemon
+    //    replays missed events from its per-session buffer (or sends
+    //    sync_lost), so a dropped connection no longer leaves the UI stuck
+    //    in "running" while the daemon keeps working.
+    let lastSeq = 0;
     let turnFinished = false;
+    // Consecutive reconnects that closed without a single event — a broken
+    // endpoint gets backoff, then a surfaced error instead of a silent spin.
+    let eventlessDrops = 0;
 
     while (!turnFinished) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      buffer += new TextDecoder().decode(value);
-      let nl: number;
-      while ((nl = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (!line || line.startsWith(":")) continue; // skip SSE comments/keepalives
-        const payload = line.startsWith("data: ") ? line.slice(6) : line;
-        let ev: SessionEvent;
-        try {
-          ev = JSON.parse(payload) as SessionEvent;
-        } catch {
-          continue;
+      const reader = events.body.getReader();
+      let buffer = "";
+      let received = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          buffer += new TextDecoder().decode(value);
+          let nl: number;
+          while ((nl = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, nl).trim();
+            buffer = buffer.slice(nl + 1);
+            if (!line || line.startsWith(":")) continue; // skip SSE comments/keepalives
+            const payload = line.startsWith("data: ") ? line.slice(6) : line;
+            let ev: SessionEvent;
+            try {
+              ev = JSON.parse(payload) as SessionEvent;
+            } catch {
+              continue;
+            }
+            // Control plane: the replay window no longer covers our cursor.
+            // Realign to the daemon's latest seq and keep reading (mirrors
+            // the TUI's sync_lost handling).
+            if (ev.kind === "sync_lost") {
+              const latest = Number(ev.data.latest_seq ?? 0);
+              if (latest > lastSeq) lastSeq = latest;
+              continue;
+            }
+            if (ev.run_id !== runId) continue; // stale: an earlier run's events
+            if (ev.seq <= lastSeq) continue; // replay-seam duplicate
+            lastSeq = ev.seq;
+            received += 1;
+
+            handleEvent(ev, store, sessionId, ctx);
+            // A turn_done with finish_reason "tool_calls" only ends one LLM
+            // round — tool_start/tool_result and further rounds still follow.
+            const roundBoundary =
+              ev.kind === "turn_done" && ev.data.finish_reason === "tool_calls";
+            if ((ev.kind === "turn_done" || ev.kind === "turn_error") && !roundBoundary) {
+              turnFinished = true;
+            }
+          }
+          // The daemon keeps the per-session stream open after the turn ends
+          // (15s keepalives) — without this break the reader would block on
+          // the next read forever and the UI would stay "running" for good.
+          if (turnFinished) break;
         }
-        handleEvent(ev, store, sessionId, ctx);
-        // A turn_done with finish_reason "tool_calls" only ends one LLM
-        // round — tool_start/tool_result and further rounds still follow.
-        // (Fixed daemon-side; this guard keeps an older daemon usable.)
-        const roundBoundary = ev.kind === "turn_done" && ev.data.finish_reason === "tool_calls";
-        if (ev.kind === "turn_context") {
-          // Inspector data for the completed turn. Don't finish — there may
-          // be no more events, but let the stream close naturally.
-        }
-        if ((ev.kind === "turn_done" || ev.kind === "turn_error") && !roundBoundary) {
-          // Turn finished — but keep reading briefly for the turn_context
-          // event (emitted after final save). Set a short timeout so we
-          // don't hang if the daemon doesn't send it.
-          turnFinished = true;
-          // Don't break immediately — give the daemon a moment to send
-          // turn_context. The stream will close on its own.
-        }
+      } catch (readErr) {
+        // User stop unwinds to the outer catch; any other read failure
+        // (connection reset mid-turn, daemon restart) falls through to the
+        // resubscribe below instead of killing the turn's UI.
+        if (abort.signal.aborted) throw readErr;
+      } finally {
+        reader.cancel().catch(() => {});
       }
+
+      if (turnFinished) break;
+
+      // The stream ended or failed before the turn finished (daemon restart,
+      // proxy timeout, network reset). Resubscribe with `after=` and replay
+      // what was missed instead of silently stalling.
+      eventlessDrops = received === 0 ? eventlessDrops + 1 : 0;
+      if (eventlessDrops > 5) {
+        throw new Error("session event stream keeps closing without events");
+      }
+      if (eventlessDrops > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(1000 * 2 ** (eventlessDrops - 1), 15_000)),
+        );
+      }
+      events = await client.sessionEvents(daemonId, lastSeq, abort.signal);
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg === "aborted") {
+    const isAbort =
+      abort.signal.aborted ||
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.message === "aborted");
+    if (isAbort) {
       outcome = "stopped";
-      // User hit stop — the reader was cancelled; daemon turn may still be
-      // running server-side. Status set by stopSessionTurn.
+      // User hit stop — the reader/fetch was cancelled; the daemon turn may
+      // still be running server-side. Status set by stopSessionTurn.
     } else {
+      const msg = err instanceof Error ? err.message : String(err);
       outcome = "error";
       store.getState().setError({
         message: msg,
@@ -188,6 +242,137 @@ export async function stopSessionTurn(client: DaemonClient, sessionId: string): 
     // Best-effort; the daemon may have already finished.
   }
   m.setStatus(sessionId, "idle");
+}
+
+/** Local session ids with an observer already attached (dedup). */
+const observingRuns = new Set<string>();
+
+/**
+ * Attach to a DAEMON-INITIATED run (e.g. the task-group synthesis continuation
+ * the daemon's scheduler spawns when subagents finish) and mirror its events
+ * into the store — web otherwise only renders runs it started itself, so
+ * server-side continuations were invisible until a manual refresh.
+ *
+ * `daemonSessionId` is the daemon-side session id carried by the global
+ * `task_group_result` event. No-op when the session is unknown here, already
+ * has a locally-driven turn (that path renders its own events), or already
+ * has an observer attached.
+ */
+export async function observeDaemonRun(
+  client: DaemonClient,
+  daemonSessionId: string,
+): Promise<void> {
+  const m = useSessionManager.getState();
+  const entry = Object.values(m.entries).find((e) => e.daemonId === daemonSessionId);
+  if (!entry) return;
+  const sessionId = entry.id;
+  const store = entry.store;
+  if (store.getState().isRunning || observingRuns.has(sessionId)) return;
+  observingRuns.add(sessionId);
+
+  store.getState().setError(null);
+  store.getState().setRunning(true);
+  m.setStatus(sessionId, "running");
+  const abort = new AbortController();
+  store.getState().registerAbort(abort);
+
+  const ctx: RenderCtx = {
+    mode: useDisplayPrefs.getState().mode,
+    assistantId: null,
+    round: 1,
+    boundary: false,
+    pendingTools: [],
+  };
+
+  try {
+    let events = await client.sessionEvents(daemonSessionId, undefined, abort.signal);
+    let lastSeq = 0;
+    /** The run we attached to — taken from the first event seen; later events
+     *  from any other run id are ignored. */
+    let runId: string | null = null;
+    let turnFinished = false;
+    let received = 0;
+    // Idle guard: the daemon broadcasts task_group_result right before it
+    // spawns the continuation, so events should arrive almost immediately.
+    // If none do (the run finished in the attach gap, or the broadcast was
+    // for another client's claim), don't hold "running" forever — the turn
+    // is persisted and shows up via the normal history load.
+    const idleTimer = setTimeout(() => {
+      if (received === 0) abort.abort();
+    }, 20_000);
+
+    try {
+      while (!turnFinished) {
+        const reader = events.body.getReader();
+        let buffer = "";
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+            buffer += new TextDecoder().decode(value);
+            let nl: number;
+            while ((nl = buffer.indexOf("\n")) !== -1) {
+              const line = buffer.slice(0, nl).trim();
+              buffer = buffer.slice(nl + 1);
+              if (!line || line.startsWith(":")) continue;
+              const payload = line.startsWith("data: ") ? line.slice(6) : line;
+              let ev: SessionEvent;
+              try {
+                ev = JSON.parse(payload) as SessionEvent;
+              } catch {
+                continue;
+              }
+              if (ev.kind === "sync_lost") {
+                const latest = Number(ev.data.latest_seq ?? 0);
+                if (latest > lastSeq) lastSeq = latest;
+                continue;
+              }
+              if (runId === null) runId = ev.run_id;
+              if (ev.run_id !== runId) continue;
+              if (ev.seq <= lastSeq) continue;
+              lastSeq = ev.seq;
+              received += 1;
+
+              handleEvent(ev, store, sessionId, ctx);
+              const roundBoundary =
+                ev.kind === "turn_done" && ev.data.finish_reason === "tool_calls";
+              if ((ev.kind === "turn_done" || ev.kind === "turn_error") && !roundBoundary) {
+                turnFinished = true;
+              }
+            }
+            if (turnFinished) break;
+          }
+        } catch (readErr) {
+          if (abort.signal.aborted) throw readErr;
+        } finally {
+          reader.cancel().catch(() => {});
+        }
+
+        if (turnFinished) break;
+        // Dropped mid-turn: resume from the last seen seq (same contract as
+        // runSessionTurn).
+        events = await client.sessionEvents(daemonSessionId, lastSeq, abort.signal);
+      }
+    } finally {
+      clearTimeout(idleTimer);
+    }
+  } catch {
+    // User stop, idle-guard abort, or transport failure: exit quietly. An
+    // observed run is daemon-owned — its lifecycle doesn't depend on us.
+  } finally {
+    observingRuns.delete(sessionId);
+    store.getState().registerAbort(null);
+    if (ctx.assistantId) store.getState().finalizeAssistant(ctx.assistantId);
+    store.getState().setRunning(false);
+    const mgr = useSessionManager.getState();
+    if (mgr.entries[sessionId]?.store.getState().lastError === null) {
+      mgr.setStatus(sessionId, "idle");
+    }
+    // A message queued while the observed run held "running" drains now.
+    const next = store.getState().shiftPendingInput();
+    if (next) void runSessionTurn(client, sessionId, next);
+  }
 }
 
 /**

@@ -318,8 +318,12 @@ export function createSessionStore() {
         currentAbort.abort();
         currentAbort = null;
       }
-      // isRunning is cleared by the loop's finally block once it unwinds; we
-      // don't set it here to avoid a double-state-write race with that finally.
+      // Clear running immediately: the abort unwinds the loop's fetches
+      // asynchronously (or may not reach a wedged fetch at all), and the
+      // composer gates sends on isRunning — leaving it set makes the Stop
+      // button look dead and queues every later message forever. The loop's
+      // finally writes the same value again; the double write is idempotent.
+      set({ isRunning: false });
     },
 
     clear: () =>
