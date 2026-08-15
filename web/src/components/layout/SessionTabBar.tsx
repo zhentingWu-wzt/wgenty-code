@@ -29,8 +29,10 @@ export function SessionTabBar() {
       // subagent tab 只切活动 tab，不动活跃会话（Composer 仍指当前会话）。
       useUiStore.getState().setActiveTab(id);
     } else {
-      // 会话激活由 uiSync 同步 activeTabId。
       useSessionManager.getState().setActive(id);
+      // uiSync 只在 activeId 变化时同步 activeTabId；从 subagent tab 点回
+      // 当前活跃会话时 activeId 前后相同，必须显式切回，否则界面停在原 tab。
+      useUiStore.getState().setActiveTab(id);
     }
   };
 

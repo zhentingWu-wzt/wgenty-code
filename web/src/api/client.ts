@@ -23,6 +23,7 @@ import type {
   GetTodosResponse,
   HealthResponse,
   ListModelsResponse,
+  ListPendingPermissionsResponse,
   ListTasksResponse,
   LocalAgentViewResponse,
   McpServerInfo,
@@ -39,6 +40,7 @@ import type {
   SwitchModelRequest,
   SwitchModelResponse,
   TaskProgressResponse,
+  TraceEvent,
   UndoTurnResult,
   WorktreeBinding,
   WorktreeInfo,
@@ -72,6 +74,35 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     return (text ? JSON.parse(text) : undefined) as T;
   }
   return (await res.json()) as T;
+}
+
+/** Direct daemon connection info served by the vite dev middleware. */
+interface DaemonDirectInfo {
+  base: string;
+  token: string;
+}
+
+/**
+ * Long-lived SSE streams go DIRECTLY to the daemon origin instead of through
+ * the page's origin: browsers cap HTTP/1.1 at ~6 connections per origin, and
+ * every permanent stream held through the vite proxy (HMR websocket,
+ * heartbeat, trace SSE, per-turn session SSE) consumes one — two app tabs
+ * alone exceed the budget and every later fetch (send, stop, health) queues
+ * forever, wedging the page. Direct streams get their own per-origin budget
+ * on 127.0.0.1:<port>. Resolved fresh per call so a daemon restart (new
+ * token/port) is picked up on reconnect. Returns null outside the vite dev
+ * server (e.g. desktop shell) → callers fall back to the same-origin proxy.
+ */
+async function resolveDaemonDirect(): Promise<DaemonDirectInfo | null> {
+  try {
+    const res = await fetch("/__daemon-info");
+    if (!res.ok) return null;
+    const info = (await res.json()) as { port?: number; token?: string };
+    if (typeof info.port !== "number" || !info.token) return null;
+    return { base: `http://127.0.0.1:${info.port}/api/v1`, token: info.token };
+  } catch {
+    return null;
+  }
 }
 
 export class DaemonClient {
@@ -204,19 +235,33 @@ export class DaemonClient {
     );
   }
 
-  /** Resolve a subagent async permission (from the trace SSE push channel). */
+  /** Resolve a subagent async permission (from the trace SSE push channel).
+   *  `sessionRule` lets "always allow" persist the standing rule server-side. */
   async resolveSubagentPermission(
     requestId: string,
     approved: boolean,
     always = false,
+    sessionRule?: string,
   ): Promise<void> {
     await jsonOrThrow(
       await fetch(`${this.base}/tools/resolve-permission`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ request_id: requestId, approved, always }),
+        body: JSON.stringify({
+          request_id: requestId,
+          approved,
+          always,
+          ...(sessionRule ? { session_rule: sessionRule } : {}),
+        }),
       }),
     );
+  }
+
+  /** GET /tools/pending-permissions — policy-Ask waiters still blocked
+   *  server-side. Used to re-surface prompts after a page refresh or a
+   *  trace-stream reconnect (pending state otherwise lives only in memory). */
+  async listPendingPermissions(): Promise<ListPendingPermissionsResponse> {
+    return jsonOrThrow(await fetch(`${this.base}/tools/pending-permissions`));
   }
 
   // ── Models ─────────────────────────────────────────────────────────────────
@@ -331,37 +376,117 @@ export class DaemonClient {
 
   // ── Trace SSE (subagent progress + permission events) ──────────────────────
 
+  /** Fetch a streaming endpoint: direct to the daemon origin when the dev
+   *  middleware offers connection info, else through the same-origin proxy.
+   *  A 15s watchdog covers ONLY the connect/headers phase — once headers
+   *  arrive it is disarmed and the body streams until it ends or the
+   *  caller's signal aborts (a body-phase timeout would kill every SSE
+   *  stream 15s in).
+   *
+   *  A watchdog timeout means the browser QUEUED the request behind a full
+   *  per-origin budget (~6 HTTP/1.1 connections: trace + global-events +
+   *  per-run session streams + duplicate app tabs), not that the daemon is
+   *  down. Queued connects succeed as soon as any holder finishes, so one
+   *  retry absorbs transient contention instead of surfacing a hard error. */
+  private async fetchStream(path: string, signal?: AbortSignal): Promise<Response> {
+    const maxAttempts = 2;
+    for (let attempt = 1; ; attempt++) {
+      const ctl = new AbortController();
+      const onUserAbort = () => ctl.abort(signal!.reason);
+      if (signal) {
+        if (signal.aborted) ctl.abort(signal.reason);
+        // Deliberately not removed after connect: the same controller also
+        // governs body streaming, so the Stop button keeps working mid-stream.
+        else signal.addEventListener("abort", onUserAbort, { once: true });
+      }
+      const watchdog = setTimeout(
+        () => ctl.abort(new DOMException("stream connect timed out", "TimeoutError")),
+        15_000,
+      );
+      try {
+        const direct = await resolveDaemonDirect();
+        if (direct) {
+          try {
+            return await fetch(`${direct.base}${path}`, {
+              headers: { authorization: `Bearer ${direct.token}` },
+              signal: ctl.signal,
+            });
+          } catch (err) {
+            // Only fall back on a network-level failure (Chrome's TypeError
+            // "Failed to fetch" — e.g. CORS / Private Network Access blocking
+            // the cross-origin hop to 127.0.0.1). User stop and the connect
+            // watchdog surface as aborts and must propagate, not be retried
+            // through the proxy.
+            if (ctl.signal.aborted || !(err instanceof TypeError)) throw err;
+            console.warn(
+              "[client] direct daemon stream blocked, falling back to same-origin proxy:",
+              err,
+            );
+          }
+        }
+        return await fetch(`${this.base}${path}`, { signal: ctl.signal });
+      } catch (err) {
+        // Watchdog-fired (not user-aborted) connect timeout → retry once;
+        // a slot usually frees as soon as a concurrent run/stream ends.
+        const connectTimeout =
+          err instanceof DOMException &&
+          err.name === "TimeoutError" &&
+          !signal?.aborted;
+        if (!connectTimeout || attempt >= maxAttempts) throw err;
+        console.warn(
+          `[client] ${path}: SSE connect queued >15s ` +
+            "(per-origin connection budget exhausted by concurrent streams/tabs?); retrying…",
+        );
+        // Drop this attempt's user-abort listener so retries don't stack
+        // listeners on the caller's signal.
+        signal?.removeEventListener("abort", onUserAbort);
+      } finally {
+        clearTimeout(watchdog);
+      }
+    }
+  }
+
   /**
-   * Open the trace SSE stream (`GET /subagents/trace/stream`). Returns
-   * the raw byte stream; the caller parses newline-delimited JSON TraceEvents.
+   * Open the trace SSE stream (`GET /subagents/trace/stream`, global live).
+   * Returns the raw byte stream; the caller parses newline-delimited JSON
+   * TraceEvents.
    *
    * This is the push channel for subagent permission prompts (design D2.1):
-   * instead of polling /tools/pending-permissions, the frontend subscribes here
-   * and dispatches on `event.kind`.
-   *
-   * Params:
-   * - `sessionId`: scope the stream to one session AND enable cold-start replay
-   *   of that session's persisted transcript headers (terminal states + result
-   *   summaries). Without it the stream is global and live-only — terminal
-   *   events that fire before connecting (page load, refresh, reconnect gap)
-   *   are permanently missed.
-   * - `since`: unix-ms watermark; replayed headers (by started_at) and live
-   *   events at or before it are skipped. Omit for a full replay.
+   * instead of polling /tools/pending-permissions, the frontend subscribes
+   * here and dispatches on `event.kind`. Cold-start recovery of terminal
+   * results uses the one-shot `traceReplay` below, not a second stream —
+   * every permanent SSE connection counts against the browser's per-origin
+   * connection budget.
    */
   async traceStream(
     sessionId?: string,
     since?: number,
+    /** Aborts the underlying fetch. ESSENTIAL on hook cleanup: without it the
+     *  keepalive-only stream never ends and the connection leaks from the
+     *  browser's per-origin budget. */
+    signal?: AbortSignal,
   ): Promise<{ body: ReadableStream<Uint8Array> }> {
     const params = new URLSearchParams();
     if (sessionId) params.set("session_id", sessionId);
     if (since !== undefined) params.set("since", String(since));
     const query = params.toString();
-    const res = await fetch(`${this.base}/subagents/trace/stream${query ? `?${query}` : ""}`);
+    const res = await this.fetchStream(
+      `/subagents/trace/stream${query ? `?${query}` : ""}`,
+      signal,
+    );
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
       throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
     }
     return { body: res.body };
+  }
+
+  /** One-shot replay of a session's persisted trace headers (JSON, non-SSE).
+   *  Replaces the old session-scoped trace stream for cold-start recovery. */
+  async traceReplay(sessionId: string, since?: number): Promise<TraceEvent[]> {
+    const params = new URLSearchParams({ session_id: sessionId });
+    if (since !== undefined) params.set("since", String(since));
+    return jsonOrThrow(await fetch(`${this.base}/subagents/trace/replay?${params}`));
   }
 
   // ── Scoped agent views (subagent local view + transcript + cancel) ─────────
@@ -574,13 +699,18 @@ export class DaemonClient {
 
   // ── Server-side run (web as observer) ──────────────────────────────────────
 
-  /** POST /sessions/:id/run — daemon spawns the turn; returns immediately. */
-  async runSession(sessionId: string, message: string): Promise<RunResponse> {
+  /** POST /sessions/:id/run — daemon spawns the turn; returns immediately.
+   *  A 15s watchdog merges with the caller's signal: a request starved by
+   *  the per-origin connection budget must surface as an error, not hang. */
+  async runSession(sessionId: string, message: string, signal?: AbortSignal): Promise<RunResponse> {
     return jsonOrThrow(
       await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ message }),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+          : AbortSignal.timeout(15_000),
       }),
     );
   }
@@ -594,9 +724,36 @@ export class DaemonClient {
     );
   }
 
-  /** GET /sessions/:id/events — SSE stream of SessionEvent from a server-side run. */
-  async sessionEvents(sessionId: string): Promise<{ body: ReadableStream<Uint8Array> }> {
-    const res = await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/events`);
+  /** GET /sessions/:id/events — SSE stream of SessionEvent from a server-side
+   *  run. Without `after` the stream is live-only; with `after` the daemon
+   *  replays buffered events with `seq > after` first (or sends sync_lost).
+   *  `signal` aborts the underlying fetch (Stop button / connect watchdog).
+   *  Long-lived: opened directly against the daemon origin when possible
+   *  (see resolveDaemonDirect) so it doesn't consume the page origin's
+   *  connection budget. */
+  async sessionEvents(
+    sessionId: string,
+    after?: number,
+    signal?: AbortSignal,
+  ): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const query = after !== undefined ? `?after=${after}` : "";
+    const res = await this.fetchStream(
+      `/sessions/${encodeURIComponent(sessionId)}/events${query}`,
+      signal,
+    );
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => "");
+      throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
+    }
+    return { body: res.body };
+  }
+
+  /** GET /events — daemon-wide global SSE stream (todos changes, background
+   *  results, task-group results, ...). Live-only and low-frequency; clients
+   *  realign via the plain GET endpoints after any gap. Long-lived: opened
+   *  directly against the daemon origin like sessionEvents. */
+  async globalEvents(signal?: AbortSignal): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const res = await this.fetchStream(`/events`, signal);
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
       throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
