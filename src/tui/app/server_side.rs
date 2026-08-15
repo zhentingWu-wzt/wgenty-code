@@ -404,7 +404,9 @@ fn trace_event_to_progress(ev: &TraceEvent) -> SubagentProgress {
         current_tool: ev.current_tool.clone(),
         current_params,
         action_log: Vec::new(),
-        text_snapshot: None,
+        // Terminal trace events carry the subagent's final result text; the
+        // SubagentTree preserves it on upsert for the focus view.
+        text_snapshot: ev.result.clone(),
         started_at: ev.ts,
         elapsed_ms: ev.elapsed_ms,
         metadata: None,
@@ -1134,6 +1136,7 @@ mod tests {
             token_budget_k: Some(10),
             cumulative_tokens: 1234,
             error: None,
+            result: None,
             kind,
             permission: None,
             question: None,

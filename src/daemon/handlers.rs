@@ -576,6 +576,9 @@ fn trace_event_from_header(
         token_budget_k: None,
         cumulative_tokens: h.total_tokens,
         error,
+        // Replay the persisted summary as the terminal result text so
+        // reconnecting SSE clients get the finished result too.
+        result: h.summary.clone(),
         kind: crate::teams::trace_sink::TraceEventKind::Progress,
         permission: None,
         question: None,
@@ -3456,6 +3459,7 @@ mod tests {
             token_budget_k: None,
             cumulative_tokens: 0,
             error: None,
+            result: None,
             kind: crate::teams::trace_sink::TraceEventKind::Progress,
             permission: None,
             question: None,

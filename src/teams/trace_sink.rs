@@ -97,6 +97,13 @@ pub struct TraceEvent {
     pub cumulative_tokens: u64,
     /// Redacted serialization of `ErrorInfo` (present only on terminal failure).
     pub error: Option<serde_json::Value>,
+    /// Terminal-only final assistant text of the subagent (its result).
+    /// Present only when `status` is terminal (completed/failed/cancelled) and
+    /// a text snapshot exists; lets SSE subscribers (web, TUI server-side)
+    /// receive the result without polling the capability-scoped agent API.
+    /// `None` on non-terminal events to keep live frames small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
     /// Event discriminant. `"progress"` (default, the original subagent-progress
     /// event) or `"permission_pending"` / `"permission_resolved"` (subagent
     /// policy-Ask lifecycle, carried in `permission`). Defaults to `"progress"`
@@ -169,6 +176,11 @@ impl TraceEvent {
             token_budget_k: p.token_budget_k,
             cumulative_tokens: p.cumulative_tokens,
             error,
+            result: if p.status.is_terminal() {
+                p.text_snapshot.clone()
+            } else {
+                None
+            },
             kind: TraceEventKind::Progress,
             permission: None,
             question: None,
@@ -202,6 +214,7 @@ impl TraceEvent {
             token_budget_k: None,
             cumulative_tokens: 0,
             error: None,
+            result: None,
             kind: if resolved {
                 TraceEventKind::PermissionResolved
             } else {
@@ -236,6 +249,7 @@ impl TraceEvent {
             token_budget_k: None,
             cumulative_tokens: 0,
             error: None,
+            result: None,
             kind: if resolved {
                 TraceEventKind::QuestionResolved
             } else {
@@ -592,6 +606,31 @@ mod tests {
             "non-sensitive path must survive redaction"
         );
         assert!(ev.error.is_none());
+    }
+
+    #[test]
+    fn test_trace_event_result_only_on_terminal_status() {
+        // Running: no result, even with a snapshot present.
+        let mut p = make_progress();
+        p.text_snapshot = Some("final answer".into());
+        assert_eq!(TraceEvent::from_progress(&p, "sess-1").result, None);
+
+        // Terminal statuses carry the snapshot as the result.
+        for status in [
+            SubagentStatus::Completed,
+            SubagentStatus::Failed,
+            SubagentStatus::Cancelled,
+        ] {
+            p.status = status;
+            assert_eq!(
+                TraceEvent::from_progress(&p, "sess-1").result.as_deref(),
+                Some("final answer")
+            );
+        }
+
+        // Terminal without a snapshot stays `None`.
+        p.text_snapshot = None;
+        assert_eq!(TraceEvent::from_progress(&p, "sess-1").result, None);
     }
 
     #[test]
