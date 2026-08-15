@@ -22,7 +22,7 @@ use axum::extract::State;
 use axum::response::Response;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
@@ -64,17 +64,36 @@ pub(crate) enum ClientMessage {
     Unsubscribe { session_id: String },
 }
 
-/// Per-session subscription state for one connection (design §3.3): the latest
-/// sequence already delivered (either replayed or live), used to dedup events at
-/// the live seam.
-#[derive(Debug, Clone, Copy)]
+/// Replay events forwarded per pump iteration before yielding to the hub
+/// branches (MAJOR-1 fix: one synchronous 1024-event replay would starve the
+/// shared hub receiver and trip `Lagged` under an event storm).
+const REPLAY_BATCH: usize = 64;
+
+/// Per-session subscription state for one connection (design §3.3).
+///
+/// `delivered` is the highest seq actually sent to the client (watermark);
+/// `snapshot_tail` is the tail of the subscription-time replay snapshot (live
+/// events at or below it are already covered by the snapshot); `pending` holds
+/// the not-yet-forwarded replay backlog plus live events that arrived while
+/// the backlog drains, strictly ordered.
+#[derive(Debug)]
 struct SubState {
-    seam_seq: u64,
+    delivered: u64,
+    snapshot_tail: u64,
+    pending: VecDeque<SessionEvent>,
 }
 
 /// Maximum live session subscriptions per connection (design §3.3). Exceeding
 /// it yields an [`DownstreamEnvelope::Error`] but keeps the connection alive.
 const MAX_SUBSCRIPTIONS: usize = 64;
+
+/// Pump tuning knobs grouped to keep [`event_pump`] within clippy's
+/// argument-count limit.
+#[derive(Debug, Clone, Copy)]
+struct PumpConfig {
+    heartbeat: Duration,
+    replay_batch: usize,
+}
 
 /// `GET /api/v1/ws` handler (design §3.1/§4).
 ///
@@ -145,7 +164,10 @@ async fn connection_loop(state: Arc<DaemonState>, socket: WebSocket) {
         state.global_event_hub.subscribe(),
         ctrl_rx,
         outbound_tx,
-        Duration::from_secs(15),
+        PumpConfig {
+            heartbeat: Duration::from_secs(15),
+            replay_batch: REPLAY_BATCH,
+        },
     )
     .await;
 
@@ -162,22 +184,36 @@ async fn event_pump(
     mut global_rx: broadcast::Receiver<GlobalEvent>,
     mut ctrl_rx: mpsc::Receiver<ClientMessage>,
     outbound_tx: mpsc::Sender<Message>,
-    heartbeat: Duration,
+    config: PumpConfig,
 ) {
+    let PumpConfig {
+        heartbeat,
+        replay_batch,
+    } = config;
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
     // Per-connection subscription table (design §3.3); released when the pump
     // exits, so disconnect cleanup is implicit.
     let mut subs: HashMap<String, SubState> = HashMap::new();
 
     'pump: loop {
+        // Replay backlog advances at most `replay_batch` events per
+        // subscription per iteration (MAJOR-1: batches, not one burst), so
+        // the hub branches below keep being polled between batches.
+        if !drain_pending(&mut subs, &outbound_tx, replay_batch).await {
+            break 'pump;
+        }
+        let has_pending = subs.values().any(|s| !s.pending.is_empty());
+
         tokio::select! {
+            biased;
             res = session_rx.recv() => match res {
                 Ok(ev) => {
                     let session_id = ev.session_id.clone();
                     let seq = ev.seq;
                     if let Some(sub) = subs.get_mut(&session_id) {
-                        if seq > sub.seam_seq {
-                            sub.seam_seq = seq;
+                        if seq > sub.snapshot_tail && seq > sub.delivered {
+                            if sub.pending.is_empty() {
+                                sub.delivered = seq;
                             if !forward(
                                 &outbound_tx,
                                 DownstreamEnvelope::Session { session_id, event: ev },
@@ -186,15 +222,26 @@ async fn event_pump(
                             {
                                 break 'pump;
                             }
+                            } else {
+                                // Backlog still draining: buffer to keep the
+                                // client-visible order strict (replay first).
+                                sub.pending.push_back(ev);
+                            }
                         }
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     // This connection's single hub receiver fell behind: resync
-                    // every active subscription to the latest buffered seq.
+                    // every active subscription to the latest buffered seq and
+                    // drop any stale backlog (the client realigns via
+                    // `sync_lost` and resubscribes).
                     for (session_id, sub) in subs.iter_mut() {
                         let buffer = state.session_buffer(session_id);
-                        let ev = plan_lagged_resync(session_id, &mut sub.seam_seq, &buffer);
+                        let mut watermark = sub.delivered;
+                        let ev = plan_lagged_resync(session_id, &mut watermark, &buffer);
+                        sub.delivered = watermark;
+                        sub.snapshot_tail = watermark;
+                        sub.pending.clear();
                         if !forward(
                             &outbound_tx,
                             DownstreamEnvelope::Session {
@@ -275,23 +322,17 @@ async fn event_pump(
                         plan_catch_up(after, &buf)
                     };
 
-                    let seam_seq = match decision {
+                    let sub_state = match decision {
                         CatchUp::Replay(evs) => {
-                            let seam = evs.last().map(|e| e.seq).unwrap_or(0);
-                            for ev in evs {
-                                if !forward(
-                                    &outbound_tx,
-                                    DownstreamEnvelope::Session {
-                                        session_id: session_id.clone(),
-                                        event: ev,
-                                    },
-                                )
-                                .await
-                                {
-                                    break 'pump;
-                                }
+                            // MAJOR-1: the snapshot is NOT forwarded inline;
+                            // it becomes the backlog drained in batches by
+                            // `drain_pending` while the hubs keep flowing.
+                            let snapshot_tail = evs.last().map(|e| e.seq).unwrap_or(0);
+                            SubState {
+                                delivered: 0,
+                                snapshot_tail,
+                                pending: evs.into(),
                             }
-                            seam
                         }
                         CatchUp::SyncLost { latest_seq } => {
                             let ev = sync_lost_event(&session_id, "evicted", latest_seq);
@@ -306,9 +347,17 @@ async fn event_pump(
                             {
                                 break 'pump;
                             }
-                            latest_seq
+                            SubState {
+                                delivered: latest_seq,
+                                snapshot_tail: latest_seq,
+                                pending: VecDeque::new(),
+                            }
                         }
-                        CatchUp::LiveOnly | CatchUp::UpToDate => after.unwrap_or(0),
+                        CatchUp::LiveOnly | CatchUp::UpToDate => SubState {
+                            delivered: after.unwrap_or(0),
+                            snapshot_tail: 0,
+                            pending: VecDeque::new(),
+                        },
                     };
 
                     let latest_seq = buffer
@@ -328,7 +377,9 @@ async fn event_pump(
                         break 'pump;
                     }
 
-                    subs.insert(session_id, SubState { seam_seq });
+                    // A repeat subscribe replaces the whole entry (fresh
+                    // snapshot and watermarks).
+                    subs.insert(session_id, sub_state);
                 }
                 Some(ClientMessage::Unsubscribe { session_id }) => {
                     subs.remove(&session_id);
@@ -340,8 +391,38 @@ async fn event_pump(
                     break 'pump;
                 }
             }
+            // Backlog ready: a zero sleep is immediately ready, so once the
+            // higher-priority hub branches are idle the loop spins back to
+            // `drain_pending` instead of parking on the hubs.
+            _ = tokio::time::sleep(Duration::ZERO), if has_pending => {}
         }
     }
+}
+
+/// Forward at most `batch` pending events per subscription. Returns `false`
+/// when the write half is gone (client disconnected) so the pump can stop.
+async fn drain_pending(
+    subs: &mut HashMap<String, SubState>,
+    outbound_tx: &mpsc::Sender<Message>,
+    batch: usize,
+) -> bool {
+    for (session_id, sub) in subs.iter_mut() {
+        let mut sent = 0;
+        while sent < batch {
+            let Some(ev) = sub.pending.front() else { break };
+            let env = DownstreamEnvelope::Session {
+                session_id: session_id.clone(),
+                event: ev.clone(),
+            };
+            if !forward(outbound_tx, env).await {
+                return false;
+            }
+            sub.delivered = ev.seq;
+            sub.pending.pop_front();
+            sent += 1;
+        }
+    }
+    true
 }
 
 /// Serialize an envelope and push it onto the outbound channel. Returns `false`
@@ -455,6 +536,12 @@ mod tests {
     }
 
     async fn spawn_pump(state: Arc<DaemonState>) -> Pump {
+        spawn_pump_with_batch(state, REPLAY_BATCH).await
+    }
+
+    /// `replay_batch` < production lets tests force many drain/yield cycles
+    /// and assert the interleaving invariants on short sequences.
+    async fn spawn_pump_with_batch(state: Arc<DaemonState>, replay_batch: usize) -> Pump {
         // Mirror production: the pump's session receiver taps the real
         // per-daemon hub; `session_tx` is a hub-sender clone so live events in
         // tests flow through the same channel `publish` uses.
@@ -471,7 +558,10 @@ mod tests {
             global_rx,
             ctrl_rx,
             outbound_tx,
-            Duration::from_secs(3600),
+            PumpConfig {
+                heartbeat: Duration::from_secs(3600),
+                replay_batch,
+            },
         ));
         Pump {
             session_tx,
@@ -704,10 +794,11 @@ mod tests {
             .await
             .unwrap();
 
+        // 应答先行（订阅接受 + 游标锚点），replay 随后分批排空。
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s1", 3);
         for seq in 1..=3 {
             assert_session(recv_envelope(&mut p.outbound_rx).await, "s1", seq);
         }
-        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s1", 3);
 
         // seam 去重：重放 seq 3 被丢弃，seq 4 正常转发。
         p.session_tx.send(ev(3, "s1")).unwrap();
@@ -816,7 +907,7 @@ mod tests {
         publish(&state, ev(3, "s5"));
         assert_session(recv_envelope(&mut p.outbound_rx).await, "s5", 3);
 
-        // 重复订阅（after=0）：replay 1..=3，刷新 seam=3。
+        // 重复订阅（after=0）：应答先行，replay 1..=3 分批排空，水位刷新至 3。
         p.ctrl_tx
             .send(ClientMessage::Subscribe {
                 session_id: "s5".to_string(),
@@ -824,10 +915,10 @@ mod tests {
             })
             .await
             .unwrap();
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s5", 3);
         for seq in 1..=3 {
             assert_session(recv_envelope(&mut p.outbound_rx).await, "s5", seq);
         }
-        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s5", 3);
 
         // 刷新后的 seam：seq 3 去重，seq 4 转发。
         p.session_tx.send(ev(3, "s5")).unwrap();
@@ -906,6 +997,56 @@ mod tests {
         p.session_tx.send(ev(1, "ghost")).unwrap();
         p.session_tx.send(ev(1, "sk")).unwrap();
         assert_session(recv_envelope(&mut p.outbound_rx).await, "sk", 1);
+
+        shutdown(p).await;
+    }
+
+    /// MAJOR-1 回归：大批 replay 与 live 突发并发时 —— 订阅应答先行，
+    /// replay 分批让出泵（hub 分支持续被轮询），客户端最终收到严格递增、
+    /// 无丢失、无重复的完整序列（replay 先于其后到达的 live）。
+    #[tokio::test]
+    async fn large_replay_during_live_burst_stays_ordered_and_lossless() {
+        let state = test_state().await;
+        save_session(&state, "sburst").await;
+        // 预置 200 个事件（仅 buffer，泵尚未启动，hub 广播无人收到）。
+        for seq in 1..=200u64 {
+            publish(&state, ev(seq, "sburst"));
+        }
+
+        // 批次=2：强制 replay 走多轮让出，放大与 live 分支的交错窗口。
+        let mut p = spawn_pump_with_batch(state.clone(), 2).await;
+
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "sburst".to_string(),
+                after: Some(0),
+            })
+            .await
+            .unwrap();
+        // 应答先行（订阅已接受 + 游标锚点），replay 随后异步排空。
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "sburst", 200);
+
+        // replay 排空前注入 live 突发（仅 hub，绕过 buffer）。
+        for seq in 201..=260u64 {
+            p.session_tx.send(ev(seq, "sburst")).unwrap();
+        }
+
+        // 收集 session 信封直到见到 seq 260。
+        let mut seen: Vec<u64> = Vec::new();
+        loop {
+            let env = recv_envelope(&mut p.outbound_rx).await;
+            if let DownstreamEnvelope::Session { event, .. } = env {
+                seen.push(event.seq);
+                if event.seq == 260 {
+                    break;
+                }
+            }
+        }
+        let expected: Vec<u64> = (1..=260).collect();
+        assert_eq!(
+            seen, expected,
+            "replay + live 交错后应严格递增、无丢失、无重复"
+        );
 
         shutdown(p).await;
     }
