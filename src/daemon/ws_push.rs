@@ -1,4 +1,4 @@
-//! WebSocket push channel (task 2.1).
+//! WebSocket push channel (tasks 2.1/2.2).
 //!
 //! Single-connection task multiplexing three downlink event sources (session
 //! hub, global trace hub, global event bus), the upstream control channel, and
@@ -6,12 +6,15 @@
 //! downstream frame is serialized to a D2 envelope (design §3.2) on a dedicated
 //! write half so serialization/sending never blocks a `select!` branch.
 //!
-//! Task 2.1 ships the skeleton only: the per-connection session subscription
-//! table is not implemented yet (it lands with subscribe/unsubscribe handling
-//! in task 2.2); route registration and auth land in task 2.3.
+//! Task 2.1 ships the skeleton; task 2.2 lands the per-connection session
+//! subscription table with `subscribe`/`unsubscribe` handling (design §3.3),
+//! cursor replay, and `subscribed` acks. Route registration and auth land in
+//! task 2.3.
 
 use crate::daemon::global_events::GlobalEvent;
-use crate::daemon::run_loop::SessionEvent;
+use crate::daemon::run_loop::{
+    plan_catch_up, plan_lagged_resync, sync_lost_event, CatchUp, SessionEvent,
+};
 use crate::daemon::state::DaemonState;
 use crate::teams::trace_sink::TraceEvent;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -19,6 +22,7 @@ use axum::extract::State;
 use axum::response::Response;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
@@ -41,6 +45,8 @@ pub(crate) enum DownstreamEnvelope {
     },
     /// `subscribe` ack; lets the client align its cursor.
     Subscribed { session_id: String, latest_seq: u64 },
+    /// Recoverable control error (e.g. subscription limit); connection stays open.
+    Error { message: String },
 }
 
 /// Upstream (client → server) control message, design §3.2. Tagged by `op`.
@@ -57,6 +63,18 @@ pub(crate) enum ClientMessage {
     /// Unsubscribe from a session.
     Unsubscribe { session_id: String },
 }
+
+/// Per-session subscription state for one connection (design §3.3): the latest
+/// sequence already delivered (either replayed or live), used to dedup events at
+/// the live seam.
+#[derive(Debug, Clone, Copy)]
+struct SubState {
+    seam_seq: u64,
+}
+
+/// Maximum live session subscriptions per connection (design §3.3). Exceeding
+/// it yields an [`DownstreamEnvelope::Error`] but keeps the connection alive.
+const MAX_SUBSCRIPTIONS: usize = 64;
 
 /// `GET /api/v1/ws` handler (design §3.1/§4).
 ///
@@ -121,6 +139,7 @@ async fn connection_loop(state: Arc<DaemonState>, socket: WebSocket) {
     });
 
     event_pump(
+        state.clone(),
         state.session_event_hub.subscribe(),
         crate::teams::trace_sink::trace_hub_subscribe(),
         state.global_event_hub.subscribe(),
@@ -137,6 +156,7 @@ async fn connection_loop(state: Arc<DaemonState>, socket: WebSocket) {
 /// The five-way `select!` event pump, kept free of socket types so it can be
 /// unit-tested with plain channels (design §4).
 async fn event_pump(
+    state: Arc<DaemonState>,
     mut session_rx: broadcast::Receiver<SessionEvent>,
     mut trace_rx: broadcast::Receiver<TraceEvent>,
     mut global_rx: broadcast::Receiver<GlobalEvent>,
@@ -145,56 +165,179 @@ async fn event_pump(
     heartbeat: Duration,
 ) {
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
+    // Per-connection subscription table (design §3.3); released when the pump
+    // exits, so disconnect cleanup is implicit.
+    let mut subs: HashMap<String, SubState> = HashMap::new();
 
-    loop {
+    'pump: loop {
         tokio::select! {
             res = session_rx.recv() => match res {
                 Ok(ev) => {
-                    // Task 2.2: subscription table lands here; all session
-                    // events are dropped until then.
-                    let _ = ev;
+                    let session_id = ev.session_id.clone();
+                    let seq = ev.seq;
+                    if let Some(sub) = subs.get_mut(&session_id) {
+                        if seq > sub.seam_seq {
+                            sub.seam_seq = seq;
+                            if !forward(
+                                &outbound_tx,
+                                DownstreamEnvelope::Session { session_id, event: ev },
+                            )
+                            .await
+                            {
+                                break 'pump;
+                            }
+                        }
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    // Task 2.2: single-connection sync_lost via plan_lagged_resync.
+                    // This connection's single hub receiver fell behind: resync
+                    // every active subscription to the latest buffered seq.
+                    for (session_id, sub) in subs.iter_mut() {
+                        let buffer = state.session_buffer(session_id);
+                        let ev = plan_lagged_resync(session_id, &mut sub.seam_seq, &buffer);
+                        if !forward(
+                            &outbound_tx,
+                            DownstreamEnvelope::Session {
+                                session_id: session_id.clone(),
+                                event: ev,
+                            },
+                        )
+                        .await
+                        {
+                            break 'pump;
+                        }
+                    }
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed) => break 'pump,
             },
             res = trace_rx.recv() => match res {
                 Ok(ev) => {
                     if !forward(&outbound_tx, DownstreamEnvelope::Trace { event: Box::new(ev) })
                         .await
                     {
-                        break;
+                        break 'pump;
                     }
                 }
                 // drop-oldest hub: skip silently; clients replay via REST.
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed) => break 'pump,
             },
             res = global_rx.recv() => match res {
                 Ok(ev) => {
                     if !forward(&outbound_tx, DownstreamEnvelope::Global { event: ev }).await {
-                        break;
+                        break 'pump;
                     }
                 }
                 // low-frequency; clients realign via the GET endpoints.
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed) => break 'pump,
             },
             ctrl = ctrl_rx.recv() => match ctrl {
                 Some(ClientMessage::Subscribe { session_id, after }) => {
-                    // Task 2.2: subscribe/unsubscribe update the table (replay
-                    // runs synchronously). Task 2.1 parses only, no-op.
-                    let _ = (session_id, after);
+                    // New subscriptions are capped; a repeat subscribe refreshes
+                    // the existing entry (and its seam) instead of failing.
+                    if !subs.contains_key(&session_id) && subs.len() >= MAX_SUBSCRIPTIONS {
+                        if !forward(
+                            &outbound_tx,
+                            DownstreamEnvelope::Error {
+                                message: format!(
+                                    "subscription limit reached ({MAX_SUBSCRIPTIONS} sessions)"
+                                ),
+                            },
+                        )
+                        .await
+                        {
+                            break 'pump;
+                        }
+                        continue 'pump;
+                    }
+
+                    // Unknown session: ack with latest_seq 0 and do not subscribe
+                    // (design §3.2 — client recovers via GET /sessions/:id).
+                    if state.resolve_session(&session_id).await.is_none() {
+                        if !forward(
+                            &outbound_tx,
+                            DownstreamEnvelope::Subscribed {
+                                session_id,
+                                latest_seq: 0,
+                            },
+                        )
+                        .await
+                        {
+                            break 'pump;
+                        }
+                        continue 'pump;
+                    }
+
+                    let buffer = state.session_buffer(&session_id);
+                    let decision = {
+                        let buf = buffer.read().expect("session buffer lock poisoned");
+                        plan_catch_up(after, &buf)
+                    };
+
+                    let seam_seq = match decision {
+                        CatchUp::Replay(evs) => {
+                            let seam = evs.last().map(|e| e.seq).unwrap_or(0);
+                            for ev in evs {
+                                if !forward(
+                                    &outbound_tx,
+                                    DownstreamEnvelope::Session {
+                                        session_id: session_id.clone(),
+                                        event: ev,
+                                    },
+                                )
+                                .await
+                                {
+                                    break 'pump;
+                                }
+                            }
+                            seam
+                        }
+                        CatchUp::SyncLost { latest_seq } => {
+                            let ev = sync_lost_event(&session_id, "evicted", latest_seq);
+                            if !forward(
+                                &outbound_tx,
+                                DownstreamEnvelope::Session {
+                                    session_id: session_id.clone(),
+                                    event: ev,
+                                },
+                            )
+                            .await
+                            {
+                                break 'pump;
+                            }
+                            latest_seq
+                        }
+                        CatchUp::LiveOnly | CatchUp::UpToDate => after.unwrap_or(0),
+                    };
+
+                    let latest_seq = buffer
+                        .read()
+                        .expect("session buffer lock poisoned")
+                        .latest_seq()
+                        .unwrap_or(0);
+                    if !forward(
+                        &outbound_tx,
+                        DownstreamEnvelope::Subscribed {
+                            session_id: session_id.clone(),
+                            latest_seq,
+                        },
+                    )
+                    .await
+                    {
+                        break 'pump;
+                    }
+
+                    subs.insert(session_id, SubState { seam_seq });
                 }
                 Some(ClientMessage::Unsubscribe { session_id }) => {
-                    let _ = session_id;
+                    subs.remove(&session_id);
                 }
-                None => break,
+                None => break 'pump,
             },
             _ = tick.tick() => {
                 if !forward(&outbound_tx, DownstreamEnvelope::Heartbeat).await {
-                    break;
+                    break 'pump;
                 }
             }
         }
@@ -213,19 +356,25 @@ mod tests {
     use super::*;
     use crate::daemon::global_events::{GlobalEvent, GlobalEventKind};
     use crate::daemon::run_loop::{SessionEvent, SessionEventKind};
+    use crate::daemon::state::DaemonState;
     use crate::teams::trace_sink::{TraceEvent, TraceEventKind};
     use axum::extract::ws::Message;
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::{broadcast, mpsc};
 
-    fn session_event() -> SessionEvent {
+    fn ev(seq: u64, session_id: &str) -> SessionEvent {
         SessionEvent {
-            seq: 1,
-            session_id: "s1".to_string(),
-            run_id: "r1".to_string(),
+            seq,
+            session_id: session_id.to_string(),
+            run_id: format!("run-{seq}"),
             kind: SessionEventKind::ContentDelta,
-            data: serde_json::json!({ "delta": "hi" }),
+            data: serde_json::json!({ "delta": seq }),
         }
+    }
+
+    fn session_event() -> SessionEvent {
+        ev(1, "s1")
     }
 
     fn trace_event() -> TraceEvent {
@@ -256,6 +405,140 @@ mod tests {
             seq: 7,
             kind: GlobalEventKind::ModeChanged,
             data: serde_json::json!({}),
+        }
+    }
+
+    // ── Test state + pump harness ────────────────────────────────────────────
+
+    async fn test_state() -> Arc<DaemonState> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.keep();
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = root.clone();
+        let mut state = DaemonState::new(crate::state::AppState::new(settings)).await;
+        // Isolate from the developer's real projects.json (mirrors run_loop tests).
+        state.projects = crate::daemon::projects::ProjectRegistry::load(
+            root.clone(),
+            root.join("projects.json"),
+        );
+        Arc::new(state)
+    }
+
+    async fn save_session(state: &DaemonState, id: &str) {
+        state
+            .session_manager
+            .save(&crate::context::memory_session::Session::with_id(
+                id.to_string(),
+                None,
+            ))
+            .await
+            .expect("save test session");
+    }
+
+    /// Dual-write like production publishers: buffer (replay) + hub (live).
+    fn publish(state: &DaemonState, ev: SessionEvent) {
+        state
+            .session_buffer(&ev.session_id)
+            .write()
+            .expect("session buffer lock poisoned")
+            .push(ev.clone());
+        let _ = state.session_event_hub.send(ev);
+    }
+
+    struct Pump {
+        session_tx: broadcast::Sender<SessionEvent>,
+        trace_tx: broadcast::Sender<TraceEvent>,
+        global_tx: broadcast::Sender<GlobalEvent>,
+        ctrl_tx: mpsc::Sender<ClientMessage>,
+        outbound_rx: mpsc::Receiver<Message>,
+        pump: tokio::task::JoinHandle<()>,
+    }
+
+    async fn spawn_pump(state: Arc<DaemonState>) -> Pump {
+        // Mirror production: the pump's session receiver taps the real
+        // per-daemon hub; `session_tx` is a hub-sender clone so live events in
+        // tests flow through the same channel `publish` uses.
+        let session_tx = state.session_event_hub.clone();
+        let session_rx = state.session_event_hub.subscribe();
+        let (trace_tx, trace_rx) = broadcast::channel(64);
+        let (global_tx, global_rx) = broadcast::channel(64);
+        let (ctrl_tx, ctrl_rx) = mpsc::channel(64);
+        let (outbound_tx, outbound_rx) = mpsc::channel(64);
+        let pump = tokio::spawn(event_pump(
+            state,
+            session_rx,
+            trace_rx,
+            global_rx,
+            ctrl_rx,
+            outbound_tx,
+            Duration::from_secs(3600),
+        ));
+        Pump {
+            session_tx,
+            trace_tx,
+            global_tx,
+            ctrl_tx,
+            outbound_rx,
+            pump,
+        }
+    }
+
+    async fn shutdown(p: Pump) {
+        drop(p.session_tx);
+        drop(p.trace_tx);
+        drop(p.global_tx);
+        drop(p.ctrl_tx);
+        p.pump.await.expect("pump exits cleanly");
+    }
+
+    async fn recv_envelope(rx: &mut mpsc::Receiver<Message>) -> DownstreamEnvelope {
+        let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("envelope within timeout")
+            .expect("outbound channel still open");
+        match msg {
+            Message::Text(text) => serde_json::from_str(&text).expect("valid envelope JSON"),
+            other => panic!("expected text frame, got {other:?}"),
+        }
+    }
+
+    async fn recv_raw(rx: &mut mpsc::Receiver<Message>) -> Message {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("frame within timeout")
+            .expect("outbound channel still open")
+    }
+
+    fn assert_session(env: DownstreamEnvelope, session_id: &str, seq: u64) {
+        match env {
+            DownstreamEnvelope::Session {
+                session_id: sid,
+                event,
+            } => {
+                assert_eq!(sid, session_id);
+                assert_eq!(event.seq, seq);
+            }
+            other => panic!("expected session {session_id} seq {seq}, got {other:?}"),
+        }
+    }
+
+    fn assert_subscribed(env: DownstreamEnvelope, session_id: &str, latest_seq: u64) {
+        match env {
+            DownstreamEnvelope::Subscribed {
+                session_id: sid,
+                latest_seq: latest,
+            } => {
+                assert_eq!(sid, session_id);
+                assert_eq!(latest, latest_seq);
+            }
+            other => panic!("expected subscribed {session_id} latest {latest_seq}, got {other:?}"),
+        }
+    }
+
+    fn assert_error(env: DownstreamEnvelope) -> String {
+        match env {
+            DownstreamEnvelope::Error { message } => message,
+            other => panic!("expected error envelope, got {other:?}"),
         }
     }
 
@@ -357,29 +640,17 @@ mod tests {
     }
 
     /// 连接循环（select 五路）的构造 + 消息出队顺序：不起真 WS 连接，用
-    /// mpsc/broadcast 驱动。trace → global 依发送顺序出队；session（2.2 才有
-    /// 订阅表）与 ctrl（2.2 才实现）为无操作，不产生出站消息。
+    /// mpsc/broadcast 驱动。trace → global 依发送顺序出队；subscribe 应答
+    /// `subscribed`；未订阅 session 事件不产生出站消息。
     #[tokio::test]
     async fn event_pump_forwards_trace_then_global_in_order() {
-        let (session_tx, session_rx) = broadcast::channel(16);
-        let (trace_tx, trace_rx) = broadcast::channel(16);
-        let (global_tx, global_rx) = broadcast::channel(16);
-        let (ctrl_tx, ctrl_rx) = mpsc::channel(16);
-        let (outbound_tx, mut outbound_rx) = mpsc::channel(16);
-
-        let pump = tokio::spawn(event_pump(
-            session_rx,
-            trace_rx,
-            global_rx,
-            ctrl_rx,
-            outbound_tx,
-            Duration::from_secs(3600),
-        ));
+        let state = test_state().await;
+        let mut p = spawn_pump(state).await;
 
         let trace = trace_event();
-        trace_tx.send(trace.clone()).unwrap();
+        p.trace_tx.send(trace.clone()).unwrap();
         assert_eq!(
-            outbound_rx.recv().await.unwrap(),
+            recv_raw(&mut p.outbound_rx).await,
             Message::Text(
                 serde_json::to_string(&DownstreamEnvelope::Trace {
                     event: Box::new(trace)
@@ -389,29 +660,253 @@ mod tests {
         );
 
         let global = global_event();
-        global_tx.send(global.clone()).unwrap();
+        p.global_tx.send(global.clone()).unwrap();
         assert_eq!(
-            outbound_rx.recv().await.unwrap(),
+            recv_raw(&mut p.outbound_rx).await,
             Message::Text(
                 serde_json::to_string(&DownstreamEnvelope::Global { event: global }).unwrap()
             )
         );
 
-        // 上行控制消息（2.2 才实现 subscribe/unsubscribe）与 session 事件
-        //（2.2 才有订阅表）都应被安静消费，不崩、不额外出站。
-        ctrl_tx
+        // subscribe 现在产生 `subscribed` 应答（未知 session → latest_seq: 0）。
+        p.ctrl_tx
             .send(ClientMessage::Subscribe {
                 session_id: "s1".to_string(),
                 after: None,
             })
             .await
             .unwrap();
-        session_tx.send(session_event()).unwrap();
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s1", 0);
 
-        drop(session_tx);
-        drop(trace_tx);
-        drop(global_tx);
-        drop(ctrl_tx);
-        pump.await.unwrap();
+        // 未订阅的 session 事件被丢弃，不产生出站消息。
+        p.session_tx.send(session_event()).unwrap();
+
+        shutdown(p).await;
+    }
+
+    /// 订阅后先 replay 缓冲（`after` 游标续传），再 `subscribed` 应答；seam
+    /// 处重复 seq 被去重，seam 之后的事件不漏发。
+    #[tokio::test]
+    async fn subscribe_replays_buffer_then_acks_and_dedups_seam() {
+        let state = test_state().await;
+        save_session(&state, "s1").await;
+        for seq in 1..=3 {
+            publish(&state, ev(seq, "s1"));
+        }
+
+        let mut p = spawn_pump(state).await;
+
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "s1".to_string(),
+                after: Some(0),
+            })
+            .await
+            .unwrap();
+
+        for seq in 1..=3 {
+            assert_session(recv_envelope(&mut p.outbound_rx).await, "s1", seq);
+        }
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s1", 3);
+
+        // seam 去重：重放 seq 3 被丢弃，seq 4 正常转发。
+        p.session_tx.send(ev(3, "s1")).unwrap();
+        p.session_tx.send(ev(4, "s1")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s1", 4);
+
+        shutdown(p).await;
+    }
+
+    /// 未订阅 session 的事件不转发；订阅后按 session_id 过滤并按 seq 去重。
+    #[tokio::test]
+    async fn unsubscribed_session_not_forwarded_then_subscribed_forwards_with_dedup() {
+        let state = test_state().await;
+        save_session(&state, "s2").await;
+        let mut p = spawn_pump(state).await;
+
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "s2".to_string(),
+                after: None,
+            })
+            .await
+            .unwrap();
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s2", 0);
+
+        // s1 未订阅（先发），s2 已订阅（后发）：只有 s2 的 seq 1 出站。
+        p.session_tx.send(ev(1, "s1")).unwrap();
+        p.session_tx.send(ev(1, "s2")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s2", 1);
+
+        // 重复 seq 1 被去重，seq 2 正常转发。
+        p.session_tx.send(ev(1, "s2")).unwrap();
+        p.session_tx.send(ev(2, "s2")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s2", 2);
+
+        shutdown(p).await;
+    }
+
+    /// unsubscribe 后不再收到该 session 的事件（用同 ctrl 通道的后续 subscribe
+    /// 应答作为屏障，保证 unsubscribe 已被处理，避免时序抖动）。
+    #[tokio::test]
+    async fn unsubscribe_stops_forwarding() {
+        let state = test_state().await;
+        save_session(&state, "s3").await;
+        save_session(&state, "s4").await;
+        let mut p = spawn_pump(state).await;
+
+        for sid in ["s3", "s4"] {
+            p.ctrl_tx
+                .send(ClientMessage::Subscribe {
+                    session_id: sid.to_string(),
+                    after: None,
+                })
+                .await
+                .unwrap();
+            assert_subscribed(recv_envelope(&mut p.outbound_rx).await, sid, 0);
+        }
+
+        p.session_tx.send(ev(1, "s3")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s3", 1);
+
+        // 退订 s3；随后的 s4 重复 subscribe 应答是 ctrl 通道 FIFO 屏障。
+        p.ctrl_tx
+            .send(ClientMessage::Unsubscribe {
+                session_id: "s3".to_string(),
+            })
+            .await
+            .unwrap();
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "s4".to_string(),
+                after: None,
+            })
+            .await
+            .unwrap();
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s4", 0);
+
+        // s3 已退订（先发）→ 丢弃；s4 仍订阅（后发）→ 转发。
+        p.session_tx.send(ev(2, "s3")).unwrap();
+        p.session_tx.send(ev(1, "s4")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s4", 1);
+
+        shutdown(p).await;
+    }
+
+    /// 重复 subscribe 以新游标重新规划：replay 缓冲并刷新 seam。
+    #[tokio::test]
+    async fn repeat_subscribe_replans_and_refreshes_seam() {
+        let state = test_state().await;
+        save_session(&state, "s5").await;
+        publish(&state, ev(1, "s5"));
+        publish(&state, ev(2, "s5"));
+
+        let mut p = spawn_pump(state.clone()).await;
+
+        // live-only 订阅：无 replay，seam 从 0 开始。
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "s5".to_string(),
+                after: None,
+            })
+            .await
+            .unwrap();
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s5", 2);
+
+        publish(&state, ev(3, "s5"));
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s5", 3);
+
+        // 重复订阅（after=0）：replay 1..=3，刷新 seam=3。
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "s5".to_string(),
+                after: Some(0),
+            })
+            .await
+            .unwrap();
+        for seq in 1..=3 {
+            assert_session(recv_envelope(&mut p.outbound_rx).await, "s5", seq);
+        }
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "s5", 3);
+
+        // 刷新后的 seam：seq 3 去重，seq 4 转发。
+        p.session_tx.send(ev(3, "s5")).unwrap();
+        p.session_tx.send(ev(4, "s5")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s5", 4);
+
+        shutdown(p).await;
+    }
+
+    /// 订阅上限 64：第 65 个订阅回错误信封，连接保持、既有订阅不受影响。
+    #[tokio::test]
+    async fn subscription_limit_64_returns_error_and_keeps_connection() {
+        let state = test_state().await;
+        let mut p = spawn_pump(state.clone()).await;
+
+        for i in 0..64 {
+            let sid = format!("s{i}");
+            save_session(&state, &sid).await;
+            p.ctrl_tx
+                .send(ClientMessage::Subscribe {
+                    session_id: sid.clone(),
+                    after: None,
+                })
+                .await
+                .unwrap();
+            assert_subscribed(recv_envelope(&mut p.outbound_rx).await, &sid, 0);
+        }
+
+        save_session(&state, "s64").await;
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "s64".to_string(),
+                after: None,
+            })
+            .await
+            .unwrap();
+        let message = assert_error(recv_envelope(&mut p.outbound_rx).await);
+        assert!(
+            message.contains("64"),
+            "error mentions the limit: {message}"
+        );
+
+        // 连接仍在：既有订阅继续转发 live 事件。
+        p.session_tx.send(ev(1, "s0")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "s0", 1);
+
+        shutdown(p).await;
+    }
+
+    /// 未知 session：`subscribed{latest_seq: 0}` 应答、无 sync_lost、不入订阅表。
+    #[tokio::test]
+    async fn unknown_session_acks_with_latest_zero() {
+        let state = test_state().await;
+        save_session(&state, "sk").await;
+        let mut p = spawn_pump(state).await;
+
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "sk".to_string(),
+                after: None,
+            })
+            .await
+            .unwrap();
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "sk", 0);
+
+        p.ctrl_tx
+            .send(ClientMessage::Subscribe {
+                session_id: "ghost".to_string(),
+                after: Some(7),
+            })
+            .await
+            .unwrap();
+        assert_subscribed(recv_envelope(&mut p.outbound_rx).await, "ghost", 0);
+
+        // ghost 未入表：先发的 ghost 事件被丢弃，只有 sk 的事件出站。
+        p.session_tx.send(ev(1, "ghost")).unwrap();
+        p.session_tx.send(ev(1, "sk")).unwrap();
+        assert_session(recv_envelope(&mut p.outbound_rx).await, "sk", 1);
+
+        shutdown(p).await;
     }
 }

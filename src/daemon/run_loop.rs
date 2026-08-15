@@ -1301,7 +1301,7 @@ pub(crate) fn plan_catch_up(after: Option<u64>, buf: &SessionEventBuffer) -> Cat
 
 /// Build the out-of-band `sync_lost` event for one connection (design §2.3).
 /// `seq: 0` and empty `run_id` mark it as control-plane, not run output.
-fn sync_lost_event(session_id: &str, reason: &str, latest_seq: u64) -> SessionEvent {
+pub(crate) fn sync_lost_event(session_id: &str, reason: &str, latest_seq: u64) -> SessionEvent {
     SessionEvent {
         seq: 0,
         session_id: session_id.to_string(),
