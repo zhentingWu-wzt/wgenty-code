@@ -1,19 +1,21 @@
 import { render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonClient } from "./api/client";
 
-/**
- * Minimal EventSource stand-in — jsdom does not provide one. The heartbeat
- * effect only needs construction + property/event hooks + close().
- */
-class MockEventSource {
-  onmessage: ((e: unknown) => void) | null = null;
-  onerror: (() => void) | null = null;
-  constructor(public url: string) {}
-  addEventListener() {}
-  close() {}
-}
+// The singleton ws push channel is a no-op here: jsdom has no daemon to talk
+// to, and the real channel's backoff loop would leave live timers spinning
+// after the test.
+vi.mock("./api/wsChannel", () => ({
+  wsChannel: {
+    connect: () => {},
+    status: () => "idle" as const,
+    subscribeTrace: () => () => {},
+    subscribeGlobal: () => () => {},
+    subscribeSession: () => ({ unsubscribe: () => {} }),
+    onReconnected: () => () => {},
+  },
+}));
 
 /**
  * Smoke test: the full shell must render with the daemon offline.
@@ -23,15 +25,15 @@ class MockEventSource {
  */
 describe("App", () => {
   beforeEach(() => {
-    vi.stubGlobal("EventSource", MockEventSource);
     vi.spyOn(DaemonClient.prototype, "health").mockRejectedValue(new Error("offline"));
-    vi.spyOn(DaemonClient.prototype, "traceStream").mockRejectedValue(new Error("offline"));
+    vi.spyOn(DaemonClient.prototype, "traceReplay").mockRejectedValue(new Error("offline"));
+    vi.spyOn(DaemonClient.prototype, "listPendingPermissions").mockRejectedValue(
+      new Error("offline"),
+    );
     vi.spyOn(DaemonClient.prototype, "listWorktrees").mockRejectedValue(new Error("offline"));
     vi.spyOn(DaemonClient.prototype, "listSkills").mockRejectedValue(new Error("offline"));
     vi.spyOn(DaemonClient.prototype, "listSessions").mockRejectedValue(new Error("offline"));
   });
-
-  afterEach(() => vi.unstubAllGlobals());
 
   it("renders the app shell", async () => {
     render(<App />);
