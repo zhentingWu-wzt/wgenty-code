@@ -1311,6 +1311,70 @@ fn sync_lost_event(session_id: &str, reason: &str, latest_seq: u64) -> SessionEv
     }
 }
 
+/// A live session-event subscription opened by [`subscribe_session_events`]:
+/// the `after=` replay/attach decision, the initial dedup seam, and the live
+/// broadcast receiver.
+///
+/// Seam invariant: the receiver is subscribed to the hub *before* the caller
+/// replays [`CatchUp::Replay`] events, so no seam event can be lost; the
+/// caller dedups by dropping live events with `seq <= seam_seq`.
+pub(crate) struct SessionEventSubscription {
+    /// Replay/attach decision for the `after` cursor (design §2.2).
+    pub catch_up: CatchUp,
+    /// First live seq to forward — everything `<= seam_seq` was already
+    /// replayed or is skipped by the cursor.
+    pub seam_seq: u64,
+    /// Live receiver for the session hub.
+    pub live: tokio::sync::broadcast::Receiver<SessionEvent>,
+}
+
+/// Subscribe a caller to a session's event stream with an optional `after`
+/// cursor. Mirrors the `GET /sessions/:id/events` replay/attach semantics
+/// (design §2.2): compute [`CatchUp`], subscribe to the hub BEFORE the replay
+/// snapshot is consumed, and derive the initial `seam_seq`.
+pub(crate) fn subscribe_session_events(
+    after: Option<u64>,
+    buffer: &Arc<std::sync::RwLock<SessionEventBuffer>>,
+    hub: &SessionEventHub,
+) -> SessionEventSubscription {
+    let catch_up = {
+        let buf = buffer.read().expect("session buffer lock poisoned");
+        plan_catch_up(after, &buf)
+    };
+    // Subscribe BEFORE replaying so seam events can't be lost; dedup below.
+    let live = hub.subscribe();
+    let seam_seq = match &catch_up {
+        CatchUp::Replay(evs) => evs.last().map(|e| e.seq).unwrap_or(0),
+        CatchUp::SyncLost { latest_seq } => *latest_seq,
+        CatchUp::LiveOnly | CatchUp::UpToDate => after.unwrap_or(0),
+    };
+    SessionEventSubscription {
+        catch_up,
+        seam_seq,
+        live,
+    }
+}
+
+/// Handle a `Lagged` error on a live session-event subscription (design §2.3):
+/// jump the seam to the latest buffered seq and build the out-of-band
+/// `sync_lost` event (`reason: "lagged"`) for that one subscriber. Other
+/// subscribers are unaffected. Shared by the SSE handler and the upcoming
+/// WebSocket endpoint.
+pub(crate) fn plan_lagged_resync(
+    session_id: &str,
+    seam_seq: &mut u64,
+    buffer: &Arc<std::sync::RwLock<SessionEventBuffer>>,
+) -> SessionEvent {
+    let latest = buffer
+        .read()
+        .expect("session buffer lock poisoned")
+        .latest_seq()
+        .unwrap_or(*seam_seq);
+    let ev = sync_lost_event(session_id, "lagged", latest);
+    *seam_seq = latest; // skip everything up to latest; client resyncs
+    ev
+}
+
 /// GET /api/v1/sessions/:id/events — SSE stream of the session's events.
 ///
 /// Without `after`: live-only (default, unchanged). With `after=<seq>`:
@@ -1334,16 +1398,17 @@ pub(crate) async fn get_session_events(
     }
 
     let buffer = state.session_buffer(&id);
-    let catch_up = {
-        let buf = buffer.read().expect("session buffer lock poisoned");
-        plan_catch_up(query.after, &buf)
-    };
+    let SessionEventSubscription {
+        catch_up,
+        mut seam_seq,
+        mut live,
+    } = subscribe_session_events(query.after, &buffer, &state.session_event_hub);
 
     let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
-    // Subscribe BEFORE replaying so seam events can't be lost; dedup below.
-    let mut live = state.session_event_hub.subscribe();
 
-    let mut seam_seq = match &catch_up {
+    // Replay the catch-up decision into the SSE channel. The hub was already
+    // subscribed by `subscribe_session_events`, so seam events can't be lost.
+    match &catch_up {
         CatchUp::Replay(evs) => {
             for ev in evs {
                 let data = serde_json::to_string(ev).unwrap_or_default();
@@ -1353,17 +1418,15 @@ pub(crate) async fn get_session_events(
                     );
                 }
             }
-            evs.last().map(|e| e.seq).unwrap_or(0)
         }
         CatchUp::SyncLost { latest_seq } => {
             let ev = sync_lost_event(&id, "evicted", *latest_seq);
             let data = serde_json::to_string(&ev).unwrap_or_default();
             let _ = tx.send(Ok(Event::default().data(data)));
             // Keep the stream open; the client decides to resubscribe (§2.3).
-            *latest_seq
         }
-        CatchUp::LiveOnly | CatchUp::UpToDate => query.after.unwrap_or(0),
-    };
+        CatchUp::LiveOnly | CatchUp::UpToDate => {}
+    }
 
     tokio::spawn(async move {
         loop {
@@ -1384,14 +1447,8 @@ pub(crate) async fn get_session_events(
                         lagged = n,
                         "session events SSE subscriber lagged; sending sync_lost to this subscriber"
                     );
-                    let latest = buffer
-                        .read()
-                        .expect("session buffer lock poisoned")
-                        .latest_seq()
-                        .unwrap_or(seam_seq);
-                    let ev = sync_lost_event(&id, "lagged", latest);
+                    let ev = plan_lagged_resync(&id, &mut seam_seq, &buffer);
                     let data = serde_json::to_string(&ev).unwrap_or_default();
-                    seam_seq = latest; // skip everything up to latest; client resyncs
                     if tx.send(Ok(Event::default().data(data))).is_err() {
                         return;
                     }
@@ -1852,6 +1909,66 @@ mod tests {
             plan_catch_up(Some(9), &empty),
             CatchUp::SyncLost { latest_seq: 0 }
         ));
+    }
+
+    /// The extracted subscription primitive must compute the same `after=`
+    /// catch-up decision and seam as the SSE handler (design §2.2), and
+    /// subscribe to the hub before the caller replays (seam invariant).
+    #[test]
+    fn subscribe_session_events_plans_catch_up_and_seam() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 3..=6 {
+                buf.push(ev(seq));
+            }
+        }
+        let (hub, _keep) = tokio::sync::broadcast::channel(8);
+
+        // No cursor → live-only, seam starts at 0.
+        let sub = subscribe_session_events(None, &buffer, &hub);
+        assert!(matches!(&sub.catch_up, CatchUp::LiveOnly));
+        assert_eq!(sub.seam_seq, 0);
+
+        // Buffer covers after+1 → replay [5,6], seam = last replayed seq.
+        let sub = subscribe_session_events(Some(4), &buffer, &hub);
+        match &sub.catch_up {
+            CatchUp::Replay(evs) => {
+                assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![5, 6])
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+        assert_eq!(sub.seam_seq, 6);
+
+        // Cursor fell out of the buffer → SyncLost, seam = latest buffered seq.
+        let sub = subscribe_session_events(Some(1), &buffer, &hub);
+        assert!(matches!(&sub.catch_up, CatchUp::SyncLost { latest_seq: 6 }));
+        assert_eq!(sub.seam_seq, 6);
+
+        // Cursor already at/after latest → nothing missed, seam = cursor.
+        let sub = subscribe_session_events(Some(6), &buffer, &hub);
+        assert!(matches!(&sub.catch_up, CatchUp::UpToDate));
+        assert_eq!(sub.seam_seq, 6);
+    }
+
+    /// The lagged-resync helper advances the seam past the latest buffered
+    /// seq and returns the `sync_lost` event — the behavior both the SSE
+    /// handler and the upcoming WebSocket endpoint need (design §2.3).
+    #[test]
+    fn lagged_resync_advances_seam_and_builds_sync_lost() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 1..=10 {
+                buf.push(ev(seq));
+            }
+        }
+        let mut seam = 8;
+        let sync = plan_lagged_resync("s", &mut seam, &buffer);
+        assert_eq!(sync.kind, SessionEventKind::SyncLost);
+        assert_eq!(sync.data["reason"], "lagged");
+        assert_eq!(sync.data["latest_seq"], 10);
+        assert_eq!(seam, 10);
     }
 
     #[test]
