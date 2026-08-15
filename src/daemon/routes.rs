@@ -13,6 +13,7 @@ use crate::daemon::session_admin;
 use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
 use crate::daemon::worktrees;
+use crate::daemon::ws_push;
 use axum::{
     middleware,
     routing::{delete, get, post, put},
@@ -196,6 +197,13 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
         )
+        // WebSocket push channel. Registered BEFORE the auth/activity
+        // route_layers: browser WebSocket APIs cannot set headers, so this
+        // endpoint authenticates in-handler (query `token` first, then the
+        // Authorization header fallback) with the same rejection shape as
+        // `require_auth`. Idle-shutdown accounting is task 2.4 (register on
+        // upgrade), so it must not run through `touch_activity` here.
+        .route("/api/v1/ws", get(ws_push::ws_handler))
         // Session server-side runs (spawn / cancel an agent turn, live SSE events)
         .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
         .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))

@@ -17,9 +17,10 @@ use crate::daemon::run_loop::{
 };
 use crate::daemon::state::DaemonState;
 use crate::teams::trace_sink::TraceEvent;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
-use axum::response::Response;
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -89,31 +90,73 @@ const MAX_SUBSCRIPTIONS: usize = 64;
 
 /// Pump tuning knobs grouped to keep [`event_pump`] within clippy's
 /// argument-count limit.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PumpConfig {
     heartbeat: Duration,
     replay_batch: usize,
+    /// The token this connection authenticated with. Compared against the
+    /// current expected token on every heartbeat tick; a mismatch (rotation)
+    /// closes the connection with 4001 so the client refreshes and reconnects.
+    auth_token: Arc<str>,
 }
 
 /// `GET /api/v1/ws` handler (design §3.1/§4).
 ///
-/// Task 2.1 leaves it `pub(crate)` and unregistered: route registration and
-/// token auth land in tasks 2.3. The 16 MiB `max_message_size` matches design
-/// §3.1 (SessionEvent may carry a large diff).
-#[allow(dead_code)] // wired into routes + auth in task 2.3
+/// Auth is in-handler (not the header-only middleware) because browser
+/// WebSocket APIs cannot set headers: the token is taken from the `token`
+/// query parameter first, falling back to `Authorization: Bearer` for
+/// non-browser clients. Rejection is identical to `require_auth` (401 +
+/// same body). An empty expected token (daemon not fully initialized)
+/// rejects everything. The 16 MiB `max_message_size` matches design §3.1.
+#[derive(serde::Deserialize)]
+pub(crate) struct WsAuthQuery {
+    token: Option<String>,
+}
+
+/// In-handler auth decision (design §3.1): query `token` first, then the
+/// `Authorization: Bearer` fallback (non-browser clients). An empty expected
+/// token — daemon not fully initialized — rejects everything so the
+/// uninitialized window cannot be bypassed with an empty query token.
+/// Extracted as a pure function so the decision matrix is unit-testable
+/// without a live hyper server (the `WebSocketUpgrade` extractor rejects
+/// oneshot requests before handler code runs); the wire-level handshake is
+/// covered by the task-2.5 tokio-tungstenite integration tests.
+pub(crate) fn authorize_ws(expected: &str, query_token: Option<&str>, headers: &HeaderMap) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
+    let provided = query_token.or_else(|| {
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+    });
+    provided == Some(expected)
+}
+
 pub(crate) async fn ws_handler(
     State(state): State<Arc<DaemonState>>,
+    Query(query): Query<WsAuthQuery>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let expected = state.current_api_token();
+    if !authorize_ws(&expected, query.token.as_deref(), &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "unauthorized: missing or invalid bearer token",
+        )
+            .into_response();
+    }
+
     ws.max_message_size(16 * 1024 * 1024)
-        .on_upgrade(move |socket| connection_loop(state, socket))
+        .on_upgrade(move |socket| connection_loop(state, Arc::from(expected.as_str()), socket))
 }
 
 /// Per-connection task: split the socket into a writer half (serialized
 /// outbound envelopes) and a reader half (parsed control messages), then run
 /// the five-way `select!` pump.
-#[allow(dead_code)] // only reachable via ws_handler, wired in task 2.3
-async fn connection_loop(state: Arc<DaemonState>, socket: WebSocket) {
+async fn connection_loop(state: Arc<DaemonState>, auth_token: Arc<str>, socket: WebSocket) {
     let (mut socket_tx, mut socket_rx) = socket.split();
 
     // Outbound: envelopes are serialized and sent here so the pump's select
@@ -167,6 +210,7 @@ async fn connection_loop(state: Arc<DaemonState>, socket: WebSocket) {
         PumpConfig {
             heartbeat: Duration::from_secs(15),
             replay_batch: REPLAY_BATCH,
+            auth_token,
         },
     )
     .await;
@@ -189,6 +233,7 @@ async fn event_pump(
     let PumpConfig {
         heartbeat,
         replay_batch,
+        auth_token,
     } = config;
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
     // Per-connection subscription table (design §3.3); released when the pump
@@ -387,6 +432,17 @@ async fn event_pump(
                 None => break 'pump,
             },
             _ = tick.tick() => {
+                // Token-rotation guard: close stale credentials with 4001 so
+                // the client refreshes its token and reconnects (design §3.1).
+                if state.current_api_token() != *auth_token {
+                    let _ = outbound_tx
+                        .send(Message::Close(Some(CloseFrame {
+                            code: 4001,
+                            reason: "token rotated".into(),
+                        })))
+                        .await;
+                    break 'pump;
+                }
                 if !forward(&outbound_tx, DownstreamEnvelope::Heartbeat).await {
                     break 'pump;
                 }
@@ -561,6 +617,7 @@ mod tests {
             PumpConfig {
                 heartbeat: Duration::from_secs(3600),
                 replay_batch,
+                auth_token: Arc::from(""),
             },
         ));
         Pump {
@@ -1049,5 +1106,36 @@ mod tests {
         );
 
         shutdown(p).await;
+    }
+
+    // ── Task 2.3: handshake auth (design §3.1) ──────────────────────────────
+
+    /// 认证矩阵：无凭证 / 错误 query token → 401（与受保护路由同构）；
+    /// Authorization header 回退可用；query token 可用；未初始化 token 的
+    /// daemon（空期望值）拒绝一切凭证（含空 token，杜绝空串绕过）。
+    #[tokio::test]
+    async fn ws_handler_auth_matrix() {
+        let bearer = |token: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {token}").parse().unwrap(),
+            );
+            headers
+        };
+
+        // 无凭证 → 拒绝
+        assert!(!authorize_ws("tok123", None, &HeaderMap::new()));
+        // 错误 query token → 拒绝
+        assert!(!authorize_ws("tok123", Some("wrong"), &HeaderMap::new()));
+        // 正确 query token → 通过
+        assert!(authorize_ws("tok123", Some("tok123"), &HeaderMap::new()));
+        // Authorization header 回退 → 通过
+        assert!(authorize_ws("tok123", None, &bearer("tok123")));
+        // query 优先于 header（header 错、query 对 → 通过）
+        assert!(authorize_ws("tok123", Some("tok123"), &bearer("wrong")));
+        // 未初始化（期望值为空）：即使凭证匹配也拒绝一切
+        assert!(!authorize_ws("", Some(""), &HeaderMap::new()));
+        assert!(!authorize_ws("", None, &bearer("")));
     }
 }
