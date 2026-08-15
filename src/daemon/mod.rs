@@ -21,6 +21,7 @@ pub(crate) mod session_admin;
 pub(crate) mod skills_api;
 pub mod state;
 pub(crate) mod worktrees;
+pub(crate) mod ws_push;
 
 use crate::state::AppState;
 use axum::extract::DefaultBodyLimit;
@@ -101,6 +102,9 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     // never overwrites an existing daemon's token.
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
+    // In-handler auth (WebSocket query token) reads the expected value from
+    // the shared state; the middleware path keeps its own copy below.
+    daemon_state.set_api_token(api_token.clone());
     eprintln!(
         "Daemon API token saved to: {}",
         crate::utils::daemon_token_path().display()

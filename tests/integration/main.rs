@@ -17,6 +17,7 @@ mod daemon_events_replay;
 mod daemon_global_events;
 mod daemon_harness;
 mod daemon_subagent_scope;
+mod daemon_ws_push;
 mod exec_session_e2e;
 mod exec_session_node_lifecycle;
 mod integration_test;

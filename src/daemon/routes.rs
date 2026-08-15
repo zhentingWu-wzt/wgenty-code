@@ -13,6 +13,7 @@ use crate::daemon::session_admin;
 use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
 use crate::daemon::worktrees;
+use crate::daemon::ws_push;
 use axum::{
     middleware,
     routing::{delete, get, post, put},
@@ -196,6 +197,14 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
         )
+        // WebSocket push channel. Sits behind the auth/activity route_layers
+        // like every protected route (axum wraps routes registered before a
+        // `route_layer`); `require_auth` accepts the `?token=` query fallback
+        // (design §3.1) because browser WebSocket APIs cannot set headers,
+        // and the handler re-checks credentials in-handler with the same
+        // rejection shape. Idle-shutdown accounting registers the connection
+        // as an active client on upgrade (task 2.4).
+        .route("/api/v1/ws", get(ws_push::ws_handler))
         // Session server-side runs (spawn / cancel an agent turn, live SSE events)
         .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
         .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))

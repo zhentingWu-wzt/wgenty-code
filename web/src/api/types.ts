@@ -550,12 +550,21 @@ export type SessionEventKind =
   | "ask_user";
 
 /** Mirrors SessionEvent (src/daemon/run_loop.rs:26). Server-side run broadcasts
- *  these on GET /sessions/:id/events (SSE). data shape varies by kind. */
+ * these on GET /sessions/:id/events (SSE). data shape varies by kind. */
 export interface SessionEvent {
   seq: number;
   session_id: string;
   run_id: string;
   kind: SessionEventKind;
+  data: Record<string, unknown>;
+}
+
+/** Mirrors GlobalEvent (src/daemon/global_events.rs) — one event on the
+ * daemon-wide global bus, delivered via SSE (`GET /events`) or the WebSocket
+ * push channel (`global` envelopes). `seq` is monotonic per daemon boot. */
+export interface GlobalEvent {
+  seq: number;
+  kind: string;
   data: Record<string, unknown>;
 }
 
