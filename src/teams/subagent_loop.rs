@@ -854,7 +854,11 @@ impl SubagentObserver {
                 .expect("lock poisoned: current_params")
                 .clone(),
             action_log: action_log_snapshot.clone(),
-            text_snapshot: if is_terminal { None } else { snapshot },
+            // Always carry the snapshot (terminal included): the terminal
+            // event doubles as the result delivery to progress consumers and
+            // the trace bus. Non-terminal TraceEvents still omit it (mapped
+            // to `result` only when terminal).
+            text_snapshot: snapshot,
             started_at: self.started_at_ms,
             elapsed_ms: elapsed.as_millis() as u64,
             metadata,
@@ -955,6 +959,15 @@ impl RoundObserver for SubagentObserver {
             .find(|m| m.role == "assistant")
             .and_then(|m| m.content.clone())
             .unwrap_or_default();
+        // Keep the terminal snapshot current: the final assistant message IS
+        // the subagent's result. `emit` forwards it so REST views and the
+        // trace bus (`TraceEvent::result`) carry the finished result.
+        if !summary.is_empty() {
+            *self
+                .text_snapshot
+                .lock()
+                .expect("lock poisoned: text_snapshot") = Some(summary.clone());
+        }
         self.action_log
             .lock()
             .expect("lock poisoned: action_log")

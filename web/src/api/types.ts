@@ -240,6 +240,9 @@ export interface TraceEvent {
   token_budget_k?: number | null;
   cumulative_tokens: number;
   error?: unknown;
+  /** Terminal-only final result text of the subagent (present on the last
+   *  progress event once status is completed/failed/cancelled). */
+  result?: string | null;
   kind?:
     | "progress"
     | "permission_pending"

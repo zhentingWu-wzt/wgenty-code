@@ -109,6 +109,7 @@ function toSubagentNode(
     status: entry.status,
     round: entry.round ?? null,
     currentTool: trace ? trace.currentTool : null,
+    resultText: trace ? trace.resultText : null,
     elapsedMs: entry.elapsed_ms,
     cumulativeTokens: entry.cumulative_tokens,
     lastUpdated: Date.now(),
@@ -218,6 +219,19 @@ function TreeNode({
         <span>{(node.elapsedMs / 1000).toFixed(1)}s</span>
         {node.cumulativeTokens > 0 && <span>{(node.cumulativeTokens / 1000).toFixed(1)}k tok</span>}
       </div>
+
+      {/* Terminal result preview (full text in the detail tab) */}
+      {node.resultText && (
+        <div
+          className="whitespace-pre-wrap break-words px-1 pb-0.5 text-[10px] text-muted-foreground/80"
+          style={{ paddingLeft: `${depth * 12 + 20}px` }}
+          title={node.resultText}
+        >
+          {node.resultText.length > 200
+            ? `${node.resultText.slice(0, 200)}…`
+            : node.resultText}
+        </div>
+      )}
 
       {/* Children */}
       {expanded && hasChildren && (

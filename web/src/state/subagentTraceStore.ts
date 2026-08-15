@@ -20,6 +20,8 @@ export interface SubagentNode {
   status: string;
   round: number | null;
   currentTool: string | null;
+  /** Final result text (from the terminal trace event's `result`). */
+  resultText: string | null;
   elapsedMs: number;
   cumulativeTokens: number;
   lastUpdated: number;
@@ -48,6 +50,7 @@ export const useSubagentTraceStore = create<SubagentTraceState>((set, get) => ({
       status: ev.status,
       round: ev.round ?? null,
       currentTool: ev.current_tool ?? null,
+      resultText: ev.result ?? null,
       elapsedMs: ev.elapsed_ms,
       cumulativeTokens: ev.cumulative_tokens,
       lastUpdated: Date.now(),
