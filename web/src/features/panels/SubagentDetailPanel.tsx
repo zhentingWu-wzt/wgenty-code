@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Loader2, Network, RefreshCw } from "lucide-react";
@@ -18,6 +18,7 @@ import {
 import { useUiStore } from "../../state/uiStore";
 import { cn } from "../../lib/utils";
 import { Button } from "../../components/ui/button";
+import { RunningToolCard, ToolCallCard } from "../chat/ToolCallCard";
 
 /**
  * Subagent detail panel - the content of a `subagent:<nodeId>` tab.
@@ -76,6 +77,7 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     // Prefer the durable per-session directory tree; fall back to the volatile
@@ -117,6 +119,19 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
       setLoading(false);
     }
   }, [client, nodeId, rootSessionId]);
+
+  // Auto-scroll to the latest message. Depends on a content-derived key, not
+  // the messages array itself: polling replaces the array reference every
+  // REFRESH_MS, and a reference dep would yank the user back to the bottom
+  // even when nothing new arrived.
+  const messages = view?.self_view.messages ?? [];
+  const lastMessage = messages[messages.length - 1];
+  const scrollKey = `${messages.length}:${lastMessage?.content?.length ?? 0}:${
+    lastMessage?.tool_calls?.length ?? 0
+  }`;
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [scrollKey]);
 
   // Initial load on mount. Switching tabs remounts via `key={nodeId}` (App),
   // so state resets naturally. Fetching remote data on mount is a legitimate
@@ -285,6 +300,7 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
           )}
         </div>
       )}
+      <div ref={bottomRef} />
     </div>
   );
 }
@@ -308,50 +324,79 @@ function SubagentMessages({
     return <div className="text-[12px] text-muted-foreground">暂无消息。</div>;
   }
 
+  // Index role:"tool" results by tool_call_id so each tool call renders as one
+  // collapsed ToolCallCard (call + result paired) instead of flat chips; the
+  // tool messages themselves are skipped — they are shown inside their card.
+  const toolResults = new Map<string, ChatMessage>();
+  for (const m of messages) {
+    if (m.role === "tool" && m.tool_call_id) toolResults.set(m.tool_call_id, m);
+  }
+
   return (
     <div className="flex flex-col gap-2">
       {messages.map((m, i) => (
-        <div
-          key={i}
-          className={cn(
-            "flex flex-col gap-1 rounded-lg px-3 py-2",
-            m.role === "user" ? "bg-primary/10 items-end" : "bg-card",
-          )}
-        >
-          <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
-            <span
-              className={cn(
-                "h-1.5 w-1.5 rounded-full",
-                m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
-              )}
-            />
-            {m.role}
+        m.role === "tool" ? null : (
+          <div
+            key={i}
+            className={cn(
+              "flex flex-col gap-1 rounded-lg px-3 py-2",
+              m.role === "user" ? "bg-primary/10 items-end" : "bg-card",
+            )}
+          >
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
+                )}
+              />
+              {m.role}
+            </div>
+            {m.content && (
+              <div className="max-w-[85%] text-[13px]">
+                {m.role === "assistant" ? (
+                  <Markdown>{m.content}</Markdown>
+                ) : (
+                  <span className="whitespace-pre-wrap">{m.content}</span>
+                )}
+              </div>
+            )}
+            {m.tool_calls && m.tool_calls.length > 0 && (
+              <div className="flex w-full flex-col gap-1">
+                {m.tool_calls.map((tc) => {
+                  const result = toolResults.get(tc.id);
+                  return result ? (
+                    <ToolCallCard
+                      key={tc.id}
+                      exec={{
+                        call: tc,
+                        response: { success: true, content: result.content },
+                      }}
+                    />
+                  ) : (
+                    <RunningToolCard
+                      key={tc.id}
+                      name={tc.function.name}
+                      args={parseArgs(tc.function.arguments)}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
-          {m.content && (
-            <div className="max-w-[85%] text-[13px]">
-              {m.role === "assistant" ? (
-                <Markdown>{m.content}</Markdown>
-              ) : (
-                <span className="whitespace-pre-wrap">{m.content}</span>
-              )}
-            </div>
-          )}
-          {m.tool_calls && m.tool_calls.length > 0 && (
-            <div className="flex flex-col gap-1 text-[11px] text-muted-foreground">
-              {m.tool_calls.map((tc) => (
-                <div
-                  key={tc.id}
-                  className="rounded border border-border bg-background px-2 py-1 font-mono"
-                >
-                  🔧 {tc.function.name}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        )
       ))}
     </div>
   );
+}
+
+/** Best-effort parse of a tool call's JSON argument string. */
+function parseArgs(argsJson: string): Record<string, unknown> {
+  try {
+    return JSON.parse(argsJson) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 /** Compact GFM markdown renderer for read-only subagent output. */
