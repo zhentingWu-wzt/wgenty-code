@@ -104,7 +104,18 @@ export default defineConfig({
               proxyReq.setHeader("authorization", `Bearer ${token}`);
             }
           });
+          // WebSocket upgrades emit `proxyReqWs`, NOT `proxyReq` — without
+          // this the browser ws fallback path (same-origin /api/v1/ws, no
+          // query token) would 401 at the daemon's auth middleware.
+          proxy.on("proxyReqWs", (proxyReq) => {
+            const token = readDaemonToken();
+            if (token) {
+              proxyReq.setHeader("authorization", `Bearer ${token}`);
+            }
+          });
         },
+        // Forward WebSocket upgrades (same-origin ws fallback path).
+        ws: true,
       },
     },
   },
