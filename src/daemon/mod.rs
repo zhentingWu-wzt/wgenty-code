@@ -110,6 +110,9 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
 
     // Split the router: health stays public, everything else requires auth.
+    // `cleanup_token` survives the move into `create_routers` so the shutdown
+    // cleanup can delete the token file only when it still belongs to us.
+    let cleanup_token = api_token.clone();
     let (health_router, protected_router) = routes::create_routers(daemon_state.clone(), api_token);
 
     let app = health_router
@@ -118,71 +121,74 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         // long-session chat/compaction POSTs are not rejected with 413.
         .layer(DefaultBodyLimit::disable())
         .layer(
+            // Loopback-only daemon guarded by a per-boot bearer token: an
+            // origin allowlist adds no security (callers must present the
+            // token regardless of Origin) but breaks the web client whenever
+            // vite picks a different port (5174…) or the page is opened via
+            // LAN IP / hostname (`vite --host`). Private Network Access is
+            // allowed for the same reason: Chrome sends
+            // `Access-Control-Request-Private-Network` when a non-loopback
+            // origin fetches 127.0.0.1, and without this header it fails the
+            // fetch with a bare "Failed to fetch".
             CorsLayer::new()
-                .allow_origin([
-                    "http://localhost:3000"
-                        .parse()
-                        .expect("invalid hardcoded URL literal"),
-                    "http://localhost:5173"
-                        .parse()
-                        .expect("invalid hardcoded URL literal"),
-                    "http://127.0.0.1:3000"
-                        .parse()
-                        .expect("invalid hardcoded URL literal"),
-                    "http://127.0.0.1:5173"
-                        .parse()
-                        .expect("invalid hardcoded URL literal"),
-                ])
+                .allow_origin(tower_http::cors::Any)
                 .allow_methods([
                     http::Method::GET,
                     http::Method::POST,
                     http::Method::PUT,
                     http::Method::DELETE,
                 ])
-                .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE]),
+                .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE])
+                .allow_private_network(true),
         );
 
     info!("daemon listening on http://{}", addr);
 
-    // Thin-client idle-shutdown monitor: when the last thin client
-    // disconnects, start a grace-period timer. If no client reconnects
-    // within that window, signal the Axum server to shut down gracefully.
+    // Thin-client idle-shutdown monitor: the daemon shuts down gracefully
+    // when no thin client is connected AND no authenticated API request has
+    // arrived for THIN_CLIENT_IDLE_TIMEOUT_SECS. The window starts at daemon
+    // boot, so a daemon that never serves any client also exits instead of
+    // lingering forever; any activity (client connect or API request) pushes
+    // the deadline out.
     let active_clients = daemon_state.active_clients.clone();
     let shutdown_notify = daemon_state.shutdown_notify.clone();
     let shutdown_signal = async move {
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
+        let idle_timeout =
+            std::time::Duration::from_secs(crate::daemon::state::THIN_CLIENT_IDLE_TIMEOUT_SECS);
 
         loop {
+            // Sleep until the idle deadline (with a small floor so the
+            // overdue-but-clients-connected case re-checks periodically
+            // instead of busy-spinning).
+            let remaining = idle_timeout
+                .saturating_sub(active_clients.idle_for())
+                .max(std::time::Duration::from_millis(50));
+            let deadline = tokio::time::sleep(remaining);
+            tokio::pin!(deadline);
+
             tokio::select! {
-                // wait_for_zero resolves when: (a) the first client connects, or
-                // (b) count reaches zero after having had clients.
-                () = active_clients.wait_for_zero() => {
-                    // Only proceed with shutdown when count is actually zero.
-                    if active_clients.client_count() != 0 {
-                        continue;
-                    }
-
-                    let timeout = std::time::Duration::from_secs(
-                        crate::daemon::state::THIN_CLIENT_IDLE_TIMEOUT_SECS,
-                    );
-                    tracing::info!(
-                        "all thin clients disconnected; waiting {}s before shutdown",
-                        timeout.as_secs(),
-                    );
-
-                    // Sleep through the grace period. If a client reconnects
-                    // during this time, the count will be >0 when we wake up.
-                    tokio::time::sleep(timeout).await;
-
-                    if active_clients.client_count() == 0 {
-                        tracing::info!("idle timeout elapsed; initiating graceful shutdown");
+                () = &mut deadline => {
+                    // A connected thin client keeps the daemon alive even
+                    // without requests (an idle-but-open web/desktop app only
+                    // receives keepalives).
+                    if active_clients.client_count() == 0
+                        && active_clients.idle_for() >= idle_timeout
+                    {
+                        tracing::info!(
+                            "idle timeout elapsed ({}s with no clients and no API activity); initiating graceful shutdown",
+                            idle_timeout.as_secs(),
+                        );
                         active_clients.initiate_shutdown();
                         break;
                     }
-
-                    tracing::info!("client reconnected during grace period; cancelling shutdown");
+                    // Activity during the wait pushed the deadline out —
+                    // loop and recompute.
                 }
+                // Client count changed (last client left) — re-check now
+                // instead of waiting out the current sleep.
+                () = active_clients.clients_changed() => {}
                 _ = &mut ctrl_c => {
                     tracing::info!("received SIGINT; initiating graceful shutdown");
                     active_clients.initiate_shutdown();
@@ -198,13 +204,52 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         }
     };
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal)
-        .await?;
+    // Force-exit watchdog: hyper's graceful shutdown stops accepting new
+    // connections but waits for in-flight ones to finish — and our SSE
+    // streams (session events, subagent trace, client heartbeat) are
+    // long-lived by design, so a shutdown while any client stream is open
+    // would hang the process forever (observed as a zombie daemon that had
+    // logged "initiating graceful shutdown" yet never exited). Give the
+    // drain 5s, then bail out and let process teardown abort the rest.
+    let shutdown_initiated = Arc::new(tokio::sync::Notify::new());
+    let shutdown_signal = {
+        let shutdown_initiated = shutdown_initiated.clone();
+        async move {
+            shutdown_signal.await;
+            shutdown_initiated.notify_one();
+        }
+    };
 
-    // Clean up token file on daemon shutdown.
-    let _ = crate::utils::remove_daemon_token();
-    let _ = crate::utils::discovery::remove_discovery_file();
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal),
+    );
+    tokio::pin!(server);
+    tokio::select! {
+        res = &mut server => {
+            res?;
+        }
+        // `notified()` is polled from the start, and Notify stores a single
+        // permit regardless, so the signal can't be missed.
+        _ = shutdown_initiated.notified() => {
+            tokio::select! {
+                res = &mut server => {
+                    res?;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                    tracing::warn!(
+                        "graceful shutdown did not finish within 5s (long-lived streams still open); forcing exit"
+                    );
+                }
+            }
+        }
+    }
+
+    // Clean up state files on daemon shutdown — but only if they still belong
+    // to THIS instance. A newer daemon may already have started (e.g. this one
+    // was idle-shutdown while a fresh launch took over the port); deleting
+    // unconditionally would orphan the live daemon's auth token.
+    let _ = crate::utils::remove_daemon_token_if_matches(&cleanup_token);
+    let _ = crate::utils::discovery::remove_discovery_file_if_pid(std::process::id());
 
     Ok(())
 }

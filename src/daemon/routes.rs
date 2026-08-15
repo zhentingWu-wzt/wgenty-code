@@ -67,6 +67,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .route("/api/v1/client/heartbeat", get(handlers::client_heartbeat))
         .with_state(state.clone());
 
+    // Cloned for the activity middleware; the original is consumed by
+    // `.with_state(state)` at the end of the protected router chain.
+    let activity_state = state.clone();
+
     let protected = Router::new()
         // Config
         .route(
@@ -135,6 +139,12 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/subagents/trace/stream",
             get(handlers::subagent_trace_stream),
         )
+        // One-shot JSON replay of persisted transcript headers — the
+        // connection-light alternative to a session-scoped SSE stream.
+        .route(
+            "/api/v1/subagents/trace/replay",
+            get(handlers::subagent_trace_replay),
+        )
         // MCP
         .route(
             "/api/v1/mcp/servers",
@@ -202,6 +212,13 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/sessions/:id/archive",
             put(session_admin::set_archived),
         )
+        // Layered inside `require_auth` (which runs first) so only
+        // authenticated requests reset the idle-shutdown timer — public
+        // health probes must not keep an unused daemon alive.
+        .route_layer(middleware::from_fn_with_state(
+            activity_state,
+            touch_activity,
+        ))
         .route_layer(middleware::from_fn_with_state(
             api_token,
             auth::require_auth,
@@ -209,4 +226,15 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .with_state(state);
 
     (health, protected)
+}
+
+/// Records API activity on the idle-shutdown tracker. Runs after
+/// `require_auth`, so unauthenticated traffic does not count as activity.
+async fn touch_activity(
+    axum::extract::State(state): axum::extract::State<Arc<DaemonState>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    state.active_clients.touch();
+    next.run(request).await
 }

@@ -421,6 +421,22 @@ pub struct TraceStreamQuery {
     pub since: Option<i64>,
 }
 
+/// `GET /api/v1/subagents/trace/replay` — one-shot JSON (non-SSE) replay of a
+/// session's persisted transcript headers. Lets thin clients recover terminal
+/// subagent results after a refresh/reconnect WITHOUT holding a second
+/// long-lived SSE connection (every permanent same-origin connection counts
+/// against the browser's per-origin HTTP/1.1 limit).
+pub async fn subagent_trace_replay(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<TraceStreamQuery>,
+) -> Json<Vec<crate::teams::trace_sink::TraceEvent>> {
+    let events = match (q.session_id.as_deref(), state.transcript_store.clone()) {
+        (Some(sid), Some(store)) => replay_session_events(&store, sid, q.since.unwrap_or(0)),
+        _ => Vec::new(),
+    };
+    Json(events)
+}
+
 /// `GET /api/v1/subagents/trace/stream` -- SSE stream of live subagent trace
 /// events with optional cold-start replay.
 ///

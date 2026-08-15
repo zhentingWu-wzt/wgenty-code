@@ -39,6 +39,17 @@ pub fn remove_discovery_file() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Remove the discovery file only if it still belongs to `pid`. Ownership
+/// check mirrors `remove_daemon_token_if_matches`: with overlapping daemon
+/// lifetimes (e.g. an idle-shutdown racing a fresh launch), an unconditional
+/// delete removes the LIVE instance's discovery file.
+pub fn remove_discovery_file_if_pid(pid: u32) -> anyhow::Result<()> {
+    if read_discovery_file().map(|f| f.pid) == Some(pid) {
+        remove_discovery_file()?;
+    }
+    Ok(())
+}
+
 /// A running daemon located via the discovery file.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDaemon {

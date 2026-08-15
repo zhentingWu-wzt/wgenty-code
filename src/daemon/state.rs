@@ -20,47 +20,66 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
-/// Grace period (seconds) after the last thin client disconnects before the
-/// daemon initiates a graceful shutdown.
-pub const THIN_CLIENT_IDLE_TIMEOUT_SECS: u64 = 10;
+/// Idle timeout (seconds): the daemon initiates a graceful shutdown when no
+/// thin client is connected AND no authenticated API request has arrived for
+/// this long. Counts from daemon start, so a daemon that never serves any
+/// client also exits instead of lingering forever.
+pub const THIN_CLIENT_IDLE_TIMEOUT_SECS: u64 = 300;
 
-/// Tracks active thin-client connections and signals the daemon to exit
-/// when all clients have disconnected and the idle timeout has elapsed.
+/// Tracks active thin-client connections and the last API activity time;
+/// signals the daemon to exit when it has been idle for
+/// [`THIN_CLIENT_IDLE_TIMEOUT_SECS`].
 pub struct ActiveClientTracker {
     count: AtomicUsize,
-    /// Set to true once at least one client has ever connected.
-    /// Prevents auto-shutdown when no thin client has ever connected
-    /// (e.g. daemon started from TUI without web/desktop clients).
-    ever_had_client: AtomicUsize,
+    /// Unix epoch milliseconds of the last observed activity (client
+    /// connect/disconnect or any authenticated API request). Seeded with the
+    /// tracker's creation time so the idle window starts at daemon boot.
+    last_activity_ms: AtomicU64,
     zero_notify: tokio::sync::Notify,
     shutting_down: AtomicUsize,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 impl ActiveClientTracker {
     pub fn new() -> Self {
         Self {
             count: AtomicUsize::new(0),
-            ever_had_client: AtomicUsize::new(0),
+            last_activity_ms: AtomicU64::new(now_ms()),
             zero_notify: tokio::sync::Notify::new(),
             shutting_down: AtomicUsize::new(0),
         }
+    }
+
+    /// Record activity: any authenticated request or client connect/disconnect
+    /// pushes the idle shutdown deadline out.
+    pub fn touch(&self) {
+        self.last_activity_ms.store(now_ms(), Ordering::Release);
+    }
+
+    /// Duration since the last observed activity.
+    pub fn idle_for(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            now_ms().saturating_sub(self.last_activity_ms.load(Ordering::Acquire)),
+        )
     }
 
     pub fn register_client(&self) -> bool {
         if self.shutting_down.load(Ordering::Acquire) != 0 {
             return false;
         }
-        let was_zero = self.ever_had_client.swap(1, Ordering::Release) == 0;
+        self.touch();
         self.count.fetch_add(1, Ordering::Release);
-        // Wake the shutdown monitor so it can re-check when the first
-        // client ever connects (moves from "never shutdown" to idle-shutdown).
-        if was_zero {
-            self.zero_notify.notify_one();
-        }
         true
     }
 
     pub fn unregister_client(&self) {
+        self.touch();
         let prev = self.count.fetch_sub(1, Ordering::Release);
         if prev == 1 {
             self.zero_notify.notify_one();
@@ -71,19 +90,11 @@ impl ActiveClientTracker {
         self.count.load(Ordering::Acquire)
     }
 
-    /// Resolves when count reaches zero AND at least one thin client has
-    /// ever connected. Blocks indefinitely if no client has ever connected
-    /// (daemon started without thin clients — should not auto-shutdown).
-    /// Wakes on every state change (first client, count transitions) and
-    /// returns only when the shutdown condition is met.
-    pub async fn wait_for_zero(&self) {
-        loop {
-            // Check condition before waiting to avoid missing a wake.
-            if self.ever_had_client.load(Ordering::Acquire) == 1 && self.client_count() == 0 {
-                return;
-            }
-            self.zero_notify.notified().await;
-        }
+    /// Resolves when the client count drops to zero or shutdown is initiated.
+    /// Lets the idle-shutdown monitor re-check promptly instead of waiting
+    /// out its current sleep.
+    pub async fn clients_changed(&self) {
+        self.zero_notify.notified().await;
     }
 
     pub fn initiate_shutdown(&self) {
@@ -1076,6 +1087,29 @@ impl DaemonState {
             Arc::downgrade(self),
             receiver,
         );
+
+        // Forward coordinator task-group readiness pings into the scheduler so
+        // completed subagent groups are delivered to the root agent
+        // server-side, without relying on a polling client.
+        let mut ready_rx = self.coordinator.subscribe_ready_groups();
+        let tx = self.background_scheduler_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match ready_rx.recv().await {
+                    Ok(session_id) => {
+                        let _ = tx.send(
+                            crate::daemon::run_loop::BackgroundSchedulerEvent::TaskGroupReady {
+                                session_id: session_id.as_str().to_string(),
+                            },
+                        );
+                    }
+                    // Pings are idempotent hints; a lagged receiver just
+                    // re-checks readiness on the next one.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
     }
 
     pub(crate) fn background_scheduler_sender(

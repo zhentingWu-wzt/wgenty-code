@@ -3,6 +3,7 @@ import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
 import { getPlatform } from "./platform";
 import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
+import { useContinuationObserver } from "./hooks/useContinuationObserver";
 import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
 import { ConfirmProvider } from "./components/ui/ConfirmModal";
@@ -171,8 +172,9 @@ export function App() {
   // Thin-client heartbeat: open an SSE connection to the daemon so it can track
   // this client and shut down gracefully when all clients disconnect. The
   // EventSource is automatically closed when the tab/window closes (browser GC).
-  // The daemon has a 10s grace period after the last client leaves before
-  // shutting down, so page refreshes and brief disconnects are tolerated.
+  // The daemon shuts down after 5 minutes with no connected client and no
+  // authenticated API activity, so page refreshes and brief disconnects are
+  // tolerated.
   useEffect(() => {
     // Build the URL relative to the daemon (same host/port as other API calls).
     const base = `${window.location.protocol}//${window.location.host}`;
@@ -209,6 +211,10 @@ export function App() {
   // Subscribe to the trace SSE for pushed subagent permission prompts
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
   usePermissionTrace(client);
+
+  // Observe daemon-initiated runs (subagent synthesis continuations) live —
+  // otherwise web only renders turns it started itself.
+  useContinuationObserver(client);
 
   // Poll the lightweight agent directory into the per-session store so the
   // Subagents panel always has the whole-session tree (not just SSE-active

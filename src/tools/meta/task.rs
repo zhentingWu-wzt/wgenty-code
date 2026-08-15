@@ -993,14 +993,18 @@ impl Tool for TaskTool {
                 }
             }
 
-            let (terminal, content, error_message) = match result {
-                Ok(r) => (
-                    ChildTerminal::Completed {
-                        summary: r.chars().take(500).collect(),
-                    },
-                    r,
-                    None,
-                ),
+            let (terminal, content, error_message, summary) = match result {
+                Ok(r) => {
+                    let summary: String = r.chars().take(500).collect();
+                    (
+                        ChildTerminal::Completed {
+                            summary: summary.clone(),
+                        },
+                        r,
+                        None,
+                        Some(summary),
+                    )
+                }
                 Err(e) => {
                     let msg = e.full_message();
                     (
@@ -1010,6 +1014,7 @@ impl Tool for TaskTool {
                         },
                         format!("Subagent error: {}", msg),
                         Some(msg),
+                        None,
                     )
                 }
             };
@@ -1103,7 +1108,10 @@ impl Tool for TaskTool {
                     actual_rounds,
                     token_budget,
                     error_message,
-                    None, // summary
+                    // Persist the terminal summary so cold-start trace replay
+                    // (`trace_event_from_header`) can deliver the result text
+                    // to reconnecting SSE clients.
+                    summary,
                     events,
                     failure_diagnostics,
                     project_path,

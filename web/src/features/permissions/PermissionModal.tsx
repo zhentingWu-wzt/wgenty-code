@@ -43,7 +43,12 @@ export function PermissionModal({ client }: PermissionModalProps) {
       const approved = d !== "deny";
       const always = d === "alwaysAllow";
       try {
-        await client.resolveSubagentPermission(subagent.request_id, approved, always);
+        await client.resolveSubagentPermission(
+          subagent.request_id,
+          approved,
+          always,
+          subagent.session_rule,
+        );
       } catch {
         // Best-effort; the bridge times out → deny on its own.
       }

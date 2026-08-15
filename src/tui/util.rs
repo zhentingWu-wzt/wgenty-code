@@ -191,6 +191,7 @@ async fn spawn_embedded_daemon(
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
     crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
+    let cleanup_token = api_token.clone();
     let shutdown_notify = daemon_state.shutdown_notify.clone();
     let (health, protected) = routes::create_routers(daemon_state, api_token);
     crate::utils::startup_timing::mark("daemon: routers created");
@@ -231,8 +232,10 @@ async fn spawn_embedded_daemon(
             })
             .await
             .ok();
-        let _ = crate::utils::remove_daemon_token();
-        let _ = crate::utils::discovery::remove_discovery_file();
+        // Ownership-checked cleanup: see daemon/mod.rs — a newer daemon may
+        // already own these files by the time this embedded instance exits.
+        let _ = crate::utils::remove_daemon_token_if_matches(&cleanup_token);
+        let _ = crate::utils::discovery::remove_discovery_file_if_pid(std::process::id());
     });
     tokio::task::yield_now().await;
     tracing::info!("embedded daemon ready on port {}", port);
