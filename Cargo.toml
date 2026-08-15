@@ -33,7 +33,7 @@ rusqlite = { version = "0.31" }
 
 # File system
 walkdir = "2.5"
-glob = "0.3"
+globset = "0.4"
 notify = "6.1"
 
 # Terminal UI — ratatui-based frontend (replaces TypeScript/React frontend)

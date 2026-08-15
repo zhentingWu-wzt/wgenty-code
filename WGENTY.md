@@ -301,7 +301,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | tracing 0.1 + tracing-subscriber 0.3 | 日志 |
 | fluent 0.16 + unic-langid 0.9 | 国际化 |
 | rusqlite 0.31 | SQLite 应用存储（默认系统库，`bundled-sqlite` feature 切换内置编译） |
-| walkdir 2.5 + glob 0.3 | 文件系统遍历 |
+| walkdir 2.5 + globset 0.4 | 文件系统遍历 |
 | regex 1.10 + nom 7.1 | 解析 |
 | similar 2.5 | Diff 算法 |
 | thiserror 1.0 + anyhow 1.0 | 错误处理 |

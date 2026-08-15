@@ -141,12 +141,12 @@ impl Tool for GrepTool {
                 "include": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Glob patterns of files to include"
+                    "description": "Glob patterns of files to include (supports {a,b} alternation)"
                 },
                 "exclude": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Glob patterns of files to exclude"
+                    "description": "Glob patterns of files to exclude (supports {a,b} alternation)"
                 },
                 "max_results": {
                     "type": "integer",
@@ -180,20 +180,28 @@ impl Tool for GrepTool {
     }
 }
 
-fn parse_patterns(value: &serde_json::Value) -> Vec<glob::Pattern> {
+fn parse_patterns(value: &serde_json::Value) -> Vec<globset::GlobMatcher> {
     value
         .as_array()
         .map(|values| {
             values
                 .iter()
                 .filter_map(|value| value.as_str())
-                .filter_map(|pattern| glob::Pattern::new(pattern).ok())
+                .filter_map(|pattern| {
+                    globset::Glob::new(pattern)
+                        .ok()
+                        .map(|glob| glob.compile_matcher())
+                })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn matches_patterns(path: &Path, include: &[glob::Pattern], exclude: &[glob::Pattern]) -> bool {
+fn matches_patterns(
+    path: &Path,
+    include: &[globset::GlobMatcher],
+    exclude: &[globset::GlobMatcher],
+) -> bool {
     let display = path.to_string_lossy();
     let file_name = path
         .file_name()
@@ -201,8 +209,9 @@ fn matches_patterns(path: &Path, include: &[glob::Pattern], exclude: &[glob::Pat
         .unwrap_or_default();
     // Match against both the full path and the basename so that include
     // patterns like "policy.rs" match "src/permissions/policy.rs".
-    let matches_any =
-        |pattern: &glob::Pattern| pattern.matches(&display) || pattern.matches(&file_name);
+    let matches_any = |matcher: &globset::GlobMatcher| {
+        matcher.is_match(display.as_ref()) || matcher.is_match(file_name.as_str())
+    };
 
     if !include.is_empty() && !include.iter().any(matches_any) {
         return false;
@@ -253,5 +262,34 @@ mod tests {
             .await
             .unwrap();
         assert!(out.content.contains("hit.txt"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn grep_include_exclude_support_brace_alternation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("b.md"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("c.rs"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("skip.txt"), "needle\n").unwrap();
+        let root = AgentExecutionContext::root(SessionId::new("s"));
+        let wd = dir.path().to_path_buf();
+        let ctx = make_ctx(&root, Some(&wd));
+
+        let out = GrepTool::new()
+            .execute_with_context(
+                &ctx,
+                serde_json::json!({
+                    "pattern": "needle",
+                    "path": ".",
+                    "include": ["*.{txt,md}"],
+                    "exclude": ["skip.{txt,rs}"]
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(out.content.contains("a.txt"), "{}", out.content);
+        assert!(out.content.contains("b.md"), "{}", out.content);
+        assert!(!out.content.contains("c.rs"), "{}", out.content);
+        assert!(!out.content.contains("skip.txt"), "{}", out.content);
     }
 }
