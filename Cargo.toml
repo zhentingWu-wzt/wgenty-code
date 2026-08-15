@@ -131,6 +131,7 @@ mockall = "0.12"
 wasm-bindgen-test = "0.3"
 serde_yaml = "0.9"
 serial_test = "3"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 
 [features]
 default = ["i18n", "daemon", "bundled-skills"]
