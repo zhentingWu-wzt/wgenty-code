@@ -51,7 +51,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 ## 进度跟踪（与 tasks.md 复选框一一对应）
 
 - [x] 1.1 从 `GET /sessions/:id/events` SSE handler 中抽出「按 session 订阅事件（可选 after 游标）」的内部 API（同一事件 buffer 与 replay 语义），SSE handler 改为调用该 API，行为不变
-- [ ] 1.2 为抽出的内部 API 补充/迁移单元测试（游标续传、sync_lost、多订阅者）
+- [x] 1.2 为抽出的内部 API 补充/迁移单元测试（游标续传、sync_lost、多订阅者）
 - [ ] 2.1 新增 `src/daemon/ws_push.rs`：单连接任务 `select!` 三路事件源（trace hub broadcast、全局事件 bus、上行控制消息），按 D2 信封协议序列化下行消息
 - [ ] 2.2 实现 `subscribe`/`unsubscribe` 上行控制消息：per-session 订阅表、`after` 游标续传、`subscribed` 应答（含 latest_seq）、断开自动清理订阅
 - [ ] 2.3 WS 握手认证：`GET /api/v1/ws?token=…` 复用 require_auth 语义（query 参数提取适配），无效凭证与受保护路由同构拒绝；注册路由
