@@ -248,9 +248,7 @@ export class DaemonClient {
    */
   async searchSessions(query: string): Promise<SessionInfo[]> {
     const q = query.trim();
-    return jsonOrThrow(
-      await fetch(`${this.base}/sessions/search?q=${encodeURIComponent(q)}`),
-    );
+    return jsonOrThrow(await fetch(`${this.base}/sessions/search?q=${encodeURIComponent(q)}`));
   }
 
   async createSession(req: CreateSessionRequest = {}): Promise<SessionResponse> {
@@ -312,10 +310,9 @@ export class DaemonClient {
    * the pool ("project" or "global").
    */
   async deleteMemory(id: string, origin: "project" | "global"): Promise<void> {
-    const res = await fetch(
-      `${this.base}/memory/${encodeURIComponent(id)}?origin=${origin}`,
-      { method: "DELETE" },
-    );
+    const res = await fetch(`${this.base}/memory/${encodeURIComponent(id)}?origin=${origin}`, {
+      method: "DELETE",
+    });
     if (!res.ok) {
       const body = await res.text();
       throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
@@ -335,15 +332,31 @@ export class DaemonClient {
   // ── Trace SSE (subagent progress + permission events) ──────────────────────
 
   /**
-   * Open the global trace SSE stream (`GET /subagents/trace/stream`). Returns
+   * Open the trace SSE stream (`GET /subagents/trace/stream`). Returns
    * the raw byte stream; the caller parses newline-delimited JSON TraceEvents.
    *
    * This is the push channel for subagent permission prompts (design D2.1):
    * instead of polling /tools/pending-permissions, the frontend subscribes here
    * and dispatches on `event.kind`.
+   *
+   * Params:
+   * - `sessionId`: scope the stream to one session AND enable cold-start replay
+   *   of that session's persisted transcript headers (terminal states + result
+   *   summaries). Without it the stream is global and live-only — terminal
+   *   events that fire before connecting (page load, refresh, reconnect gap)
+   *   are permanently missed.
+   * - `since`: unix-ms watermark; replayed headers (by started_at) and live
+   *   events at or before it are skipped. Omit for a full replay.
    */
-  async traceStream(): Promise<{ body: ReadableStream<Uint8Array> }> {
-    const res = await fetch(`${this.base}/subagents/trace/stream`);
+  async traceStream(
+    sessionId?: string,
+    since?: number,
+  ): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("session_id", sessionId);
+    if (since !== undefined) params.set("since", String(since));
+    const query = params.toString();
+    const res = await fetch(`${this.base}/subagents/trace/stream${query ? `?${query}` : ""}`);
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
       throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
@@ -358,10 +371,9 @@ export class DaemonClient {
   async getAgentSelf(sessionId: string): Promise<LocalAgentViewResponse> {
     const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await fetch(
-        `${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`,
-        { headers },
-      ),
+      await fetch(`${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`, {
+        headers,
+      }),
     );
   }
 
@@ -370,19 +382,15 @@ export class DaemonClient {
   async getAgentDirectory(sessionId: string): Promise<AgentDirectoryResponse> {
     const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await fetch(
-        `${this.base}/agents/directory?session_id=${encodeURIComponent(sessionId)}`,
-        { headers },
-      ),
+      await fetch(`${this.base}/agents/directory?session_id=${encodeURIComponent(sessionId)}`, {
+        headers,
+      }),
     );
   }
 
   /** `GET /agents/children/:capability?session_id=<id>` -- navigate one level
    *  into the child bound by `capability`; returns that child's local view. */
-  async navigateAgentView(
-    sessionId: string,
-    capability: string,
-  ): Promise<LocalAgentViewResponse> {
+  async navigateAgentView(sessionId: string, capability: string): Promise<LocalAgentViewResponse> {
     const headers = await this.agentHeaders();
     return jsonOrThrow(
       await fetch(

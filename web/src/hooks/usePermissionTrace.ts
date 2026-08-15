@@ -8,27 +8,51 @@ import { useSubagentTraceStore } from "../state/subagentTraceStore";
  * Subscribe to the daemon's trace SSE stream and surface subagent permission
  * prompts as they arrive (design D2.1: push, not poll).
  *
+ * Two parallel streams, both routed through the same `handleEvent`:
+ * 1. Global live stream (no session filter): live progress + permission /
+ *    question prompts for EVERY session. This is the permission push channel
+ *    and must not be scoped, or a background session's subagent prompt would
+ *    never surface.
+ * 2. Session-scoped stream (session_id = active session): enables cold-start
+ *    replay of that session's persisted transcript headers, so terminal
+ *    results (TraceEvent.result) that fired before connecting — page load,
+ *    refresh, or a reconnect gap — are recovered. Without a session_id the
+ *    daemon streams live-only and those events are permanently missed (root
+ *    cause of "subagent finished but web never got the result"). Restarted
+ *    when the active session changes. No `since` watermark: replayed headers
+ *    are filtered by started_at, so a watermark taken from live event
+ *    timestamps would filter out subagents that started earlier and completed
+ *    during the gap — the exact case this stream recovers. Upserts are
+ *    idempotent, so full replays are safe.
+ *
  * On `permission_pending` we push the approval into the session store the
  * event's `session_id` points to (falling back to the active session — daemon
  * session ids don't always match local session ids); the PermissionModal
  * renders it and, on user choice, calls `client.resolveSubagentPermission`.
  * `permission_resolved` events clear a prompt answered elsewhere.
  *
- * RECONNECT (design D7.2): if the stream dies (daemon restart, network drop),
+ * RECONNECT (design D7.2): if a stream dies (daemon restart, network drop),
  * reconnect with exponential backoff (1s → 30s cap, reset on success). Without
  * this, a daemon restart would permanently and silently kill the subagent
  * permission-push channel — the agent would appear to hang while waiting for a
- * prompt that never surfaces. The reconnect loop is self-contained (not relying
- * on effect re-runs, since the deps are stable references).
+ * prompt that never surfaces.
  */
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 
 export function usePermissionTrace(client: DaemonClient | null): void {
+  // Replay (cold-start) only works on a session-scoped stream, so track the
+  // active session to subscribe for. The primitive selector re-renders only on
+  // active-session changes; the effect dependency below restarts the scoped
+  // stream when it does.
+  const activeId = useSessionManager((s) => s.activeId);
+
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    // Cleanup hooks for in-flight backoff waits: resolve them immediately so
+    // the stream loops observe `cancelled` without waiting out the timer.
+    const cancelWaiters: Array<() => void> = [];
 
     const handleEvent = (ev: TraceEvent) => {
       // `progress` events update the subagent trace tree (consumed by
@@ -65,14 +89,16 @@ export function usePermissionTrace(client: DaemonClient | null): void {
       }
     };
 
-    // One long-lived loop: connect → read until error/EOF → backoff → reconnect.
-    // backoff resets to INITIAL on every successful connection.
-    const run = async () => {
+    // One long-lived loop per stream: connect → read until error/EOF → backoff
+    // → reconnect. Backoff resets to INITIAL on every successful connection.
+    // `sessionId` scopes the stream (which enables header replay); omitted, it
+    // is the global live stream.
+    const runStream = async (sessionId?: string) => {
       let backoff = INITIAL_BACKOFF_MS;
       while (!cancelled) {
         let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
         try {
-          const { body } = await client.traceStream();
+          const { body } = await client.traceStream(sessionId);
           if (cancelled) return;
           reader = body.getReader();
           // Connection succeeded — reset backoff.
@@ -109,19 +135,24 @@ export function usePermissionTrace(client: DaemonClient | null): void {
         // Exponential backoff before reconnecting. Await the timer as a
         // promise so cancellation resolves immediately.
         await new Promise<void>((resolve) => {
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            resolve();
-          }, backoff);
+          const timer = setTimeout(() => resolve(), backoff);
           backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+          cancelWaiters.push(() => {
+            clearTimeout(timer);
+            resolve();
+          });
         });
       }
     };
 
-    run();
+    // 1. Global live stream — all sessions' live events + permission push.
+    runStream();
+    // 2. Session-scoped stream — cold-start replay for the active session.
+    if (activeId) runStream(activeId);
+
     return () => {
       cancelled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
+      for (const cancel of cancelWaiters) cancel();
     };
-  }, [client]);
+  }, [client, activeId]);
 }
