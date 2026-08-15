@@ -77,7 +77,7 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 }
 
 /** Direct daemon connection info served by the vite dev middleware. */
-interface DaemonDirectInfo {
+export interface DaemonDirectInfo {
   base: string;
   token: string;
 }
@@ -92,8 +92,12 @@ interface DaemonDirectInfo {
  * on 127.0.0.1:<port>. Resolved fresh per call so a daemon restart (new
  * token/port) is picked up on reconnect. Returns null outside the vite dev
  * server (e.g. desktop shell) → callers fall back to the same-origin proxy.
+ *
+ * Also used by the WebSocket push channel (wsChannel) to derive the direct
+ * `ws://` URL (token rides the `?token=` query — browser WebSocket APIs
+ * cannot set headers).
  */
-async function resolveDaemonDirect(): Promise<DaemonDirectInfo | null> {
+export async function resolveDaemonDirect(): Promise<DaemonDirectInfo | null> {
   try {
     const res = await fetch("/__daemon-info");
     if (!res.ok) return null;

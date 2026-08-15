@@ -105,7 +105,7 @@ image = { version = "0.25", optional = true }
 
 
 # Web server for plugin marketplace + daemon API
-axum = { version = "0.7", optional = true }
+axum = { version = "0.7", optional = true, features = ["ws"] }
 tower = { version = "0.4", optional = true }
 tower-http = { version = "0.5", optional = true, features = ["fs", "cors"] }
 
@@ -131,6 +131,7 @@ mockall = "0.12"
 wasm-bindgen-test = "0.3"
 serde_yaml = "0.9"
 serial_test = "3"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 
 [features]
 default = ["i18n", "daemon", "bundled-skills"]

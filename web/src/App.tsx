@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
+import { wsChannel } from "./api/wsChannel";
 import { getPlatform } from "./platform";
 import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
 import { useContinuationObserver } from "./hooks/useContinuationObserver";
@@ -169,43 +170,16 @@ export function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
-  // Thin-client heartbeat: open an SSE connection to the daemon so it can track
-  // this client and shut down gracefully when all clients disconnect. The
-  // EventSource is automatically closed when the tab/window closes (browser GC).
-  // The daemon shuts down after 5 minutes with no connected client and no
-  // authenticated API activity, so page refreshes and brief disconnects are
-  // tolerated.
+  // Thin-client heartbeat: the singleton WebSocket push channel IS the
+  // heartbeat — the daemon counts an authenticated ws connection as an
+  // active client (idle-shutdown deferral) exactly like the old SSE
+  // heartbeat, and the channel's reconnect loop replaces EventSource's
+  // auto-retry. Connect is idempotent; the channel lives until the tab
+  // closes. The daemon shuts down after 5 minutes with no connected client
+  // and no authenticated API activity, so page refreshes and brief
+  // disconnects are tolerated.
   useEffect(() => {
-    // Build the URL relative to the daemon (same host/port as other API calls).
-    const base = `${window.location.protocol}//${window.location.host}`;
-    const es = new EventSource(`${base}/api/v1/client/heartbeat`);
-
-    es.onmessage = (event) => {
-      if (event.data && typeof event.data === "string") {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.clients !== undefined) {
-            // Daemon reports current client count; useful for debugging.
-            void payload;
-          }
-        } catch {
-          // Non-JSON payload (e.g. ping comment) — ignore.
-        }
-      }
-    };
-
-    es.addEventListener("shutting_down", () => {
-      // Daemon is going away; close to avoid reconnect loops.
-      es.close();
-    });
-
-    es.onerror = () => {
-      // Connection error — EventSource will auto-retry. If the daemon has
-      // shut down permanently, the next connect attempt will receive a
-      // "shutting_down" event or connect to a fresh daemon instance.
-    };
-
-    return () => es.close();
+    wsChannel.connect();
   }, []);
 
   // Subscribe to the trace SSE for pushed subagent permission prompts

@@ -462,6 +462,14 @@ pub struct DaemonState {
     /// Broadcast hub for daemon-run session events (`SessionEvent` envelope).
     /// One hub per daemon; events carry session_id/run_id for filtering.
     pub session_event_hub: crate::daemon::run_loop::SessionEventHub,
+    /// Current bearer token as seen by in-handler auth (the WebSocket push
+    /// endpoint authenticates from a query param because browser WebSocket
+    /// APIs cannot set headers; design §3.1). Empty until `set_api_token`
+    /// runs at startup — the ws handler rejects ALL credentials while empty
+    /// so the uninitialized window cannot be bypassed with an empty token.
+    /// RwLock so a future in-process rotation can close live ws connections
+    /// with code 4001 (pump tick guard).
+    api_token: std::sync::RwLock<String>,
     /// Broadcast hub for daemon-wide (cross-project) global events
     /// (`GlobalEvent` envelope). Independent from `session_event_hub` so
     /// high-frequency session deltas can't starve global events (design §3.1).
@@ -505,6 +513,20 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    /// Record the startup-generated bearer token for in-handler auth
+    /// (WebSocket query-token path). Called once after `generate_api_token`.
+    pub fn set_api_token(&self, token: String) {
+        *self.api_token.write().expect("api token lock poisoned") = token;
+    }
+
+    /// Current bearer token (empty until [`DaemonState::set_api_token`]).
+    pub fn current_api_token(&self) -> String {
+        self.api_token
+            .read()
+            .expect("api token lock poisoned")
+            .clone()
+    }
+
     pub async fn new(app_state: AppState) -> Self {
         let task_manager = Arc::new(TaskManagementTool::new());
         let todo_state = Arc::new(RwLock::new(TodoState::default()));
@@ -951,6 +973,7 @@ impl DaemonState {
             session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
+            api_token: std::sync::RwLock::new(String::new()),
             active_clients: Arc::new(ActiveClientTracker::new()),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             http_client,
