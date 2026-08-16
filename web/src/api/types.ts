@@ -612,3 +612,40 @@ export interface DirListing {
   /** Sorted child directories (hidden ones interleaved). */
   entries: DirEntry[];
 }
+
+// ── Workspace file preview (read-only, path-bounded) ────────────────────────
+
+/** One entry of a workspace directory listing. Mirrors FsEntry
+ *  (src/daemon/workspace_files.rs). Symlinks are skipped server-side. */
+export interface FsEntry {
+  name: string;
+  is_dir: boolean;
+  /** Bytes; 0 for directories or when metadata is unavailable. */
+  size: number;
+}
+
+/** Mirrors FsEntries. Response to GET /api/v1/fs/entries?path=<dir>.
+ *  Directories sort first, names case-insensitive. `truncated` marks the
+ *  2000-entry cap — render a "list truncated" hint, don't fetch more. */
+export interface FsEntries {
+  current: string;
+  entries: FsEntry[];
+  truncated: boolean;
+}
+
+/** Weak version stamp (design D4): mtime+size is enough for the future
+ *  optimistic-concurrency check and costs nothing to compute. Both fs
+ *  endpoints return it. */
+export interface FileVersion {
+  mtime_ms: number;
+  size: number;
+}
+
+/** Client-side union over the two wire shapes of GET /api/v1/fs/file:
+ *  JSON `{lines, version}` (UTF-8 text) or `{is_binary, version}`
+ *  (non-whitelisted binary — unsupported), and raw bytes (whitelisted
+ *  image/PDF mime) wrapped as a Blob with its Content-Type mime. */
+export type FileContent =
+  | { kind: "text"; lines: string[]; version: FileVersion }
+  | { kind: "binary-unsupported"; version: FileVersion }
+  | { kind: "blob"; mime: string; blob: Blob };

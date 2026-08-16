@@ -152,6 +152,64 @@ daemon instead of spawning a duplicate:
   spawning its own daemon — a stale file never causes a misconnection.
   `pid` liveness is advisory only; the heartbeat is authoritative.
 
+### Workspace file preview (fs/entries, fs/file)
+
+Read-only file tree + preview endpoints, scoped to **registered workspaces**:
+the daemon's main project root, every registered project root, and each
+project's linked git worktrees (`git worktree list`). Any `path` that
+canonicalizes outside those roots is refused with `403 {"error": "outside
+registered workspaces"}` — the daemon is not a general-purpose file server.
+Paths that do not resolve return `404`. Symlinks are resolved by
+canonicalization, so a link inside a workspace pointing outside is still 403.
+
+`GET /api/v1/fs/entries?path=<dir>` — one-level listing of a workspace
+directory:
+
+```json
+{
+  "current": "/abs/path/to/dir",
+  "entries": [
+    { "name": "src", "is_dir": true, "size": 192 },
+    { "name": "README.md", "is_dir": false, "size": 4096 }
+  ],
+  "truncated": false
+}
+```
+
+- Directories first, then files; each group sorted case-insensitively by name.
+- Hidden (`.`-prefixed) entries and non-file/non-dir objects (symlinks,
+  sockets, fifos) are skipped.
+- Collection stops at **2000** entries; `truncated: true` marks a partial
+  list. A child whose metadata cannot be read is listed with `size: 0`.
+- `400 {"error": "path is not a directory"}` when `path` is a file.
+
+`GET /api/v1/fs/file?path=<file>` — preview a single workspace file. The
+size limit is checked against metadata **before** the body is read;
+oversized files return `413 {"error": "file too large to preview", "size":
+N, "limit": M}` without reading the file.
+
+- Whitelisted extensions `png / jpg / jpeg / gif / webp / svg / pdf` (limit
+  5 MiB) stream the raw bytes with the mapped `Content-Type`
+  (`image/png`, `image/jpeg`, `image/gif`, `image/webp`,
+  `image/svg+xml`, `application/pdf`).
+- Everything else (limit 1.5 MiB): the first 8192 bytes are probed for a NUL
+  byte and the body is strict-decoded as UTF-8.
+
+```json
+{
+  "lines": ["fn main() {", "    …", "}"],
+  "is_binary": false,
+  "version": { "mtime_ms": 1755300000000, "size": 4096 }
+}
+```
+
+- Text: `lines` is split on `\n` with per-line trailing `\r` stripped (CRLF);
+  an empty file yields `"lines": []`.
+- Binary (NUL probe hit, or UTF-8 decode failure): the `lines` field is
+  omitted and `"is_binary": true` is returned — the frontend branches on it.
+- `version` lets the UI detect stale previews (`mtime` in ms + size).
+- `400 {"error": "path is not a file"}` when `path` is a directory.
+
 ## Configuration File
 
 Path: `~/.wgenty-code/settings.json` (JSON, auto-generated)

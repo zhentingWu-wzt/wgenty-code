@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useUiStore } from "./uiStore";
+import { useUiStore, type PreviewTabMeta } from "./uiStore";
 
 describe("uiStore", () => {
   beforeEach(() => {
@@ -64,5 +64,63 @@ describe("uiStore tabs", () => {
     useUiStore.setState({ openTabs: ["a", "b", "c"] });
     useUiStore.getState().pruneTabs(["b"]);
     expect(useUiStore.getState().openTabs).toEqual(["a", "c"]);
+  });
+});
+
+describe("uiStore preview tabs", () => {
+  const previewMeta = (absPath: string, kind: "text" | "binary" = "text"): PreviewTabMeta => ({
+    workspaceRoot: "/w/proj",
+    absPath,
+    relPath: absPath.replace("/w/proj/", ""),
+    kind,
+  });
+
+  beforeEach(() => {
+    useUiStore.setState({ openTabs: [], activeTabId: null, previewTabs: {} });
+  });
+
+  it("openPreviewTab is idempotent per path (no duplicate tab, just activates)", () => {
+    useUiStore.getState().openPreviewTab(previewMeta("/w/proj/src/main.rs"));
+    expect(useUiStore.getState().openTabs).toEqual(["preview:/w/proj/src/main.rs"]);
+    expect(useUiStore.getState().activeTabId).toBe("preview:/w/proj/src/main.rs");
+    expect(useUiStore.getState().previewTabs["preview:/w/proj/src/main.rs"]).toEqual(
+      previewMeta("/w/proj/src/main.rs"),
+    );
+
+    // Re-open the same path: focus only — no second tab.
+    useUiStore.getState().openPreviewTab(previewMeta("/w/proj/src/main.rs"));
+    expect(useUiStore.getState().openTabs).toEqual(["preview:/w/proj/src/main.rs"]);
+
+    // A different path opens (and activates) a second tab.
+    useUiStore.getState().openPreviewTab(previewMeta("/w/proj/logo.png", "binary"));
+    expect(useUiStore.getState().openTabs).toEqual([
+      "preview:/w/proj/src/main.rs",
+      "preview:/w/proj/logo.png",
+    ]);
+    expect(useUiStore.getState().activeTabId).toBe("preview:/w/proj/logo.png");
+  });
+
+  it("closeTab cleans the preview meta alongside the tab", () => {
+    useUiStore.getState().openPreviewTab(previewMeta("/w/proj/src/main.rs"));
+    useUiStore.getState().openPreviewTab(previewMeta("/w/proj/logo.png", "binary"));
+    // Closing the first tab activates its right neighbor, as with any tab.
+    expect(useUiStore.getState().closeTab("preview:/w/proj/src/main.rs")).toBe(
+      "preview:/w/proj/logo.png",
+    );
+    expect(useUiStore.getState().openTabs).toEqual(["preview:/w/proj/logo.png"]);
+    expect(useUiStore.getState().previewTabs).not.toHaveProperty("preview:/w/proj/src/main.rs");
+    expect(useUiStore.getState().previewTabs).toHaveProperty("preview:/w/proj/logo.png");
+
+    // Closing a non-preview tab leaves preview metas alone.
+    useUiStore.getState().openTab("session-1");
+    useUiStore.getState().closeTab("session-1");
+    expect(useUiStore.getState().previewTabs).toHaveProperty("preview:/w/proj/logo.png");
+  });
+
+  it("pruneTabs drops openTabs only — preview meta survives (current semantics)", () => {
+    useUiStore.getState().openPreviewTab(previewMeta("/w/proj/src/main.rs"));
+    useUiStore.getState().pruneTabs(["preview:/w/proj/src/main.rs"]);
+    expect(useUiStore.getState().openTabs).toEqual([]);
+    expect(useUiStore.getState().previewTabs["preview:/w/proj/src/main.rs"]).toBeDefined();
   });
 });
