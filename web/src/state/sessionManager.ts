@@ -20,6 +20,10 @@ export interface SessionEntry {
   id: string;
   daemonId: string | null;
   name: string;
+  /** Whether `name` was explicitly set by the user (vs the "Session N"
+   *  placeholder). Unnamed sessions are auto-titled daemon-side from the
+   *  first user message; the local tab mirrors that title after turn 1. */
+  named: boolean;
   store: SessionStore;
   status: SessionStatus;
   lastPreview: string;
@@ -47,6 +51,9 @@ interface SessionManagerState {
   activeId: string | null;
   connection: ConnectionStatus;
   modelName: string | null;
+  /** Active model's context window (tokens) — denominator of the StatusBar
+   *  context bar. Loaded once per daemon connect alongside modelName. */
+  contextWindow: number | null;
   permissionMode: PermissionMode | null;
 
   createLocalSession: (name?: string, opts?: CreateSessionOptions) => string;
@@ -55,15 +62,17 @@ interface SessionManagerState {
   setStatus: (id: string, status: SessionStatus) => void;
   setPreview: (id: string, text: string) => void;
   setDaemonId: (id: string, daemonId: string) => void;
-  /** Rename a session (used by auto-naming from the first user message). */
-  renameSession: (id: string, name: string) => void;
   /** Set (`WorktreeBinding`) or clear (`null`) a session's worktree binding. */
   setWorktree: (id: string, wt: WorktreeBinding | null) => void;
   /** Reassign a session to a project (canonical path; null = main project). */
   setProjectPath: (id: string, projectPath: string | null) => void;
   setConnection: (s: ConnectionStatus) => void;
   setModelName: (n: string | null) => void;
+  setContextWindow: (n: number | null) => void;
   setPermissionMode: (m: PermissionMode) => void;
+  /** Rename a session locally (marks it named — placeholders can be replaced
+   *  by the mirrored daemon auto-title). */
+  renameSession: (id: string, name: string) => void;
 }
 
 let counter = 1;
@@ -84,6 +93,7 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
   activeId: null,
   connection: "unknown",
   modelName: null,
+  contextWindow: null,
   permissionMode: null,
 
   createLocalSession: (name, opts) => {
@@ -93,6 +103,7 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
       id,
       daemonId: opts?.daemonId ?? null,
       name: name ?? `Session ${counter - 1}`,
+      named: name !== undefined,
       store: createSessionStore(),
       status: "idle",
       lastPreview: "",
@@ -128,8 +139,6 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
 
   setDaemonId: (id, daemonId) => set((s) => ({ entries: patchEntry(s.entries, id, { daemonId }) })),
 
-  renameSession: (id, name) => set((s) => ({ entries: patchEntry(s.entries, id, { name }) })),
-
   setWorktree: (id, wt) =>
     set((s) => ({
       entries: patchEntry(s.entries, id, { worktree: wt ?? undefined }),
@@ -140,8 +149,21 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
 
   setConnection: (connection) => set({ connection }),
   setModelName: (modelName) => set({ modelName }),
+  setContextWindow: (contextWindow) => set({ contextWindow }),
   setPermissionMode: (permissionMode) => set({ permissionMode }),
+
+  renameSession: (id, name) =>
+    set((s) => ({ entries: patchEntry(s.entries, id, { name, named: true }) })),
 }));
+
+/** Mirror of the daemon's `title_from_first_user_message`: collapse
+ *  whitespace, cap at 48 chars + ellipsis. Keeps the local tab label in
+ *  lockstep with the daemon-side auto-title without a refetch. */
+export function sessionTitleFromMessage(text: string): string {
+  const collapsed = text.trim().split(/\s+/).join(" ");
+  const chars = Array.from(collapsed);
+  return chars.length > 48 ? `${chars.slice(0, 48).join("")}…` : collapsed;
+}
 
 /**
  * Imperative accessor for the active session's store, for code that runs

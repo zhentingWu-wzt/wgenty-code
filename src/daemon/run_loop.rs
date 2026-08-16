@@ -1557,6 +1557,31 @@ async fn save_session_history(
     true
 }
 
+/// Derive a session title from the first user message: collapse whitespace,
+/// cap at 48 chars, ellipsis when truncated. `None` when the seed has no
+/// user message (or it is empty) — the session keeps its previous name.
+fn title_from_first_user_message(seed: &[ChatMessage]) -> Option<String> {
+    let first = seed.iter().find(|m| m.role == "user")?;
+    let collapsed = first
+        .content
+        .as_deref()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    const MAX_TITLE_CHARS: usize = 48;
+    if collapsed.chars().count() > MAX_TITLE_CHARS {
+        Some(format!(
+            "{}…",
+            collapsed.chars().take(MAX_TITLE_CHARS).collect::<String>()
+        ))
+    } else {
+        Some(collapsed)
+    }
+}
+
 /// Body of one spawned run: seed history from the persisted session, run the
 /// shared agent loop against the run's cancel token, then persist the final
 /// history. Terminal events (TurnDone/TurnError) flow through the sink.
@@ -1612,6 +1637,23 @@ async fn run_session_turn(
         return false;
     }
     state.ack_background_result_claim(session_id, run_id).await;
+
+    // 2b. Auto-title unnamed sessions from the first user message. Sessions
+    // created without an explicit name default `name` to the session id (a
+    // UUID) — the web rail and the TUI resume list would otherwise show raw
+    // UUIDs. Explicitly named sessions (`name != id`) are never touched. The
+    // reload after the seed save keeps `messages` current so the rename
+    // cannot clobber the just-saved history.
+    if let Ok(Some(mut session)) = sessions.load(session_id).await {
+        if session.name == session_id {
+            if let Some(title) = title_from_first_user_message(&seed) {
+                session.name = title;
+                if let Err(e) = sessions.save(&session).await {
+                    tracing::warn!(error = %e, session = session_id, "auto-title save failed");
+                }
+            }
+        }
+    }
 
     // 3. Live settings + LLM port (same wiring as the chat_stream handler).
     let settings = state
@@ -1848,12 +1890,10 @@ async fn run_session_turn(
         "prompt_tokens": token_counter.turn_input_tokens(),
         "completion_tokens": token_counter.turn_output_tokens(),
         "total_tokens": token_counter.used_tokens(),
-        // Context-occupancy pair for client status bars: the most recent
-        // prompt size against the model's context window (mirrors the TUI
-        // context bar). `turn_input_tokens` is cumulative across rounds and
-        // can exceed the window, so it is not usable as the numerator.
-        "last_prompt_tokens": token_counter.last_prompt_tokens(),
-        "context_window": config.context_window,
+        // Context-window occupancy at the last API call — the same measure
+        // the TUI context bar renders (drops after auto-compaction). Unlike
+        // prompt_tokens (a per-turn sum over rounds) this is not additive.
+        "context_tokens": token_counter.last_prompt_tokens(),
     });
     sink.publish(
         SessionEventKind::TurnContext,
@@ -2427,6 +2467,39 @@ mod tests {
         assert_eq!(decide_ask(true, true), AskDecision::Execute);
         assert_eq!(decide_ask(false, true), AskDecision::Execute);
         assert_eq!(decide_ask(false, false), AskDecision::Escalate);
+    }
+
+    #[test]
+    fn title_from_first_user_message_basic() {
+        let seed = vec![
+            ChatMessage::assistant("earlier"),
+            ChatMessage::user("  fix the   login bug  "),
+        ];
+        assert_eq!(
+            title_from_first_user_message(&seed).as_deref(),
+            Some("fix the login bug")
+        );
+    }
+
+    #[test]
+    fn title_from_first_user_message_truncates() {
+        let long = "x".repeat(60);
+        let title = title_from_first_user_message(&[ChatMessage::user(long)]).unwrap();
+        assert_eq!(title.chars().count(), 49); // 48 chars + ellipsis
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn title_from_first_user_message_none_cases() {
+        assert_eq!(title_from_first_user_message(&[]), None);
+        assert_eq!(
+            title_from_first_user_message(&[ChatMessage::assistant("hi")]),
+            None
+        );
+        assert_eq!(
+            title_from_first_user_message(&[ChatMessage::user("   ")]),
+            None
+        );
     }
 
     #[tokio::test]

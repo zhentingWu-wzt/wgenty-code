@@ -69,7 +69,7 @@ export function NewSessionModal({
             name: name.trim() || undefined,
             project_path: project,
           });
-          useSessionManager.getState().createLocalSession(name.trim() || "Session", {
+          useSessionManager.getState().createLocalSession(name.trim() || undefined, {
             id: created.id,
             daemonId: created.id,
             projectPath: project,
@@ -100,11 +100,14 @@ export function NewSessionModal({
 
       // Single identity: the daemon session id doubles as the runtime id.
       const created = await client.createSession({
+        // Unnamed → daemon auto-titles from the first message (no UUID).
         name: name.trim() || undefined,
         ...(project ? { project_path: project } : {}),
       });
       await client.bindWorktree(created.id, wt);
-      useSessionManager.getState().createLocalSession(name.trim() || "Session", {
+      // Leave the local entry unnamed so the placeholder shows until the
+      // daemon auto-title is mirrored back after the first turn.
+      useSessionManager.getState().createLocalSession(name.trim() || undefined, {
         id: created.id,
         daemonId: created.id,
         worktree: wt,

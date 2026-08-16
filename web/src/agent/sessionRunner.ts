@@ -15,7 +15,7 @@
 import type { DaemonClient } from "../api/client";
 import { wsChannel } from "../api/wsChannel";
 import { toast } from "sonner";
-import { useSessionManager } from "../state/sessionManager";
+import { sessionTitleFromMessage, useSessionManager } from "../state/sessionManager";
 import { useDisplayPrefs, type DisplayMode } from "../state/displayPrefs";
 import type { SessionStore } from "../state/sessionStore";
 import type { SessionEvent, SessionEventKind } from "../api/types";
@@ -27,21 +27,6 @@ interface PendingTool {
   args: Record<string, unknown>;
   /** Timeline mode: the store message id of the running placeholder. */
   msgId?: string;
-}
-
-/** Default names assigned by createLocalSession / NewSessionModal. */
-const DEFAULT_SESSION_NAME = /^Session( \d+)?$/;
-
-function isDefaultSessionName(name: string): boolean {
-  return DEFAULT_SESSION_NAME.test(name);
-}
-
-/** Truncate a user message to a short session name (max ~50 chars, no
- *  newlines) — mirrors the TUI's `truncate_session_name`. */
-function truncateSessionName(text: string): string {
-  const firstLine = (text.split("\n", 1)[0] ?? "").trim();
-  const chars = Array.from(firstLine);
-  return chars.length <= 50 ? firstLine : `${chars.slice(0, 50).join("")}...`;
 }
 
 /** Mutable per-turn render state shared with handleEvent. */
@@ -183,25 +168,15 @@ export async function runSessionTurn(
   if (!entry) return;
   const store = entry.store;
 
-  // 0. Auto-name from the first user message when the session still carries
-  // its default name (mirrors the TUI's `truncate_session_name`). Done before
-  // createSession so a not-yet-bound session lands daemon-side with the
-  // derived name too.
-  const derivedName = truncateSessionName(text);
-  if (
-    derivedName &&
-    store.getState().messages.length === 0 &&
-    isDefaultSessionName(entry.name)
-  ) {
-    m.renameSession(sessionId, derivedName);
-  }
-
   // 1. Ensure we have a daemon-side session id (POST /run needs one).
   let daemonId = entry.daemonId;
   if (!daemonId) {
     try {
+      // Placeholder names ("Session N") are not sent: an unnamed daemon
+      // session gets auto-titled from its first user message instead of
+      // keeping a placeholder (or UUID) forever.
       const created = await client.createSession({
-        name: m.entries[sessionId]?.name ?? entry.name,
+        name: entry.named ? entry.name : undefined,
       });
       daemonId = created.id;
       m.setDaemonId(sessionId, daemonId);
@@ -217,6 +192,9 @@ export async function runSessionTurn(
 
   // 2. Optimistic local render of the user message + running state.
   store.getState().pushUserMessage(text);
+  // First user turn of this session? The daemon auto-titles unnamed sessions
+  // from this message; the local tab mirrors it after a clean finish.
+  const isFirstUserTurn = store.getState().messages.length === 1;
   store.getState().setError(null);
   store.getState().setRunning(true);
   m.setStatus(sessionId, "running");
@@ -298,6 +276,10 @@ export async function runSessionTurn(
     // Drain the next queued message only on a clean finish — not on error or
     // explicit stop. Mirrors the TUI's pending_inputs / start_next_turn.
     if (outcome === "ok") {
+      const cur = m.entries[sessionId];
+      if (isFirstUserTurn && cur && !cur.named) {
+        m.renameSession(sessionId, sessionTitleFromMessage(text));
+      }
       const next = store.getState().shiftPendingInput();
       if (next) void runSessionTurn(client, sessionId, next);
     }

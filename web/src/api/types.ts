@@ -87,6 +87,9 @@ export interface ConfigResponse {
   max_tokens: number;
   timeout: number;
   streaming: boolean;
+  /** Model context window (tokens) — the denominator of the StatusBar
+   *  context-usage bar. */
+  context_window: number;
 }
 
 // ── MCP servers ──────────────────────────────────────────────────────────────

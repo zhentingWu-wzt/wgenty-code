@@ -23,6 +23,7 @@ import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
 import { sessionMessagesToDisplay } from "./agent/sessionLoad";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
+import { usePermissionModeSync } from "./hooks/usePermissionModeSync";
 import { useSubagentDirectory } from "./hooks/useSubagentDirectory";
 import { usePolling } from "./hooks/usePolling";
 import { startUiSync } from "./state/uiSync";
@@ -51,6 +52,7 @@ export function App() {
 
   const setConnection = useSessionManager((s) => s.setConnection);
   const setModelName = useSessionManager((s) => s.setModelName);
+  const setContextWindow = useSessionManager((s) => s.setContextWindow);
   const activeId = useSessionManager((s) => s.activeId);
   const theme = useUiStore((s) => s.theme);
 
@@ -186,6 +188,11 @@ export function App() {
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
   usePermissionTrace(client);
 
+  // Keep the StatusBar's permission-mode label aligned with daemon truth:
+  // per-session on tab switch, re-fetch on daemon restart recovery, and live
+  // adoption of `mode_changed` broadcasts (TUI / other tabs).
+  usePermissionModeSync(client);
+
   // Observe daemon-initiated runs (subagent synthesis continuations) live —
   // otherwise web only renders turns it started itself.
   useContinuationObserver(client);
@@ -213,19 +220,7 @@ export function App() {
           modelLoadedRef.current = true;
           const cfg = await client.getConfig();
           setModelName(cfg.model);
-          // Load the current root permission mode once (StatusBar reads + switches it).
-          // 按活跃会话路由：已落地 daemon 的用 daemonId，否则用本地 id
-          //（daemon 对未知 id 回退 main working root，等同改动前的 "default"）。
-          const sm = useSessionManager.getState();
-          const sid = sm.activeId ? (sm.entries[sm.activeId]?.daemonId ?? sm.activeId) : null;
-          if (sid) {
-            try {
-              const pm = await client.getPermissionMode(sid);
-              useSessionManager.getState().setPermissionMode(pm.mode);
-            } catch {
-              // Non-fatal: StatusBar falls back to "-" until a switch succeeds.
-            }
-          }
+          setContextWindow(cfg.context_window);
         }
       } catch {
         setConnection("disconnected");
