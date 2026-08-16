@@ -50,6 +50,8 @@ import type {
   DirListing,
   PermissionMode,
   PermissionModeResponse,
+  FileDiff,
+  GitFileStatus,
 } from "./types";
 
 /** Error thrown when the daemon returns a non-2xx response. */
@@ -451,9 +453,7 @@ export class DaemonClient {
         // Watchdog-fired (not user-aborted) connect timeout → retry once;
         // a slot usually frees as soon as a concurrent run/stream ends.
         const connectTimeout =
-          err instanceof DOMException &&
-          err.name === "TimeoutError" &&
-          !signal?.aborted;
+          err instanceof DOMException && err.name === "TimeoutError" && !signal?.aborted;
         if (!connectTimeout || attempt >= maxAttempts) throw err;
         console.warn(
           `[client] ${path}: SSE connect queued >15s ` +
@@ -616,9 +616,20 @@ export class DaemonClient {
    *  case-insensitive) for the workspace file tree. The path must resolve
    *  inside a registered project/worktree root; the daemon 403s otherwise. */
   async listEntries(path: string): Promise<FsEntries> {
-    return jsonOrThrow(
-      await fetch(`${this.base}/fs/entries?path=${encodeURIComponent(path)}`),
-    );
+    return jsonOrThrow(await fetch(`${this.base}/fs/entries?path=${encodeURIComponent(path)}`));
+  }
+
+  /** `GET /fs/git-status?path=<root>` — changed files (added/modified/deleted,
+   *  incl. untracked) under a registered workspace root. Non-git roots return
+   *  an empty list; failures degrade to no colors in the file tree. */
+  /** `GET /fs/git-diff?path=<file>` — full inline diff vs HEAD (staged +
+   *  unstaged) with line numbers; untracked files diff against /dev/null. */
+  async gitDiff(path: string): Promise<FileDiff> {
+    return jsonOrThrow(await fetch(`${this.base}/fs/git-diff?path=${encodeURIComponent(path)}`));
+  }
+
+  async gitStatus(path: string): Promise<GitFileStatus[]> {
+    return jsonOrThrow(await fetch(`${this.base}/fs/git-status?path=${encodeURIComponent(path)}`));
   }
 
   /** `GET /fs/file?path=<file>` — file content for the preview panel.
@@ -642,10 +653,7 @@ export class DaemonClient {
         } catch {
           // Non-JSON body — fall through to the raw text below.
         }
-        throw new DaemonError(
-          msg || body || `${res.status} ${res.statusText}`,
-          res.status,
-        );
+        throw new DaemonError(msg || body || `${res.status} ${res.statusText}`, res.status);
       }
       throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
     }

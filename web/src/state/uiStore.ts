@@ -3,10 +3,13 @@
  * 只持有 UI 事实，不碰会话数据（会话在 sessionManager）。
  */
 import { create } from "zustand";
+import type { GitChangeKind } from "../api/types";
 import { applyTheme, readStoredTheme, type ThemeMode } from "../lib/theme";
 
 export type RightPanelId =
   | "sessions"
+  | "files"
+  | "scm"
   | "skills"
   | "memory"
   | "checkpoints"
@@ -34,6 +37,16 @@ export interface PreviewTabMeta {
   /** Extension-based first guess by the caller; the panel re-checks against
    *  the actual fetchFile response kind. */
   kind: "text" | "binary";
+}
+
+/** Metadata for a file diff tab (`diff:<absPath>`) — mirrors the preview
+ *  tab pattern; opened from the Source Control panel. */
+export interface DiffTabMeta {
+  /** Registered workspace root (canonicalized) the file belongs to. */
+  workspaceRoot: string;
+  absPath: string;
+  relPath: string;
+  status: GitChangeKind;
 }
 
 interface UiState {
@@ -70,6 +83,11 @@ interface UiState {
   previewTabs: Record<string, PreviewTabMeta>;
   /** 打开（或聚焦）一个文件预览 tab 并激活；同 path 幂等（不加新 tab）。 */
   openPreviewTab: (meta: PreviewTabMeta) => void;
+
+  /** 文件 diff tab 元数据，key = tab id（`diff:<absPath>`）。 */
+  diffTabs: Record<string, DiffTabMeta>;
+  /** 打开（或聚焦）一个文件 diff tab 并激活；同 path 幂等。 */
+  openDiffTab: (meta: DiffTabMeta) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -88,8 +106,7 @@ export const useUiStore = create<UiState>((set) => ({
   toggleRightPanel: (p) => set((s) => ({ rightPanel: s.rightPanel === p ? null : p })),
 
   openTabs: [],
-  openTab: (id) =>
-    set((s) => (s.openTabs.includes(id) ? s : { openTabs: [...s.openTabs, id] })),
+  openTab: (id) => set((s) => (s.openTabs.includes(id) ? s : { openTabs: [...s.openTabs, id] })),
   closeTab: (id) => {
     let next: string | null = null;
     set((s) => {
@@ -114,7 +131,15 @@ export const useUiStore = create<UiState>((set) => ({
               return c;
             })()
           : s.previewTabs;
-      return { openTabs, subagentTabs, previewTabs };
+      const diffTabs =
+        id.startsWith("diff:") && s.diffTabs[id]
+          ? (() => {
+              const c = { ...s.diffTabs };
+              delete c[id];
+              return c;
+            })()
+          : s.diffTabs;
+      return { openTabs, subagentTabs, previewTabs, diffTabs };
     });
     return next;
   },
@@ -127,8 +152,7 @@ export const useUiStore = create<UiState>((set) => ({
       openTabs.splice(to, 0, id);
       return { openTabs };
     }),
-  pruneTabs: (ids) =>
-    set((s) => ({ openTabs: s.openTabs.filter((t) => !ids.includes(t)) })),
+  pruneTabs: (ids) => set((s) => ({ openTabs: s.openTabs.filter((t) => !ids.includes(t)) })),
 
   activeTabId: null,
   setActiveTab: (activeTabId) => set({ activeTabId }),
@@ -153,6 +177,19 @@ export const useUiStore = create<UiState>((set) => ({
       return {
         openTabs,
         previewTabs: { ...s.previewTabs, [tabId]: meta },
+        activeTabId: tabId,
+      };
+    });
+  },
+
+  diffTabs: {},
+  openDiffTab: (meta) => {
+    const tabId = `diff:${meta.absPath}`;
+    set((s) => {
+      const openTabs = s.openTabs.includes(tabId) ? s.openTabs : [...s.openTabs, tabId];
+      return {
+        openTabs,
+        diffTabs: { ...s.diffTabs, [tabId]: meta },
         activeTabId: tabId,
       };
     });

@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { FileText, Network, X } from "lucide-react";
+import { FileMinus, FileText, Network, X } from "lucide-react";
 import { useSessionManager, type SessionStatus } from "../../state/sessionManager";
 import { useUiStore } from "../../state/uiStore";
 import { cn } from "../../lib/utils";
@@ -18,6 +18,9 @@ const SUBAGENT_PREFIX = "subagent:";
 /** 文件预览 tab id 前缀。 */
 const PREVIEW_PREFIX = "preview:";
 
+/** 文件 diff tab id 前缀。 */
+const DIFF_PREFIX = "diff:";
+
 /** 会话 tab 栏：每个打开的会话、subagent 详情或文件预览一个 tab。点击激活、
  *  中键/X 关闭、HTML5 拖拽排序。subagent tab 用 Network 图标，预览 tab 用
  *  FileText 图标（标签取文件名，title 悬浮完整 relPath），会话 tab 用状态点。 */
@@ -26,12 +29,17 @@ export function SessionTabBar() {
   const entries = useSessionManager((s) => s.entries);
   const subagentTabs = useUiStore((s) => s.subagentTabs);
   const previewTabs = useUiStore((s) => s.previewTabs);
+  const diffTabs = useUiStore((s) => s.diffTabs);
   const activeTabId = useUiStore((s) => s.activeTabId);
   const dragId = useRef<string | null>(null);
 
   const activate = (id: string) => {
     // subagent/preview tab 只切活动 tab，不动活跃会话（Composer 仍指当前会话）。
-    if (id.startsWith(SUBAGENT_PREFIX) || id.startsWith(PREVIEW_PREFIX)) {
+    if (
+      id.startsWith(SUBAGENT_PREFIX) ||
+      id.startsWith(PREVIEW_PREFIX) ||
+      id.startsWith(DIFF_PREFIX)
+    ) {
       useUiStore.getState().setActiveTab(id);
     } else {
       useSessionManager.getState().setActive(id);
@@ -45,7 +53,11 @@ export function SessionTabBar() {
     const ui = useUiStore.getState();
     const next = ui.closeTab(id);
     if (ui.activeTabId !== id || !next) return;
-    if (next.startsWith(SUBAGENT_PREFIX) || next.startsWith(PREVIEW_PREFIX)) {
+    if (
+      next.startsWith(SUBAGENT_PREFIX) ||
+      next.startsWith(PREVIEW_PREFIX) ||
+      next.startsWith(DIFF_PREFIX)
+    ) {
       ui.setActiveTab(next);
     } else {
       useSessionManager.getState().setActive(next);
@@ -60,14 +72,17 @@ export function SessionTabBar() {
         {openTabs.map((id) => {
           const isSubagent = id.startsWith(SUBAGENT_PREFIX);
           const isPreview = id.startsWith(PREVIEW_PREFIX);
+          const isDiff = id.startsWith(DIFF_PREFIX);
           const meta = isSubagent ? subagentTabs[id] : undefined;
           const previewMeta = isPreview ? previewTabs[id] : undefined;
-          const entry = !isSubagent && !isPreview ? entries[id] : undefined;
-          if (!meta && !previewMeta && !entry) return null;
+          const diffMeta = isDiff ? diffTabs[id] : undefined;
+          const entry = !isSubagent && !isPreview && !isDiff ? entries[id] : undefined;
+          if (!meta && !previewMeta && !diffMeta && !entry) return null;
           const active = id === activeTabId;
           const previewLabel = previewMeta
-            ? (previewMeta.relPath.split("/").pop() || previewMeta.relPath)
+            ? previewMeta.relPath.split("/").pop() || previewMeta.relPath
             : null;
+          const diffLabel = diffMeta ? diffMeta.relPath.split("/").pop() || diffMeta.relPath : null;
           const title = meta?.label ?? entry?.name ?? id;
           return (
             <div
@@ -99,6 +114,8 @@ export function SessionTabBar() {
             >
               {isSubagent ? (
                 <Network size={12} className="shrink-0 text-primary" />
+              ) : isDiff ? (
+                <FileMinus size={12} className="shrink-0 text-primary" />
               ) : isPreview ? (
                 <FileText size={12} className="shrink-0 text-primary" />
               ) : (
@@ -109,8 +126,11 @@ export function SessionTabBar() {
                   )}
                 />
               )}
-              <span className="truncate" title={previewMeta ? previewMeta.relPath : undefined}>
-                {previewLabel ?? title}
+              <span
+                className="truncate"
+                title={previewMeta ? previewMeta.relPath : diffMeta ? diffMeta.relPath : undefined}
+              >
+                {previewLabel ?? diffLabel ?? title}
               </span>
               <button
                 type="button"

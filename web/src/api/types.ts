@@ -649,3 +649,35 @@ export type FileContent =
   | { kind: "text"; lines: string[]; version: FileVersion }
   | { kind: "binary-unsupported"; version: FileVersion }
   | { kind: "blob"; mime: string; blob: Blob };
+
+/** Simplified git change kind (serde snake_case). Mirrors GitChangeKind
+ *  (src/daemon/workspace_files.rs): A/? → added, D → deleted, rest → modified. */
+export type GitChangeKind = "added" | "modified" | "deleted";
+
+/** One changed file under a workspace root; `path` is relative to that root.
+ *  Mirrors GitFileStatus. Response item of GET /api/v1/fs/git-status. */
+export interface GitFileStatus {
+  path: string;
+  status: GitChangeKind;
+}
+
+/** One inline-diff row kind. Mirrors DiffLineKind
+ *  (src/daemon/workspace_files.rs). */
+export type DiffLineKind = "context" | "add" | "delete";
+
+/** One row of a file's full inline diff vs HEAD. The daemon diffs with a
+ *  huge context so unchanged lines appear too — `lines` is the complete
+ *  new-file content with deleted lines interleaved. Mirrors DiffLine. */
+export interface DiffLine {
+  kind: DiffLineKind;
+  old_no?: number;
+  new_no?: number;
+  text: string;
+}
+
+/** Response of GET /api/v1/fs/git-diff?path=<file>. Mirrors FileDiff. */
+export interface FileDiff {
+  status: GitChangeKind;
+  truncated: boolean;
+  lines: DiffLine[];
+}

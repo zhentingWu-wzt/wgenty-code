@@ -181,6 +181,8 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // workspace roots incl. linked git worktrees)
         .route("/api/v1/fs/entries", get(workspace_files::list_entries))
         .route("/api/v1/fs/file", get(workspace_files::get_file))
+        .route("/api/v1/fs/git-status", get(workspace_files::git_status))
+        .route("/api/v1/fs/git-diff", get(workspace_files::git_diff))
         // Projects (multi-project registry; main project = daemon working_dir)
         .route(
             "/api/v1/projects",
