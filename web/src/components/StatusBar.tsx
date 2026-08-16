@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { useStore } from "zustand";
 import { selectPendingApprovalCount, useSessionManager } from "../state/sessionManager";
+import { createSessionStore } from "../state/sessionStore";
 import type { DaemonClient } from "../api/client";
 import type { PermissionMode } from "../api/types";
 
@@ -9,6 +11,9 @@ const MODE_LABELS: Record<PermissionMode, string> = {
   yolo: "yolo",
 };
 const MODE_ORDER: PermissionMode[] = ["normal", "accept_edits", "yolo"];
+
+/** Stand-in store so `useStore` can run unconditionally before any session exists. */
+const NO_SESSION_STORE = createSessionStore();
 
 interface StatusBarProps {
   client: DaemonClient;
@@ -28,6 +33,23 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   );
   const isRunning = activeStatus === "running" || activeStatus === "awaiting_approval";
   const [modeOpen, setModeOpen] = useState(false);
+
+  // Context occupancy from the active session's latest turn_context event.
+  const activeStore = useSessionManager((s) =>
+    s.activeId ? s.entries[s.activeId]?.store : undefined,
+  );
+  const usage = useStore(activeStore ?? NO_SESSION_STORE, (s) => s.turnContext?.usage ?? null);
+  const used = usage?.last_prompt_tokens;
+  const window_ = usage?.context_window;
+  const ctxPct = used != null && window_ ? Math.round(Math.min(used / window_, 1) * 100) : null;
+  const ctxColor =
+    ctxPct == null
+      ? ""
+      : ctxPct >= 80
+        ? "text-danger"
+        : ctxPct >= 50
+          ? "text-warning"
+          : "text-success";
 
   const statusText =
     connection === "connected"
@@ -72,6 +94,15 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
         </span>
       )}
       <div className="flex-1" />
+      {/* Context occupancy (latest prompt size vs model context window) */}
+      {ctxPct != null && used != null && window_ != null && (
+        <span
+          className={ctxColor}
+          title={`Context: ${used.toLocaleString()} / ${window_.toLocaleString()} tokens`}
+        >
+          ctx {ctxPct}%
+        </span>
+      )}
       {/* Permission mode picker (normal / accept edits / yolo) */}
       <div className="relative">
         <button
