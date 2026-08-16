@@ -10,9 +10,6 @@ const MODE_LABELS: Record<PermissionMode, string> = {
 };
 const MODE_ORDER: PermissionMode[] = ["normal", "accept_edits", "yolo"];
 
-/** Context bar blocks (mirrors the TUI's 8-cell context_bar). */
-const CONTEXT_BAR_WIDTH = 8;
-
 interface StatusBarProps {
   client: DaemonClient;
   /** Open the /model switcher modal. */
@@ -90,21 +87,32 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
         </span>
       )}
       <div className="flex-1" />
-      {/* Context-usage bar (▓▓░░░░░░ 25%) — mirrors the TUI context_bar:
-          green < 50%, yellow 50–80%, red ≥ 80%. Hidden until the first
-          turn reports usage or the window size is unknown. */}
+      {/* Context-usage bar — a real CSS track/fill bar (▓/░ shade glyphs read
+          as a solid block in web fonts, hiding the fill level). Fill color
+          mirrors the TUI context_bar: green < 50%, yellow 50–80%, red ≥ 80%.
+          Hidden until the first turn reports usage or the window is unknown. */}
       {contextWindow !== null && contextWindow > 0 && contextTokens !== null && (
         <span
-          className={
-            contextTokens / contextWindow >= 0.8
-              ? "text-danger"
-              : contextTokens / contextWindow >= 0.5
-                ? "text-warning"
-                : "text-success"
-          }
+          className="flex items-center gap-1.5"
           title={`context ${contextTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens`}
         >
-          {contextBarLabel(contextTokens, contextWindow)}
+          <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
+            <span
+              className={
+                contextTokens / contextWindow >= 0.8
+                  ? "block h-full bg-danger"
+                  : contextTokens / contextWindow >= 0.5
+                    ? "block h-full bg-warning"
+                    : "block h-full bg-success"
+              }
+              style={{
+                width: `${Math.round(Math.min(contextTokens / contextWindow, 1) * 100)}%`,
+              }}
+            />
+          </span>
+          <span className="tabular-nums">
+            {Math.round(Math.min(contextTokens / contextWindow, 1) * 100)}%
+          </span>
         </span>
       )}
       {/* Permission mode picker (normal / accept edits / yolo) */}
@@ -157,10 +165,3 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
 }
 
 const noopSubscribe = () => () => {};
-
-/** ▓/░ bar + percentage label for the context-usage indicator. */
-function contextBarLabel(used: number, max: number): string {
-  const ratio = max === 0 ? 0 : Math.min(used / max, 1);
-  const filled = Math.round(ratio * CONTEXT_BAR_WIDTH);
-  return `${"▓".repeat(filled)}${"░".repeat(CONTEXT_BAR_WIDTH - filled)} ${Math.round(ratio * 100)}%`;
-}
