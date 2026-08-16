@@ -20,6 +20,7 @@ pub mod run_loop;
 pub(crate) mod session_admin;
 pub(crate) mod skills_api;
 pub mod state;
+pub mod workspace_files;
 pub(crate) mod worktrees;
 pub(crate) mod ws_push;
 

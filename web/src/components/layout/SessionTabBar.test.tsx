@@ -19,7 +19,7 @@ function seed() {
 describe("SessionTabBar", () => {
   beforeEach(() => {
     useSessionManager.setState({ entries: {}, order: [], activeId: null });
-    useUiStore.setState({ openTabs: [], activeTabId: null, subagentTabs: {} });
+    useUiStore.setState({ openTabs: [], activeTabId: null, subagentTabs: {}, previewTabs: {} });
   });
 
   it("renders a tab per open session, marks the active one", () => {

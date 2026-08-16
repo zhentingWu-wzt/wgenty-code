@@ -20,6 +20,9 @@ import type {
   CreateViewerResponse,
   ExecuteToolRequest,
   ExecuteToolResponse,
+  FileContent,
+  FileVersion,
+  FsEntries,
   GetTodosResponse,
   HealthResponse,
   ListModelsResponse,
@@ -47,6 +50,8 @@ import type {
   DirListing,
   PermissionMode,
   PermissionModeResponse,
+  FileDiff,
+  GitFileStatus,
 } from "./types";
 
 /** Error thrown when the daemon returns a non-2xx response. */
@@ -74,6 +79,21 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     return (text ? JSON.parse(text) : undefined) as T;
   }
   return (await res.json()) as T;
+}
+
+/** Human-readable byte size ("12 B", "1.4 MB"). Exported for the file
+ *  preview panel header / oversize fallbacks. */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = -1;
+  do {
+    v /= 1024;
+    i++;
+  } while (v >= 1024 && i < units.length - 1);
+  const rounded = v >= 100 ? Math.round(v) : Math.round(v * 10) / 10;
+  return `${rounded} ${units[i]}`;
 }
 
 /** Direct daemon connection info served by the vite dev middleware. */
@@ -433,9 +453,7 @@ export class DaemonClient {
         // Watchdog-fired (not user-aborted) connect timeout → retry once;
         // a slot usually frees as soon as a concurrent run/stream ends.
         const connectTimeout =
-          err instanceof DOMException &&
-          err.name === "TimeoutError" &&
-          !signal?.aborted;
+          err instanceof DOMException && err.name === "TimeoutError" && !signal?.aborted;
         if (!connectTimeout || attempt >= maxAttempts) throw err;
         console.warn(
           `[client] ${path}: SSE connect queued >15s ` +
@@ -591,6 +609,74 @@ export class DaemonClient {
     const qs = path ? `?path=${encodeURIComponent(path)}` : "";
     return jsonOrThrow(await fetch(`${this.base}/fs/dirs${qs}`));
   }
+
+  // ── Workspace file preview (read-only, path-bounded) ──────────────────────
+
+  /** `GET /fs/entries?path=<dir>` — mixed listing (dirs first, then files,
+   *  case-insensitive) for the workspace file tree. The path must resolve
+   *  inside a registered project/worktree root; the daemon 403s otherwise. */
+  async listEntries(path: string): Promise<FsEntries> {
+    return jsonOrThrow(await fetch(`${this.base}/fs/entries?path=${encodeURIComponent(path)}`));
+  }
+
+  /** `GET /fs/git-status?path=<root>` — changed files (added/modified/deleted,
+   *  incl. untracked) under a registered workspace root. Non-git roots return
+   *  an empty list; failures degrade to no colors in the file tree. */
+  /** `GET /fs/git-diff?path=<file>` — full inline diff vs HEAD (staged +
+   *  unstaged) with line numbers; untracked files diff against /dev/null. */
+  async gitDiff(path: string): Promise<FileDiff> {
+    return jsonOrThrow(await fetch(`${this.base}/fs/git-diff?path=${encodeURIComponent(path)}`));
+  }
+
+  async gitStatus(path: string): Promise<GitFileStatus[]> {
+    return jsonOrThrow(await fetch(`${this.base}/fs/git-status?path=${encodeURIComponent(path)}`));
+  }
+
+  /** `GET /fs/file?path=<file>` — file content for the preview panel.
+   *  Branches on the response Content-Type (design D3):
+   *  - `application/json` → text (`{lines, version}`) or the non-whitelisted
+   *    binary marker (`{is_binary, version}` → "binary-unsupported");
+   *  - anything else → raw bytes as a Blob with the header's mime. */
+  async fetchFile(path: string): Promise<FileContent> {
+    const res = await fetch(`${this.base}/fs/file?path=${encodeURIComponent(path)}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (res.status === 413) {
+        // Oversize (design D6): the body carries {size, limit} — surface the
+        // real numbers readably instead of a bare status line.
+        let msg: string | null = null;
+        try {
+          const info = JSON.parse(body) as { size?: unknown; limit?: unknown };
+          if (typeof info.size === "number" && typeof info.limit === "number") {
+            msg = `file too large to preview: ${formatBytes(info.size)} exceeds the ${formatBytes(info.limit)} limit`;
+          }
+        } catch {
+          // Non-JSON body — fall through to the raw text below.
+        }
+        throw new DaemonError(msg || body || `${res.status} ${res.statusText}`, res.status);
+      }
+      throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
+    }
+    const mime = res.headers.get("content-type") ?? "";
+    if (mime.startsWith("application/json")) {
+      const data = (await res.json()) as {
+        lines?: string[];
+        is_binary?: boolean;
+        version: FileVersion;
+      };
+      if (Array.isArray(data.lines)) {
+        return { kind: "text", lines: data.lines, version: data.version };
+      }
+      if (data.is_binary) {
+        return { kind: "binary-unsupported", version: data.version };
+      }
+      // Contract violation (daemon newer/older than web) — fail loudly.
+      throw new DaemonError("unexpected /fs/file response shape", res.status);
+    }
+    const blob = await res.blob();
+    return { kind: "blob", mime: mime || blob.type || "application/octet-stream", blob };
+  }
+
   async listWorktrees(project?: string): Promise<WorktreeInfo[]> {
     const qs = project ? `?project=${encodeURIComponent(project)}` : "";
     return jsonOrThrow(await fetch(`${this.base}/worktrees${qs}`));

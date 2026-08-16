@@ -19,6 +19,8 @@ import { CommandModal } from "./features/panels/CommandModal";
 import { RightRail } from "./components/layout/RightRail";
 import { ModelPanel } from "./features/panels/ModelPanel";
 import { SubagentDetailPanel } from "./features/panels/SubagentDetailPanel";
+import { PreviewPanel } from "./features/files/PreviewPanel";
+import { DiffView } from "./features/scm/DiffView";
 import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
 import { sessionMessagesToDisplay } from "./agent/sessionLoad";
@@ -60,13 +62,21 @@ export function App() {
   // one is provided to the center pane.
   const activeStore = useSessionManager((s) => (s.activeId ? s.entries[s.activeId].store : null));
 
-  // Unified active tab: a session id or `subagent:<nodeId>`. When it's a
-  // subagent tab, the center pane shows the subagent detail panel instead of
-  // the chat view (the active session store stays bound for the Composer).
+  // Unified active tab: a session id, `subagent:<nodeId>`, or
+  // `preview:<absPath>`. When it's a subagent tab, the center pane shows the
+  // subagent detail panel instead of the chat view (the active session store
+  // stays bound for the Composer); a preview tab likewise swaps in the file
+  // preview panel.
   const activeTabId = useUiStore((s) => s.activeTabId);
   const subagentTabs = useUiStore((s) => s.subagentTabs);
   const subagentTabMeta =
     activeTabId && activeTabId.startsWith("subagent:") ? subagentTabs[activeTabId] : undefined;
+  const previewTabs = useUiStore((s) => s.previewTabs);
+  const previewTabMeta =
+    activeTabId && activeTabId.startsWith("preview:") ? previewTabs[activeTabId] : undefined;
+  const diffTabs = useUiStore((s) => s.diffTabs);
+  const diffTabMeta =
+    activeTabId && activeTabId.startsWith("diff:") ? diffTabs[activeTabId] : undefined;
 
   // Bootstrap: restore the most recent daemon sessions so the left rail shows
   // real history on startup, and activate the newest one (TUI-aligned). When
@@ -285,6 +295,16 @@ export function App() {
                     rootSessionId={subagentTabMeta.rootSessionId}
                     label={subagentTabMeta.label}
                   />
+                ) : previewTabMeta ? (
+                  // key = absPath so switching preview files remounts the
+                  // panel (fetch/blob-URL state resets per file).
+                  <PreviewPanel
+                    key={previewTabMeta.absPath}
+                    client={client}
+                    meta={previewTabMeta}
+                  />
+                ) : diffTabMeta ? (
+                  <DiffView key={diffTabMeta.absPath} client={client} meta={diffTabMeta} />
                 ) : (
                   <ChatView />
                 )}
