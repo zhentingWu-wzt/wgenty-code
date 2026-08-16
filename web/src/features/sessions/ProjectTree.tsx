@@ -6,6 +6,7 @@ import {
   CircleAlert,
   FolderGit2,
   FolderMinus,
+  FolderTree,
   GitBranchPlus,
   MessageSquarePlus,
   Trash2,
@@ -15,6 +16,7 @@ import type { DaemonClient } from "../../api/client";
 import type { ProjectInfo, SessionInfo, WorktreeInfo } from "../../api/types";
 import { cn } from "../../lib/utils";
 import { useSessionManager, type SessionEntry } from "../../state/sessionManager";
+import { FileTree } from "../files/FileTree";
 import { NewSessionModal, type NewSessionPreset } from "./NewSessionModal";
 import { NewTaskModal } from "./NewTaskModal";
 
@@ -358,6 +360,13 @@ export function ProjectTree({
               }
             >
               {renderSessions(sessionsIn(p, null))}
+              {/* Workspace files (read-only preview). The group node is
+                  default-collapsed; expanding mounts FileTree, which fires the
+                  first listEntries. Works for non-git projects too (the main
+                  checkout task node uses the project path directly). */}
+              <TreeNode icon={<FolderTree size={13} />} title="文件" defaultCollapsed>
+                <FileTree workspaceRoot={main?.path ?? p.path} client={client} />
+              </TreeNode>
             </TreeNode>
 
             {/* One task node per linked worktree. */}
@@ -398,6 +407,10 @@ export function ProjectTree({
                 }
               >
                 {renderSessions(sessionsIn(p, w))}
+                {/* Workspace files for this task's worktree (see above). */}
+                <TreeNode icon={<FolderTree size={13} />} title="文件" defaultCollapsed>
+                  <FileTree workspaceRoot={w.path} client={client} />
+                </TreeNode>
               </TreeNode>
             ))}
           </TreeNode>

@@ -57,7 +57,8 @@ const MARKDOWN_CLASSES = cn(
   "[&_hr]:my-3 [&_hr]:border-border",
 );
 
-function Markdown({ children }: { children: string }) {
+/** GFM renderer shared with the file preview panel (.md files). */
+export function Markdown({ children }: { children: string }) {
   return (
     <div className={MARKDOWN_CLASSES}>
       <ReactMarkdown

@@ -24,6 +24,18 @@ export interface SubagentTabMeta {
   rootSessionId: string;
 }
 
+/** Metadata for a workspace file preview tab (`preview:<absPath>`).
+ *  Mirrors the subagent tab pattern (design D5) — no separate store. */
+export interface PreviewTabMeta {
+  /** Registered workspace root (canonicalized) the file belongs to. */
+  workspaceRoot: string;
+  absPath: string;
+  relPath: string;
+  /** Extension-based first guess by the caller; the panel re-checks against
+   *  the actual fetchFile response kind. */
+  kind: "text" | "binary";
+}
+
 interface UiState {
   theme: ThemeMode;
   leftCollapsed: boolean;
@@ -53,6 +65,11 @@ interface UiState {
   subagentTabs: Record<string, SubagentTabMeta>;
   /** 打开（或聚焦）一个 subagent 详情 tab 并激活。 */
   openSubagentTab: (meta: SubagentTabMeta) => void;
+
+  /** 文件预览 tab 元数据，key = tab id（`preview:<absPath>`）。 */
+  previewTabs: Record<string, PreviewTabMeta>;
+  /** 打开（或聚焦）一个文件预览 tab 并激活；同 path 幂等（不加新 tab）。 */
+  openPreviewTab: (meta: PreviewTabMeta) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -80,7 +97,7 @@ export const useUiStore = create<UiState>((set) => ({
       const openTabs = s.openTabs.filter((t) => t !== id);
       // 优先右侧邻居，删尾 tab 时取新的末尾。idx < 0 时 id 本就不在，无需激活切换。
       next = idx < 0 ? null : (openTabs[Math.min(idx, openTabs.length - 1)] ?? null);
-      // subagent tab 关闭时顺带清理其元数据。
+      // subagent / preview tab 关闭时顺带清理各自的元数据。
       const subagentTabs =
         id.startsWith("subagent:") && s.subagentTabs[id]
           ? (() => {
@@ -89,7 +106,15 @@ export const useUiStore = create<UiState>((set) => ({
               return c;
             })()
           : s.subagentTabs;
-      return { openTabs, subagentTabs };
+      const previewTabs =
+        id.startsWith("preview:") && s.previewTabs[id]
+          ? (() => {
+              const c = { ...s.previewTabs };
+              delete c[id];
+              return c;
+            })()
+          : s.previewTabs;
+      return { openTabs, subagentTabs, previewTabs };
     });
     return next;
   },
@@ -115,6 +140,19 @@ export const useUiStore = create<UiState>((set) => ({
       return {
         openTabs,
         subagentTabs: { ...s.subagentTabs, [tabId]: meta },
+        activeTabId: tabId,
+      };
+    });
+  },
+
+  previewTabs: {},
+  openPreviewTab: (meta) => {
+    const tabId = `preview:${meta.absPath}`;
+    set((s) => {
+      const openTabs = s.openTabs.includes(tabId) ? s.openTabs : [...s.openTabs, tabId];
+      return {
+        openTabs,
+        previewTabs: { ...s.previewTabs, [tabId]: meta },
         activeTabId: tabId,
       };
     });

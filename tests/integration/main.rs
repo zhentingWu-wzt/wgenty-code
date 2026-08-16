@@ -34,3 +34,4 @@ mod system_reminder;
 mod tools_test;
 mod unified_subagent_lifecycle;
 mod workflow_comet_test;
+mod workspace_files_test;

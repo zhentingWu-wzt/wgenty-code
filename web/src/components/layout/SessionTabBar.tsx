@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { Network, X } from "lucide-react";
+import { FileText, Network, X } from "lucide-react";
 import { useSessionManager, type SessionStatus } from "../../state/sessionManager";
 import { useUiStore } from "../../state/uiStore";
 import { cn } from "../../lib/utils";
@@ -15,23 +15,28 @@ const STATUS_DOT: Record<SessionStatus, string> = {
 /** subagent 详情 tab id 前缀。 */
 const SUBAGENT_PREFIX = "subagent:";
 
-/** 会话 tab 栏：每个打开的会话或 subagent 详情一个 tab。点击激活、中键/X
- *  关闭、HTML5 拖拽排序。subagent tab 用 Network 图标，会话 tab 用状态点。 */
+/** 文件预览 tab id 前缀。 */
+const PREVIEW_PREFIX = "preview:";
+
+/** 会话 tab 栏：每个打开的会话、subagent 详情或文件预览一个 tab。点击激活、
+ *  中键/X 关闭、HTML5 拖拽排序。subagent tab 用 Network 图标，预览 tab 用
+ *  FileText 图标（标签取文件名，title 悬浮完整 relPath），会话 tab 用状态点。 */
 export function SessionTabBar() {
   const openTabs = useUiStore((s) => s.openTabs);
   const entries = useSessionManager((s) => s.entries);
   const subagentTabs = useUiStore((s) => s.subagentTabs);
+  const previewTabs = useUiStore((s) => s.previewTabs);
   const activeTabId = useUiStore((s) => s.activeTabId);
   const dragId = useRef<string | null>(null);
 
   const activate = (id: string) => {
-    if (id.startsWith(SUBAGENT_PREFIX)) {
-      // subagent tab 只切活动 tab，不动活跃会话（Composer 仍指当前会话）。
+    // subagent/preview tab 只切活动 tab，不动活跃会话（Composer 仍指当前会话）。
+    if (id.startsWith(SUBAGENT_PREFIX) || id.startsWith(PREVIEW_PREFIX)) {
       useUiStore.getState().setActiveTab(id);
     } else {
       useSessionManager.getState().setActive(id);
-      // uiSync 只在 activeId 变化时同步 activeTabId；从 subagent tab 点回
-      // 当前活跃会话时 activeId 前后相同，必须显式切回，否则界面停在原 tab。
+      // uiSync 只在 activeId 变化时同步 activeTabId；从 subagent/preview tab
+      // 点回当前活跃会话时 activeId 前后相同，必须显式切回，否则界面停在原 tab。
       useUiStore.getState().setActiveTab(id);
     }
   };
@@ -40,7 +45,7 @@ export function SessionTabBar() {
     const ui = useUiStore.getState();
     const next = ui.closeTab(id);
     if (ui.activeTabId !== id || !next) return;
-    if (next.startsWith(SUBAGENT_PREFIX)) {
+    if (next.startsWith(SUBAGENT_PREFIX) || next.startsWith(PREVIEW_PREFIX)) {
       ui.setActiveTab(next);
     } else {
       useSessionManager.getState().setActive(next);
@@ -54,10 +59,15 @@ export function SessionTabBar() {
       <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto px-1">
         {openTabs.map((id) => {
           const isSubagent = id.startsWith(SUBAGENT_PREFIX);
+          const isPreview = id.startsWith(PREVIEW_PREFIX);
           const meta = isSubagent ? subagentTabs[id] : undefined;
-          const entry = !isSubagent ? entries[id] : undefined;
-          if (!meta && !entry) return null;
+          const previewMeta = isPreview ? previewTabs[id] : undefined;
+          const entry = !isSubagent && !isPreview ? entries[id] : undefined;
+          if (!meta && !previewMeta && !entry) return null;
           const active = id === activeTabId;
+          const previewLabel = previewMeta
+            ? (previewMeta.relPath.split("/").pop() || previewMeta.relPath)
+            : null;
           const title = meta?.label ?? entry?.name ?? id;
           return (
             <div
@@ -89,6 +99,8 @@ export function SessionTabBar() {
             >
               {isSubagent ? (
                 <Network size={12} className="shrink-0 text-primary" />
+              ) : isPreview ? (
+                <FileText size={12} className="shrink-0 text-primary" />
               ) : (
                 <span
                   className={cn(
@@ -97,11 +109,13 @@ export function SessionTabBar() {
                   )}
                 />
               )}
-              <span className="truncate">{title}</span>
+              <span className="truncate" title={previewMeta ? previewMeta.relPath : undefined}>
+                {previewLabel ?? title}
+              </span>
               <button
                 type="button"
                 data-close
-                aria-label={`Close ${title}`}
+                aria-label={`Close ${previewLabel ?? title}`}
                 className="ml-0.5 hidden rounded-sm p-0.5 hover:bg-accent group-hover:block"
                 onClick={(e) => {
                   e.stopPropagation();
