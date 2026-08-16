@@ -90,6 +90,7 @@ pub async fn get_config(State(state): State<Arc<DaemonState>>) -> Json<ConfigRes
         max_tokens: s.models.transport.max_tokens,
         timeout: s.models.transport.timeout,
         streaming: s.models.transport.streaming,
+        context_window: s.models.context_window,
     })
 }
 
@@ -168,6 +169,7 @@ pub async fn update_config(
         max_tokens: s.models.transport.max_tokens,
         timeout: s.models.transport.timeout,
         streaming: s.models.transport.streaming,
+        context_window: s.models.context_window,
     }))
 }
 

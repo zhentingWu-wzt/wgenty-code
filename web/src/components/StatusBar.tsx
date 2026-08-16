@@ -1,7 +1,5 @@
-import { useState } from "react";
-import { useStore } from "zustand";
+import { useState, useSyncExternalStore } from "react";
 import { selectPendingApprovalCount, useSessionManager } from "../state/sessionManager";
-import { createSessionStore } from "../state/sessionStore";
 import type { DaemonClient } from "../api/client";
 import type { PermissionMode } from "../api/types";
 
@@ -12,8 +10,8 @@ const MODE_LABELS: Record<PermissionMode, string> = {
 };
 const MODE_ORDER: PermissionMode[] = ["normal", "accept_edits", "yolo"];
 
-/** Stand-in store so `useStore` can run unconditionally before any session exists. */
-const NO_SESSION_STORE = createSessionStore();
+/** Context bar blocks (mirrors the TUI's 8-cell context_bar). */
+const CONTEXT_BAR_WIDTH = 8;
 
 interface StatusBarProps {
   client: DaemonClient;
@@ -27,6 +25,10 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const modelName = useSessionManager((s) => s.modelName);
   const permissionMode = useSessionManager((s) => s.permissionMode);
   const setPermissionMode = useSessionManager((s) => s.setPermissionMode);
+  const contextWindow = useSessionManager((s) => s.contextWindow);
+  const activeStore = useSessionManager((s) =>
+     s.activeId ? (s.entries[s.activeId]?.store ?? null) : null,
+  );
   const pendingApprovals = useSessionManager(selectPendingApprovalCount);
   const activeStatus = useSessionManager((s) =>
     s.activeId ? s.entries[s.activeId]?.status : undefined,
@@ -34,22 +36,15 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const isRunning = activeStatus === "running" || activeStatus === "awaiting_approval";
   const [modeOpen, setModeOpen] = useState(false);
 
-  // Context occupancy from the active session's latest turn_context event.
-  const activeStore = useSessionManager((s) =>
-    s.activeId ? s.entries[s.activeId]?.store : undefined,
+  // Context-window occupancy of the active session, from its latest
+  // turn_context event. The per-session store lives outside React context
+  // here (StatusBar sits above the provider), so subscribe directly — the
+  // primitive snapshot re-renders only on real usage changes, and switching
+  // sessions re-subscribes via the new store's subscribe identity.
+  const contextTokens = useSyncExternalStore(
+    activeStore?.subscribe ?? noopSubscribe,
+    () => activeStore?.getState().turnContext?.usage.context_tokens ?? null,
   );
-  const usage = useStore(activeStore ?? NO_SESSION_STORE, (s) => s.turnContext?.usage ?? null);
-  const used = usage?.last_prompt_tokens;
-  const window_ = usage?.context_window;
-  const ctxPct = used != null && window_ ? Math.round(Math.min(used / window_, 1) * 100) : null;
-  const ctxColor =
-    ctxPct == null
-      ? ""
-      : ctxPct >= 80
-        ? "text-danger"
-        : ctxPct >= 50
-          ? "text-warning"
-          : "text-success";
 
   const statusText =
     connection === "connected"
@@ -94,13 +89,21 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
         </span>
       )}
       <div className="flex-1" />
-      {/* Context occupancy (latest prompt size vs model context window) */}
-      {ctxPct != null && used != null && window_ != null && (
+      {/* Context-usage bar (▓▓░░░░░░ 25%) — mirrors the TUI context_bar:
+          green < 50%, yellow 50–80%, red ≥ 80%. Hidden until the first
+          turn reports usage or the window size is unknown. */}
+      {contextWindow !== null && contextWindow > 0 && contextTokens !== null && (
         <span
-          className={ctxColor}
-          title={`Context: ${used.toLocaleString()} / ${window_.toLocaleString()} tokens`}
+          className={
+            contextTokens / contextWindow >= 0.8
+              ? "text-danger"
+              : contextTokens / contextWindow >= 0.5
+                ? "text-warning"
+                : "text-success"
+          }
+          title={`context ${contextTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens`}
         >
-          ctx {ctxPct}%
+          {contextBarLabel(contextTokens, contextWindow)}
         </span>
       )}
       {/* Permission mode picker (normal / accept edits / yolo) */}
@@ -150,4 +153,13 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
       )}
     </footer>
   );
+}
+
+const noopSubscribe = () => () => {};
+
+/** ▓/░ bar + percentage label for the context-usage indicator. */
+function contextBarLabel(used: number, max: number): string {
+  const ratio = max === 0 ? 0 : Math.min(used / max, 1);
+  const filled = Math.round(ratio * CONTEXT_BAR_WIDTH);
+  return `${"▓".repeat(filled)}${"░".repeat(CONTEXT_BAR_WIDTH - filled)} ${Math.round(ratio * 100)}%`;
 }

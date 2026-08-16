@@ -22,6 +22,9 @@ pub struct ConfigResponse {
     pub max_tokens: usize,
     pub timeout: u64,
     pub streaming: bool,
+    /// Model context window (tokens) — clients render context-usage bars
+    /// against it (mirrors `settings.models.context_window` in the TUI).
+    pub context_window: usize,
 }
 
 /// `PUT /api/v1/config` — partial update of transport-level settings. All

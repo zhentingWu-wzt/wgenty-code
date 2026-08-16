@@ -67,10 +67,9 @@ export interface TurnContextUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  /** Most recent prompt size — the current context occupancy numerator. */
-  last_prompt_tokens?: number;
-  /** Model context window — the occupancy denominator. */
-  context_window?: number;
+  /** Context-window occupancy at the last API call (newer daemons; the
+   *  TUI context bar renders the same measure). */
+  context_tokens?: number;
 }
 export interface TurnContextData {
   layers: TurnContextLayer[];
