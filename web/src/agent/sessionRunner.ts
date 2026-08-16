@@ -29,6 +29,21 @@ interface PendingTool {
   msgId?: string;
 }
 
+/** Default names assigned by createLocalSession / NewSessionModal. */
+const DEFAULT_SESSION_NAME = /^Session( \d+)?$/;
+
+function isDefaultSessionName(name: string): boolean {
+  return DEFAULT_SESSION_NAME.test(name);
+}
+
+/** Truncate a user message to a short session name (max ~50 chars, no
+ *  newlines) — mirrors the TUI's `truncate_session_name`. */
+function truncateSessionName(text: string): string {
+  const firstLine = (text.split("\n", 1)[0] ?? "").trim();
+  const chars = Array.from(firstLine);
+  return chars.length <= 50 ? firstLine : `${chars.slice(0, 50).join("")}...`;
+}
+
 /** Mutable per-turn render state shared with handleEvent. */
 interface RenderCtx {
   mode: DisplayMode;
@@ -168,11 +183,26 @@ export async function runSessionTurn(
   if (!entry) return;
   const store = entry.store;
 
+  // 0. Auto-name from the first user message when the session still carries
+  // its default name (mirrors the TUI's `truncate_session_name`). Done before
+  // createSession so a not-yet-bound session lands daemon-side with the
+  // derived name too.
+  const derivedName = truncateSessionName(text);
+  if (
+    derivedName &&
+    store.getState().messages.length === 0 &&
+    isDefaultSessionName(entry.name)
+  ) {
+    m.renameSession(sessionId, derivedName);
+  }
+
   // 1. Ensure we have a daemon-side session id (POST /run needs one).
   let daemonId = entry.daemonId;
   if (!daemonId) {
     try {
-      const created = await client.createSession({ name: entry.name });
+      const created = await client.createSession({
+        name: m.entries[sessionId]?.name ?? entry.name,
+      });
       daemonId = created.id;
       m.setDaemonId(sessionId, daemonId);
     } catch (e) {
