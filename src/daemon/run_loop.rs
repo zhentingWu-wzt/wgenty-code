@@ -45,6 +45,10 @@ pub enum SessionEventKind {
     ToolResult,
     TurnDone,
     TurnError,
+    /// Real-time context occupancy: prompt tokens of the most recent LLM call,
+    /// pushed after every API response (and after auto-compaction) so web
+    /// clients can render the context bar live during a turn.
+    UsageUpdate,
     Save,
     PermissionRequired,
     AskUser,
@@ -291,6 +295,12 @@ impl EventSink for DaemonEventSink {
                 self.publish(
                     SessionEventKind::TurnError,
                     serde_json::json!({ "message": message }),
+                );
+            }
+            RuntimeEvent::UsageUpdate { prompt_tokens } => {
+                self.publish(
+                    SessionEventKind::UsageUpdate,
+                    serde_json::json!({ "prompt_tokens": prompt_tokens }),
                 );
             }
             RuntimeEvent::SaveSession => {
@@ -1854,7 +1864,8 @@ async fn run_session_turn(
 
     // 9. TurnContext: broadcast inspector data (layers, recalled memories,
     // new messages, reminder, token usage). Emitted once per run after the
-    // loop exits and the final save completes.
+    // loop exits and the final save completes (clients keep their session
+    // subscription briefly open past TurnDone to receive it).
     let new_messages: Vec<_> = final_history
         .iter()
         .skip(seed_len_before_run)

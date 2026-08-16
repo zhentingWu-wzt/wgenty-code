@@ -542,6 +542,8 @@ export type SessionEventKind =
   | "tool_result"
   | "turn_done"
   | "turn_error"
+  /** Live context occupancy: `data.prompt_tokens` after each LLM call. */
+  | "usage_update"
   | "save"
   | "turn_context"
   /** Control plane (seq 0, empty run_id): the replay window no longer covers

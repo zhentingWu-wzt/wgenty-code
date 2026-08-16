@@ -198,6 +198,9 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
         // TurnContext is consumed by web/Tauri inspector panels; the TUI has
         // its own in-process TurnContext via AppEvent::TurnContextCaptured.
         SessionEventKind::TurnContext => Vec::new(),
+        // Live context occupancy for web/Tauri status bars; the TUI reads its
+        // in-process TokenCounter directly.
+        SessionEventKind::UsageUpdate => Vec::new(),
     }
 }
 

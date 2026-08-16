@@ -47,6 +47,9 @@ impl EventSink for TuiEventSink {
             RuntimeEvent::ReasoningDelta(text) => AppEvent::ReasoningDelta(text),
             RuntimeEvent::PreparingTools => AppEvent::PreparingTools,
             RuntimeEvent::StreamDone { finish_reason } => AppEvent::StreamDone { finish_reason },
+            // The TUI context bar reads the shared TokenCounter directly
+            // (same value); no AppEvent needed.
+            RuntimeEvent::UsageUpdate { .. } => return,
             RuntimeEvent::StreamError(msg) => AppEvent::StreamError(msg),
             RuntimeEvent::CompactionStarted => AppEvent::CompactionStarted,
             RuntimeEvent::ContextCompacted {

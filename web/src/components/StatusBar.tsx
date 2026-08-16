@@ -36,14 +36,15 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const isRunning = activeStatus === "running" || activeStatus === "awaiting_approval";
   const [modeOpen, setModeOpen] = useState(false);
 
-  // Context-window occupancy of the active session, from its latest
-  // turn_context event. The per-session store lives outside React context
+  // Context-window occupancy of the active session, updated LIVE by
+  // usage_update events (after every LLM call) and re-synced by the turn-end
+  // turn_context snapshot. The per-session store lives outside React context
   // here (StatusBar sits above the provider), so subscribe directly — the
   // primitive snapshot re-renders only on real usage changes, and switching
   // sessions re-subscribes via the new store's subscribe identity.
   const contextTokens = useSyncExternalStore(
     activeStore?.subscribe ?? noopSubscribe,
-    () => activeStore?.getState().turnContext?.usage.context_tokens ?? null,
+    () => activeStore?.getState().contextTokens ?? null,
   );
 
   const statusText =

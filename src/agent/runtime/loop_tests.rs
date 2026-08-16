@@ -149,6 +149,7 @@ impl VecSink {
                 RuntimeEvent::StreamError(m) => format!("error:{m}"),
                 RuntimeEvent::StreamDone { finish_reason } => format!("done:{finish_reason}"),
                 RuntimeEvent::SaveSession => "save".to_string(),
+                RuntimeEvent::UsageUpdate { prompt_tokens } => format!("usage:{prompt_tokens}"),
                 _ => "?".to_string(),
             })
             .collect()
@@ -610,6 +611,126 @@ async fn successful_compaction_updates_last_prompt_tokens() {
         !hist.iter().any(|m| m.content.as_deref() == Some("short")),
         "compaction summary should NOT be stored in history"
     );
+
+    // The live context feed must publish the same post-compact estimate the
+    // TUI counter shows, before the next assistant reply.
+    let snapshot = events.snapshot();
+    let first_usage = snapshot
+        .iter()
+        .find(|s| s.starts_with("usage:"))
+        .expect("compaction should emit a usage estimate");
+    assert_eq!(first_usage, &format!("usage:{expected}"));
+}
+
+#[tokio::test]
+async fn usage_update_reports_exact_prompt_tokens_per_call() {
+    // Multi-round turn: round 1 (tool call) reports 10 prompt tokens, round 2
+    // reports 25. The live feed must publish both, in call order.
+    let llm = ScriptedLlm::new(vec![
+        ChatCompletion {
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: None,
+                reasoning_content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "t1".to_string(),
+                    r#type: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: "read_file".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+            finish_reason: "tool_calls".to_string(),
+            usage: Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            }),
+        },
+        ChatCompletion {
+            message: ChatMessage::assistant("done"),
+            finish_reason: "stop".to_string(),
+            usage: Some(Usage {
+                prompt_tokens: 25,
+                completion_tokens: 5,
+                total_tokens: 30,
+            }),
+        },
+    ]);
+    let tools = MockToolPort::new().with_result("read_file", r#"{"success":true}"#);
+    let events = VecSink::new();
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user(
+        "check the file",
+    )])));
+    let mut state = LoopTurnState::default();
+    let _ = run_agent_loop(RunLoopArgs {
+        llm: &llm,
+        tools: &tools,
+        events: &events,
+        history: &history,
+        config: &default_config(),
+        state: &mut state,
+        stream_style: StreamStyle::subagent(),
+        hooks: LoopHooks::default(),
+        system_messages: &[],
+    })
+    .await
+    .unwrap();
+
+    let feed: Vec<String> = events
+        .snapshot()
+        .into_iter()
+        .filter(|s| s.starts_with("usage:"))
+        .collect();
+    assert_eq!(feed, vec!["usage:10", "usage:25"]);
+}
+
+#[tokio::test]
+async fn usage_update_estimates_when_usage_missing() {
+    // A provider that returns no usage must still push a positive estimate
+    // so the web context bar keeps moving.
+    let llm = ScriptedLlm::new(vec![ChatCompletion {
+        message: ChatMessage::assistant("ok"),
+        finish_reason: "stop".to_string(),
+        usage: None,
+    }]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history =
+        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hello")])));
+    let counter = TokenCounter::new();
+    let mut state = LoopTurnState::default();
+    let _ = run_agent_loop(RunLoopArgs {
+        llm: &llm,
+        tools: &tools,
+        events: &events,
+        history: &history,
+        config: &default_config(),
+        state: &mut state,
+        stream_style: StreamStyle::subagent(),
+        hooks: LoopHooks {
+            token_counter: Some(&counter),
+            ..LoopHooks::default()
+        },
+        system_messages: &[],
+    })
+    .await
+    .unwrap();
+
+    let feed: Vec<String> = events
+        .snapshot()
+        .into_iter()
+        .filter(|s| s.starts_with("usage:"))
+        .collect();
+    assert_eq!(feed.len(), 1, "exactly one estimate per call: {feed:?}");
+    let estimate: usize = feed[0]
+        .strip_prefix("usage:")
+        .unwrap()
+        .parse()
+        .expect("numeric estimate");
+    assert!(estimate > 0, "estimate must be positive, got {estimate}");
 }
 
 // ── Task 7: exec_session turn-boundary integration ─────────────────────────

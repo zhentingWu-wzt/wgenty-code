@@ -51,6 +51,14 @@ function isTerminalEvent(ev: SessionEvent): boolean {
   return (ev.kind === "turn_done" || ev.kind === "turn_error") && !roundBoundary;
 }
 
+/** After the terminal event, keep the subscription open this long waiting for
+ * the daemon's turn_context (published AFTER turn_done, once the final save
+ * completes — typically single-digit ms on local disk). Unsubscribing on
+ * turn_done races the unsubscribe ahead of the turn_context and permanently
+ * loses the turn-end snapshot; if the save still exceeds this window the live
+ * usage_update values (identical measure) simply stay on screen. */
+const TURN_CONTEXT_GRACE_MS = 500;
+
 /**
  * Observe one session's turn over the shared ws push channel and await its
  * end. The channel owns connection/reconnect and replays from its cursor on
@@ -98,6 +106,14 @@ function awaitTurnOverWs(opts: {
       reject(err);
     };
 
+    let terminalSeen = false;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    const finishGrace = () => {
+      if (graceTimer !== null) clearTimeout(graceTimer);
+      graceTimer = null;
+      settle("finished");
+    };
+
     const process = (ev: SessionEvent): void => {
       if (settled) return; // post-terminal buffered events are not consumed
       if (ev.kind === "sync_lost") return; // the channel realigns its cursor
@@ -109,9 +125,24 @@ function awaitTurnOverWs(opts: {
         runId = ev.run_id; // observer mode: adopt the first event's run
       }
       if (ev.run_id !== runId) return; // stale: an earlier run's events
+      // The daemon publishes turn_context after turn_done/turn_error (final
+      // save first), so a terminal event opens a short grace window: consume
+      // ONLY that snapshot, then settle early. Any other trailing event is
+      // dropped exactly like the pre-grace behavior.
+      if (terminalSeen) {
+        if (ev.kind === "turn_context") {
+          received += 1;
+          onEvent(ev);
+          finishGrace();
+        }
+        return;
+      }
       received += 1;
       onEvent(ev);
-      if (isTerminal(ev)) settle("finished");
+      if (isTerminal(ev)) {
+        terminalSeen = true;
+        graceTimer = setTimeout(finishGrace, TURN_CONTEXT_GRACE_MS);
+      }
     };
 
     const sub = wsChannel.subscribeSession(daemonSessionId, process);
@@ -142,6 +173,7 @@ function awaitTurnOverWs(opts: {
       sub.unsubscribe();
       abort.removeEventListener("abort", onAbort);
       if (idleTimer !== null) clearTimeout(idleTimer);
+      if (graceTimer !== null) clearTimeout(graceTimer);
       if (stallProbe !== null) clearInterval(stallProbe);
     }
 
@@ -467,6 +499,14 @@ function handleEvent(
     case "turn_context": {
       // Inspector data for the completed turn — store for InspectorPanel.
       s.setTurnContext(ev.data as unknown as import("../state/sessionStore").TurnContextData);
+      break;
+    }
+    case "usage_update": {
+      // Live context-occupancy feed (prompt tokens of the last LLM call).
+      const promptTokens = Number(ev.data.prompt_tokens);
+      if (Number.isFinite(promptTokens) && promptTokens >= 0) {
+        s.setContextTokens(promptTokens);
+      }
       break;
     }
     case "save":
