@@ -114,6 +114,10 @@ export interface SessionState {
   /** Turn context from the most recent turn (inspector data: layers, memories,
    * messages, reminder, token usage). Null before the first turn completes. */
   turnContext: TurnContextData | null;
+  /** Real-time context-window occupancy (prompt tokens of the last LLM call),
+   * updated live by `usage_update` events mid-turn and by the turn-end
+   * `turn_context` snapshot. Null until the first update arrives. */
+  contextTokens: number | null;
 
   /** FIFO queue of messages waiting to run after the current turn completes.
    *  Mirrors the TUI's `pending_inputs`: while a turn runs, new sends are
@@ -142,6 +146,8 @@ export interface SessionState {
   setError: (err: TurnError | null) => void;
   setRunning: (b: boolean) => void;
   setTurnContext: (data: TurnContextData) => void;
+  /** Live context-occupancy setter (usage_update events). */
+  setContextTokens: (n: number) => void;
   /** Append a message to the per-session queue (sent while a turn runs). */
   enqueueInput: (text: string) => void;
   /** Pop the next queued message (FIFO). Returns undefined when empty. */
@@ -187,6 +193,7 @@ export function createSessionStore() {
     pendingSubagent: null,
     pendingQuestion: null,
     turnContext: null,
+    contextTokens: null,
 
     pendingInputs: [],
     setConnection: (s) => set({ connection: s }),
@@ -259,7 +266,14 @@ export function createSessionStore() {
       })),
 
     setError: (msg) => set({ lastError: msg }),
-    setTurnContext: (data) => set({ turnContext: data }),
+    setTurnContext: (data) =>
+      set({
+        turnContext: data,
+        // The turn-end snapshot is authoritative for the same measure the
+        // live usage_update events carry.
+        contextTokens: data.usage.context_tokens ?? get().contextTokens,
+      }),
+    setContextTokens: (n) => set({ contextTokens: n }),
     setRunning: (b) => set({ isRunning: b }),
 
     enqueueInput: (text) => set((s) => ({ pendingInputs: [...s.pendingInputs, text] })),

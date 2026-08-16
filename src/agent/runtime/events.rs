@@ -16,6 +16,11 @@ pub enum RuntimeEvent {
     PreparingTools,
     /// Stream finished with a finish_reason (may be empty on incomplete streams).
     StreamDone { finish_reason: String },
+    /// Real-time context-window occupancy: prompt tokens of the most recent
+    /// LLM call (exact after a response reports usage, estimated right after
+    /// auto-compaction). Frontends with a context bar (web StatusBar) render
+    /// this live, mid-turn, instead of waiting for the turn-end snapshot.
+    UsageUpdate { prompt_tokens: usize },
     /// Recoverable or terminal stream error message for display.
     StreamError(String),
     /// Auto / manual compaction started.

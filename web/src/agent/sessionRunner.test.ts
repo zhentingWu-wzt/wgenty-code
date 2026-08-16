@@ -366,4 +366,53 @@ describe("runSessionTurn (server-side observer)", () => {
     expect(store.isRunning).toBe(false);
     expect(useSessionManager.getState().entries[id].status).toBe("idle");
   });
+
+  it("captures turn_context published after turn_done (grace window)", async () => {
+    // The daemon publishes turn_context AFTER turn_done (final save first).
+    // The observer must keep its subscription through a short grace window,
+    // consume that snapshot, and settle early — not drop it by unsubscribing
+    // on turn_done.
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "content_delta", { text: "answer" }),
+        makeEvent(2, "turn_done", { finish_reason: "stop" }),
+        makeEvent(3, "turn_context", {
+          layers: [],
+          recalled_memories: [],
+          new_messages: [],
+          reminder: null,
+          usage: {
+            prompt_tokens: 900,
+            completion_tokens: 100,
+            total_tokens: 1000,
+            context_tokens: 900,
+          },
+        }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.turnContext?.usage.context_tokens).toBe(900);
+    // The turn-end snapshot also syncs the live occupancy field.
+    expect(store.contextTokens).toBe(900);
+    expect(store.isRunning).toBe(false);
+  });
+
+  it("usage_update events set contextTokens live mid-turn", async () => {
+    // Real-time context occupancy: each LLM call pushes usage_update; the
+    // store must reflect it without waiting for the turn-end snapshot.
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "usage_update", { prompt_tokens: 4321 }),
+        makeEvent(2, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.contextTokens).toBe(4321);
+  });
 });

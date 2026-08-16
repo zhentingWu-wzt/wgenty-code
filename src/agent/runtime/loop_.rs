@@ -293,9 +293,13 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                             &summary,
                             &tail_msgs,
                         );
+                        let post_compact_prompt_tokens = estimate_prompt_tokens(&view);
                         if let Some(tc) = hooks.token_counter {
-                            tc.set_prompt_tokens(estimate_prompt_tokens(&view));
+                            tc.set_prompt_tokens(post_compact_prompt_tokens);
                         }
+                        events.emit(RuntimeEvent::UsageUpdate {
+                            prompt_tokens: post_compact_prompt_tokens,
+                        });
                         events.emit(RuntimeEvent::ContextCompacted {
                             summary_chars: summary.chars().count(),
                             compressed_len: new_boundary,
@@ -440,6 +444,13 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                 counter.add_output(usage.completion_tokens);
                 counter.set_prompt_tokens(usage.prompt_tokens);
             }
+            // Live context-occupancy feed: the same value the TUI context bar
+            // renders (token_counter.last_prompt_tokens), pushed to observing
+            // frontends after every API call so multi-round turns show the
+            // bar climbing in real time.
+            events.emit(RuntimeEvent::UsageUpdate {
+                prompt_tokens: usage.prompt_tokens,
+            });
             if let Some(obs) = hooks.observer {
                 obs.on_usage(usage.total_tokens);
             }
@@ -461,6 +472,11 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             if let Some(obs) = hooks.observer {
                 obs.on_usage(input_est + output_est);
             }
+            // Providers that omit usage still deserve a live context feed:
+            // push the same chars/4 estimate already used for cost counting.
+            events.emit(RuntimeEvent::UsageUpdate {
+                prompt_tokens: input_est,
+            });
         }
 
         if result.has_tool_calls && !result.tool_calls.is_empty() {

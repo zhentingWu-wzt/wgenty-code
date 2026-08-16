@@ -207,6 +207,24 @@ export function App() {
   // otherwise web only renders turns it started itself.
   useContinuationObserver(client);
 
+  // A `/model` switch (from ANY client — web modal, TUI, CLI) can change the
+  // context window along with the name, so re-read /config on the broadcast
+  // instead of trusting the first-load snapshot forever.
+  useEffect(() => {
+    return wsChannel.subscribeGlobal((ev) => {
+      if (ev.kind !== "model_changed") return;
+      client
+        .getConfig()
+        .then((cfg) => {
+          useSessionManager.getState().setModelName(cfg.model);
+          useSessionManager.getState().setContextWindow(cfg.context_window);
+        })
+        .catch(() => {
+          // Non-fatal: the health poll's one-shot load remains in effect.
+        });
+    });
+  }, [client]);
+
   // Poll the lightweight agent directory into the per-session store so the
   // Subagents panel always has the whole-session tree (not just SSE-active
   // nodes). Pauses while the tab is hidden; caches per session on switch.
