@@ -26,8 +26,9 @@ const SRC_LIST = {
   entries: [{ name: "lib.rs", is_dir: false, size: 12 }],
 };
 
-/** Fetch stub keyed by the `path` query param of /api/v1/fs/entries. */
-function stubFetch(listings: Record<string, unknown>) {
+/** Fetch stub keyed by the `path` query param of /api/v1/fs/entries.
+ *  `gitStatus` (default none) backs /api/v1/fs/git-status responses. */
+function stubFetch(listings: Record<string, unknown>, gitStatus: unknown[] = []) {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://localhost");
     if (url.pathname === "/api/v1/fs/entries") {
@@ -36,12 +37,20 @@ function stubFetch(listings: Record<string, unknown>) {
       if (body === undefined) return new Response("not found", { status: 404 });
       return new Response(JSON.stringify(body), { status: 200 });
     }
+    if (url.pathname === "/api/v1/fs/git-status") {
+      return new Response(JSON.stringify(gitStatus), { status: 200 });
+    }
     return new Response("not found", { status: 404 });
   });
 }
 
 function resetUi() {
   useUiStore.setState({ openTabs: [], activeTabId: null, previewTabs: {} });
+}
+
+/** Count only /fs/entries calls on a stubbed fetch spy (git-status excluded). */
+function expectEntriesCalls(spy: ReturnType<typeof stubFetch>, n: number) {
+  expect(spy.mock.calls.filter((c) => String(c[0]).includes("/fs/entries"))).toHaveLength(n);
 }
 
 describe("FileTree helpers", () => {
@@ -89,8 +98,10 @@ describe("FileTree", () => {
     expect(screen.getByText("logo.png")).toBeInTheDocument();
     expect(screen.getByText("src")).toBeInTheDocument();
     // Only the root was fetched — sub-dirs wait for their first expand.
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(String(spy.mock.calls[0][0])).toContain(
+    // (The mount also fires one /fs/git-status; filter it out.)
+    const entriesCalls = spy.mock.calls.filter((c) => String(c[0]).includes("/fs/entries"));
+    expect(entriesCalls).toHaveLength(1);
+    expect(String(entriesCalls[0][0])).toContain(
       `/api/v1/fs/entries?path=${encodeURIComponent(ROOT)}`,
     );
   });
@@ -103,14 +114,14 @@ describe("FileTree", () => {
 
     await user.click(await screen.findByText("src"));
     expect(await screen.findByText("lib.rs")).toBeInTheDocument();
-    expect(spy).toHaveBeenCalledTimes(2);
+    expectEntriesCalls(spy, 2);
 
     // Collapse and re-expand: served from the per-dir cache, no refetch.
     await user.click(screen.getByText("src"));
     expect(screen.queryByText("lib.rs")).toBeNull();
     await user.click(screen.getByText("src"));
     expect(await screen.findByText("lib.rs")).toBeInTheDocument();
-    expect(spy).toHaveBeenCalledTimes(2);
+    expectEntriesCalls(spy, 2);
   });
 
   it("greys out target/node_modules/dist and keeps them collapsed", async () => {
@@ -129,7 +140,11 @@ describe("FileTree", () => {
     vi.stubGlobal(
       "fetch",
       stubFetch({
-        [ROOT]: { current: ROOT, truncated: true, entries: [{ name: "a.txt", is_dir: false, size: 1 }] },
+        [ROOT]: {
+          current: ROOT,
+          truncated: true,
+          entries: [{ name: "a.txt", is_dir: false, size: 1 }],
+        },
       }),
     );
     render(<FileTree workspaceRoot={ROOT} client={client} />);
@@ -182,6 +197,35 @@ describe("FileTree", () => {
     });
   });
 
+  it("colors changed files by git status and shows deleted files at their parent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({ [ROOT]: ROOT_LIST, [`${ROOT}/src`]: SRC_LIST }, [
+        { path: "main.rs", status: "modified" },
+        { path: "logo.png", status: "added" },
+        { path: "old.txt", status: "deleted" },
+        { path: "src/lib.rs", status: "modified" },
+      ]),
+    );
+    const user = userEvent.setup();
+    render(<FileTree workspaceRoot={ROOT} client={client} />);
+
+    expect((await screen.findByText("main.rs")).className).toContain("text-warning");
+    expect(screen.getByText("logo.png").className).toContain("text-success");
+
+    // Deleted file: strike-through red row even though it is absent from the
+    // on-disk listing (ROOT_LIST has no old.txt).
+    const old = screen.getByText("old.txt");
+    expect(old.className).toContain("line-through");
+    expect(old.parentElement?.className).toContain("text-danger");
+
+    // Directory aggregates the strongest change beneath it.
+    const srcDir = screen.getByText("src");
+    expect(srcDir.className).toContain("text-warning");
+    await user.click(srcDir);
+    expect(screen.getByText("lib.rs").className).toContain("text-warning");
+  });
+
   it("offers a retry row when the listing fails", async () => {
     const spy = stubFetch({}); // root 404s
     vi.stubGlobal("fetch", spy);
@@ -189,8 +233,8 @@ describe("FileTree", () => {
     render(<FileTree workspaceRoot={ROOT} client={client} />);
 
     await user.click(await screen.findByText(/加载失败/));
-    // Retry hits the same path again.
-    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
-    expect(String(spy.mock.calls[1][0])).toContain(`path=${encodeURIComponent(ROOT)}`);
+    // Retry hits the same path again. (The mount also fires one
+    // /fs/git-status — filter the spy down to /fs/entries calls.)
+    await waitFor(() => expectEntriesCalls(spy, 2));
   });
 });

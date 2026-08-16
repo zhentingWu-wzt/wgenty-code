@@ -76,6 +76,28 @@ pub struct FsEntries {
     pub truncated: bool,
 }
 
+// ── GET /api/v1/fs/git-status ───────────────────────────────────────────────
+
+/// Simplified change kind for one file, derived from porcelain XY codes:
+/// `A`/`?` → added, `D` (either side) → deleted, everything else that shows
+/// up in status (`M`, `R`, `C`, `T`, …) → modified. Keeps the wire format
+/// tiny; the tree only colors, it does not stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// One changed file under a workspace root. `path` is relative to that root
+/// (forward slashes, as `git status --porcelain` prints when run there).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GitFileStatus {
+    pub path: String,
+    pub status: GitChangeKind,
+}
+
 /// Content version for a previewed file — the frontend uses it to detect
 /// stale previews (file changed on disk since the last fetch).
 #[derive(Debug, Clone, Serialize)]
@@ -466,6 +488,95 @@ pub async fn get_file(
     Ok(Json(content).into_response())
 }
 
+// ── GET /api/v1/fs/git-status ───────────────────────────────────────────────
+
+/// Map one porcelain XY pair to the simplified kind. Order matters: a
+/// deletion anywhere wins, then adds, then everything else that appears in
+/// status (`M`, `R`, `C`, `T`, …) counts as modified; renames are reported
+/// at their new path.
+fn classify_xy(xy: &str) -> GitChangeKind {
+    let split = xy.len().min(2);
+    let (x, y) = xy.split_at(split);
+    if x.contains('D') || y.contains('D') {
+        GitChangeKind::Deleted
+    } else if x.contains('A') || y.contains('A') || x.contains('?') || y.contains('?') {
+        GitChangeKind::Added
+    } else {
+        GitChangeKind::Modified
+    }
+}
+
+/// Parse `git status --porcelain=v1 -z --untracked-files=all` output into
+/// simplified per-file statuses.
+///
+/// `-z` separates records with NUL and never quotes paths. Rename/copy
+/// records carry the old path as an extra NUL-separated field after the
+/// record (`R  new\0old\0`) — the follower is consumed so it is not mistaken
+/// for a record of its own.
+pub(crate) fn parse_git_status_z(input: &str) -> Vec<GitFileStatus> {
+    let mut out = Vec::new();
+    let mut records = input.split('\0');
+    while let Some(record) = records.next() {
+        if record.len() < 3 || !record.is_char_boundary(2) {
+            continue; // defensive: not a porcelain record
+        }
+        let (xy, path) = record.split_at(2);
+        // XY columns are one of the porcelain codes or a space (" M", "D ", …).
+        if !xy.bytes().all(|b| {
+            matches!(
+                b,
+                b' ' | b'M' | b'A' | b'D' | b'R' | b'C' | b'U' | b'T' | b'?' | b'!'
+            )
+        }) {
+            continue;
+        }
+        let path = &path[1..]; // exactly one space after XY
+        if path.is_empty() {
+            continue;
+        }
+        let kind = classify_xy(xy);
+        if xy.starts_with('R') || xy.starts_with('C') || xy.ends_with('R') || xy.ends_with('C') {
+            records.next(); // old path of the rename/copy pair
+        }
+        out.push(GitFileStatus {
+            path: path.to_string(),
+            status: kind,
+        });
+    }
+    out
+}
+
+/// `GET /api/v1/fs/git-status?path=<root>` — changed files under a registered
+/// workspace root (tracked changes plus untracked files). Non-git roots
+/// degrade to an empty list: the file tree simply shows no colors.
+pub async fn git_status(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<FsPathQuery>,
+) -> Result<Json<Vec<GitFileStatus>>, (StatusCode, Json<ErrorBody>)> {
+    let root = ensure_within_roots(q.path.as_deref().unwrap_or(""), &state).await?;
+    let stdout = match worktrees::git(
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &root,
+    )
+    .await
+    {
+        Ok(stdout) => stdout,
+        // Non-git project (the registry allows them) — no colors, not an error.
+        Err((_, stderr)) if stderr.contains("not a git repository") => return Ok(Json(Vec::new())),
+        Err((code, msg)) => {
+            return Err((
+                code,
+                Json(ErrorBody {
+                    error: msg,
+                    size: None,
+                    limit: None,
+                }),
+            ))
+        }
+    };
+    Ok(Json(parse_git_status_z(&stdout)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,5 +864,427 @@ mod tests {
         assert_eq!(split_lines("a\r\nb"), vec!["a", "b"]);
         // Lone \r mid-line is preserved; only the line-end \r is stripped.
         assert_eq!(split_lines("a\rb\r\n"), vec!["a\rb", ""]);
+    }
+}
+
+#[cfg(test)]
+mod git_status_tests {
+    use super::*;
+
+    /// `git status --porcelain=v1 -z --untracked-files=all` records: two XY
+    /// chars, one space, path, NUL. Renames carry the old path as a second
+    /// NUL-separated field right after the record.
+    #[test]
+    fn parses_modified_added_deleted_untracked() {
+        let input = " M web/src/a.ts\0?? new.txt\0 D gone.rs\0M  staged.ts\0";
+        let out = parse_git_status_z(input);
+        assert_eq!(
+            out,
+            vec![
+                GitFileStatus {
+                    path: "web/src/a.ts".into(),
+                    status: GitChangeKind::Modified
+                },
+                GitFileStatus {
+                    path: "new.txt".into(),
+                    status: GitChangeKind::Added
+                },
+                GitFileStatus {
+                    path: "gone.rs".into(),
+                    status: GitChangeKind::Deleted
+                },
+                GitFileStatus {
+                    path: "staged.ts".into(),
+                    status: GitChangeKind::Modified
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rename_consumes_old_path_record_and_reports_new_path() {
+        let input = "R  b.txt\0a.txt\0?? other\0";
+        let out = parse_git_status_z(input);
+        assert_eq!(
+            out,
+            vec![
+                GitFileStatus {
+                    path: "b.txt".into(),
+                    status: GitChangeKind::Modified
+                },
+                GitFileStatus {
+                    path: "other".into(),
+                    status: GitChangeKind::Added
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_beats_other_codes() {
+        // `D ` / ` D` / `DM` all mean the file is gone from at least one tree.
+        for xy in ["D ", " D", "DM"] {
+            let out = parse_git_status_z(&format!("{xy} wip.rs\0"));
+            assert_eq!(out[0].status, GitChangeKind::Deleted, "xy={xy}");
+        }
+    }
+
+    #[test]
+    fn empty_and_garbage_input_yield_nothing_or_skip() {
+        assert!(parse_git_status_z("").is_empty());
+        assert!(parse_git_status_z("\0\0\0").is_empty());
+        // Too-short / non-graphic XY prefixes are skipped, not fatal.
+        assert_eq!(parse_git_status_z("x\0?? ok.txt\0").len(), 1);
+    }
+
+    #[test]
+    fn classify_xy_priority_order() {
+        assert_eq!(classify_xy("D "), GitChangeKind::Deleted);
+        assert_eq!(classify_xy(" D"), GitChangeKind::Deleted);
+        assert_eq!(classify_xy("??"), GitChangeKind::Added);
+        assert_eq!(classify_xy("A "), GitChangeKind::Added);
+        assert_eq!(classify_xy(" M"), GitChangeKind::Modified);
+        assert_eq!(classify_xy("MM"), GitChangeKind::Modified);
+        assert_eq!(classify_xy("R "), GitChangeKind::Modified);
+    }
+}
+
+// ── GET /api/v1/fs/git-diff ─────────────────────────────────────────────────
+
+/// One inline-diff row kind: context (unchanged), added, or deleted line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    Context,
+    Add,
+    Delete,
+}
+
+/// One row of a file's inline diff. With the daemon's huge `-U` context every
+/// unchanged line appears too, so `lines` IS the full new-file content with
+/// deleted lines interleaved at their positions.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    /// Line number in HEAD (context + deleted rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_no: Option<u32>,
+    /// Line number in the worktree (context + added rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_no: Option<u32>,
+    pub text: String,
+}
+
+/// Response DTO for `GET /api/v1/fs/git-diff`.
+#[derive(Debug, Serialize)]
+pub struct FileDiff {
+    pub status: GitChangeKind,
+    /// True when MAX_DIFF_LINES stopped collection early.
+    pub truncated: bool,
+    pub lines: Vec<DiffLine>,
+}
+
+/// Row cap per diff response — keeps pathological files bounded.
+const MAX_DIFF_LINES: usize = 10_000;
+
+/// Parse the body of a unified diff (output of `git diff … -- <path>`) into
+/// flat inline rows. Lines before the first `@@` header are file metadata and
+/// skipped; `\ No newline at end of file` markers are skipped; a second `@@`
+/// resets the counters (single-file diffs rarely have one at `-U1000000`).
+pub(crate) fn parse_unified_diff(body: &str) -> Vec<DiffLine> {
+    let mut out = Vec::new();
+    let mut old_no = 0u32;
+    let mut new_no = 0u32;
+    let mut in_hunk = false;
+
+    for line in body.split_inclusive('\n') {
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        let text = text.strip_suffix('\r').unwrap_or(text);
+
+        if let Some(hunk) = text.strip_prefix("@@") {
+            // "@@ -a[,b] +c[,d] @@ ctx" — restart both counters.
+            let hdr = hunk.split("@@").next().unwrap_or("").trim();
+            let mut parts = hdr.split_whitespace();
+            let old = parts.next().unwrap_or("-0").trim_start_matches('-');
+            let new = parts.next().unwrap_or("+0").trim_start_matches('+');
+            old_no = old
+                .split(',')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            new_no = new
+                .split(',')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            continue; // "diff --git"/"index"/"---"/"+++" metadata
+        }
+
+        let (kind, content) = match text.as_bytes().first() {
+            Some(b' ') => (DiffLineKind::Context, &text[1..]),
+            Some(b'-') => (DiffLineKind::Delete, &text[1..]),
+            Some(b'+') => (DiffLineKind::Add, &text[1..]),
+            Some(b'\\') => continue, // "\ No newline at end of file"
+            _ => continue,
+        };
+        let mut row = DiffLine {
+            kind,
+            old_no: None,
+            new_no: None,
+            text: content.to_string(),
+        };
+        match kind {
+            DiffLineKind::Context => {
+                row.old_no = Some(old_no);
+                row.new_no = Some(new_no);
+                old_no += 1;
+                new_no += 1;
+            }
+            DiffLineKind::Delete => {
+                row.old_no = Some(old_no);
+                old_no += 1;
+            }
+            DiffLineKind::Add => {
+                row.new_no = Some(new_no);
+                new_no += 1;
+            }
+        }
+        out.push(row);
+    }
+    out
+}
+
+/// Apply the row cap: `(rows, truncated)`.
+fn truncate_diff_lines(mut lines: Vec<DiffLine>) -> (Vec<DiffLine>, bool) {
+    if lines.len() <= MAX_DIFF_LINES {
+        return (lines, false);
+    }
+    lines.truncate(MAX_DIFF_LINES);
+    (lines, true)
+}
+
+/// Like `ensure_within_roots`, but for a file that may have been deleted from
+/// disk: canonicalize the PARENT, verify it is inside a workspace root, and
+/// re-join the file name. A deleted file still has a diff against HEAD.
+async fn ensure_file_within_roots(
+    raw: &str,
+    state: &DaemonState,
+) -> Result<PathBuf, WorkspaceFsError> {
+    let path = Path::new(raw);
+    let parent = path.parent().ok_or(WorkspaceFsError::NotFound)?;
+    let canon_parent = parent
+        .canonicalize()
+        .map_err(|_| WorkspaceFsError::NotFound)?;
+    let roots = resolve_workspace_roots(state).await;
+    if !roots.iter().any(|r| canon_parent.starts_with(r)) {
+        return Err(WorkspaceFsError::OutsideWorkspaces);
+    }
+    Ok(canon_parent.join(path.file_name().ok_or(WorkspaceFsError::NotFound)?))
+}
+
+/// `GET /api/v1/fs/git-diff?path=<file>` — the file's full inline diff vs
+/// HEAD (staged + unstaged), as flat rows with line numbers. Untracked files
+/// diff against /dev/null (whole file added); deleted files still diff
+/// (whole file removed). Runs git in the file's parent dir, so both main
+/// checkouts and worktrees work without knowing the repo root.
+pub async fn git_diff(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<FsPathQuery>,
+) -> Result<Json<FileDiff>, (StatusCode, Json<ErrorBody>)> {
+    let file = ensure_file_within_roots(q.path.as_deref().unwrap_or(""), &state).await?;
+    let parent = file
+        .parent()
+        .ok_or(WorkspaceFsError::NotFound)?
+        .to_path_buf();
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or(WorkspaceFsError::NotFound)?
+        .to_string();
+
+    // One porcelain record for this pathspec: XY + tracked/untracked state.
+    let status_out = worktrees::git(
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            &name,
+        ],
+        &parent,
+    )
+    .await
+    .map_err(|(code, msg)| {
+        (
+            code,
+            Json(ErrorBody {
+                error: msg,
+                size: None,
+                limit: None,
+            }),
+        )
+    })?;
+    let record = status_out.split('\0').find(|r| r.len() >= 3).unwrap_or("");
+    if record.is_empty() {
+        // Unchanged (or already-matched index) — no rows to show.
+        return Ok(Json(FileDiff {
+            status: GitChangeKind::Modified,
+            truncated: false,
+            lines: Vec::new(),
+        }));
+    }
+    let xy = &record[..2];
+    let status = classify_xy(xy);
+    let untracked = xy == "??";
+
+    // Tracked (incl. staged adds): full diff vs HEAD. Untracked: diff against
+    // the empty file; --no-index exits 1 when files differ, so spawn directly
+    // instead of going through `worktrees::git` (which maps non-zero to Err).
+    let body = if untracked {
+        let out = tokio::process::Command::new("git")
+            .args(["diff", "--no-index", "-U1000000", "--", "/dev/null", &name])
+            .current_dir(&parent)
+            .output()
+            .await
+            .map_err(|_| WorkspaceFsError::ReadFailed)?;
+        if !out.status.success() && out.status.code() != Some(1) {
+            let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: msg,
+                    size: None,
+                    limit: None,
+                }),
+            ));
+        }
+        String::from_utf8_lossy(&out.stdout).to_string()
+    } else {
+        worktrees::git(&["diff", "HEAD", "-U1000000", "--", &name], &parent)
+            .await
+            .map_err(|(code, msg)| {
+                (
+                    code,
+                    Json(ErrorBody {
+                        error: msg,
+                        size: None,
+                        limit: None,
+                    }),
+                )
+            })?
+    };
+
+    let (lines, truncated) = truncate_diff_lines(parse_unified_diff(&body));
+    Ok(Json(FileDiff {
+        status,
+        truncated,
+        lines,
+    }))
+}
+
+#[cfg(test)]
+mod git_diff_tests {
+    use super::*;
+
+    #[test]
+    fn parses_hunk_with_context_add_delete_and_line_numbers() {
+        let body = "diff --git a/a.rs b/a.rs\nindex 111..222 100644\n--- a/a.rs\n+++ b/a.rs\n@@ -1,3 +1,4 @@ fn main\n old1\n-old2\n+new2\n+extra\n old3\n";
+        let out = parse_unified_diff(body);
+        assert_eq!(out.len(), 5);
+        assert_eq!(
+            out[0],
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_no: Some(1),
+                new_no: Some(1),
+                text: "old1".into()
+            }
+        );
+        assert_eq!(
+            out[1],
+            DiffLine {
+                kind: DiffLineKind::Delete,
+                old_no: Some(2),
+                new_no: None,
+                text: "old2".into()
+            }
+        );
+        assert_eq!(
+            out[2],
+            DiffLine {
+                kind: DiffLineKind::Add,
+                old_no: None,
+                new_no: Some(2),
+                text: "new2".into()
+            }
+        );
+        assert_eq!(
+            out[3],
+            DiffLine {
+                kind: DiffLineKind::Add,
+                old_no: None,
+                new_no: Some(3),
+                text: "extra".into()
+            }
+        );
+        assert_eq!(
+            out[4],
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_no: Some(3),
+                new_no: Some(4),
+                text: "old3".into()
+            }
+        );
+    }
+
+    #[test]
+    fn second_hunk_resets_counters_and_no_newline_marker_skipped() {
+        let body = "@@ -1,1 +1,1 @@\n a\n\\ No newline at end of file\n@@ -5,2 +5,1 @@\n b\n-c\n";
+        let out = parse_unified_diff(body);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].old_no, Some(1));
+        assert_eq!(out[1].old_no, Some(5));
+        assert_eq!(
+            out[2],
+            DiffLine {
+                kind: DiffLineKind::Delete,
+                old_no: Some(6),
+                new_no: None,
+                text: "c".into()
+            }
+        );
+    }
+
+    #[test]
+    fn empty_and_metadata_only_bodies_yield_nothing() {
+        assert!(parse_unified_diff("").is_empty());
+        assert!(parse_unified_diff("diff --git a/x b/x\nindex 1..2\n").is_empty());
+    }
+
+    #[test]
+    fn crlf_lines_are_stripped() {
+        let out = parse_unified_diff("@@ -1,1 +1,1 @@\n+a\r\n");
+        assert_eq!(out[0].text, "a");
+    }
+
+    #[test]
+    fn truncation_caps_rows() {
+        let lines: Vec<DiffLine> = (0..MAX_DIFF_LINES + 5)
+            .map(|i| DiffLine {
+                kind: DiffLineKind::Context,
+                old_no: Some(i as u32),
+                new_no: Some(i as u32),
+                text: String::new(),
+            })
+            .collect();
+        let (kept, truncated) = truncate_diff_lines(lines);
+        assert!(truncated);
+        assert_eq!(kept.len(), MAX_DIFF_LINES);
     }
 }
