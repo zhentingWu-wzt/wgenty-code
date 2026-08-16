@@ -55,6 +55,8 @@ interface SessionManagerState {
   setStatus: (id: string, status: SessionStatus) => void;
   setPreview: (id: string, text: string) => void;
   setDaemonId: (id: string, daemonId: string) => void;
+  /** Rename a session (used by auto-naming from the first user message). */
+  renameSession: (id: string, name: string) => void;
   /** Set (`WorktreeBinding`) or clear (`null`) a session's worktree binding. */
   setWorktree: (id: string, wt: WorktreeBinding | null) => void;
   /** Reassign a session to a project (canonical path; null = main project). */
@@ -125,6 +127,8 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
     set((s) => ({ entries: patchEntry(s.entries, id, { lastPreview: text.slice(0, 120) }) })),
 
   setDaemonId: (id, daemonId) => set((s) => ({ entries: patchEntry(s.entries, id, { daemonId }) })),
+
+  renameSession: (id, name) => set((s) => ({ entries: patchEntry(s.entries, id, { name }) })),
 
   setWorktree: (id, wt) =>
     set((s) => ({
