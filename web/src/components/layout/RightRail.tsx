@@ -1,6 +1,8 @@
 import {
   Brain,
   Eye,
+  FolderTree,
+  GitBranch,
   History,
   ListTodo,
   Network,
@@ -22,9 +24,13 @@ import { ConfigPanel } from "../../features/panels/ConfigPanel";
 import { McpPanel } from "../../features/panels/McpPanel";
 import { SubagentTreePanel } from "../../features/panels/SubagentTreePanel";
 import { InspectorPanel } from "../../features/panels/InspectorPanel";
+import { FilesPanel } from "../../features/files/FilesPanel";
+import { SourceControlPanel } from "../../features/scm/SourceControlPanel";
 
 const ITEMS: { id: RightPanelId; icon: LucideIcon; label: string }[] = [
   { id: "sessions", icon: History, label: "Sessions" },
+  { id: "files", icon: FolderTree, label: "Files" },
+  { id: "scm", icon: GitBranch, label: "Source Control" },
   { id: "skills", icon: Sparkles, label: "Skills" },
   { id: "memory", icon: Brain, label: "Memory" },
   { id: "checkpoints", icon: Undo2, label: "Checkpoints" },
@@ -37,6 +43,8 @@ const ITEMS: { id: RightPanelId; icon: LucideIcon; label: string }[] = [
 
 const PANEL_TITLE: Record<RightPanelId, string> = {
   sessions: "Sessions",
+  files: "Files",
+  scm: "Source Control",
   skills: "Skills",
   memory: "Memory",
   checkpoints: "Checkpoints",
@@ -61,6 +69,8 @@ export function RightRail({ client }: { client: DaemonClient }) {
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {rightPanel === "sessions" && <SessionsPanel client={client} />}
+            {rightPanel === "files" && <FilesPanel client={client} />}
+            {rightPanel === "scm" && <SourceControlPanel client={client} />}
             {rightPanel === "skills" && <SkillsPanel client={client} />}
             {rightPanel === "memory" && <MemoryPanel client={client} />}
             {rightPanel === "checkpoints" && <CheckpointsPanel client={client} />}

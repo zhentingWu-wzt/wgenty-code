@@ -12,6 +12,7 @@ use crate::daemon::run_loop;
 use crate::daemon::session_admin;
 use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
+use crate::daemon::workspace_files;
 use crate::daemon::worktrees;
 use crate::daemon::ws_push;
 use axum::{
@@ -176,6 +177,12 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         )
         // Filesystem browsing (web directory picker — read-only sub-dir listing)
         .route("/api/v1/fs/dirs", get(fs::list_dirs))
+        // Workspace file tree + preview (read-only, scoped to registered
+        // workspace roots incl. linked git worktrees)
+        .route("/api/v1/fs/entries", get(workspace_files::list_entries))
+        .route("/api/v1/fs/file", get(workspace_files::get_file))
+        .route("/api/v1/fs/git-status", get(workspace_files::git_status))
+        .route("/api/v1/fs/git-diff", get(workspace_files::git_diff))
         // Projects (multi-project registry; main project = daemon working_dir)
         .route(
             "/api/v1/projects",
