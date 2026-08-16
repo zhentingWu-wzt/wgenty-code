@@ -1848,6 +1848,12 @@ async fn run_session_turn(
         "prompt_tokens": token_counter.turn_input_tokens(),
         "completion_tokens": token_counter.turn_output_tokens(),
         "total_tokens": token_counter.used_tokens(),
+        // Context-occupancy pair for client status bars: the most recent
+        // prompt size against the model's context window (mirrors the TUI
+        // context bar). `turn_input_tokens` is cumulative across rounds and
+        // can exceed the window, so it is not usable as the numerator.
+        "last_prompt_tokens": token_counter.last_prompt_tokens(),
+        "context_window": config.context_window,
     });
     sink.publish(
         SessionEventKind::TurnContext,
