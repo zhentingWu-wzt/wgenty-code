@@ -116,6 +116,10 @@ async fn spawn_external_daemon(port: u16) -> Option<String> {
         .arg("daemon")
         .arg("--port")
         .arg(port.to_string())
+        // Client-bound: the daemon follows the TUI down once it (and any
+        // other client) disconnects, instead of idling out from under it.
+        .arg("--spawned-by")
+        .arg("tui")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

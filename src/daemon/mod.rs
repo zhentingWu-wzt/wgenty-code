@@ -36,8 +36,15 @@ use tracing::info;
 // / compaction requests legitimately carry full conversation history. Axum's
 // default 2 MiB limit previously caused `413 Payload Too Large` on long sessions.
 
-/// Start the daemon HTTP server. Blocks until the server exits.
-pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
+/// `spawned_by` marks the daemon as client-bound (web/tui/desktop pass
+/// `--spawned-by`): instead of the 300s idle timeout it exits once its last
+/// client has been gone for [`state::CLIENT_BOUND_GRACE_SECS`] — the daemon
+/// follows its owner down instead of idling out from under it.
+pub async fn run(
+    app_state: AppState,
+    port: u16,
+    spawned_by: Option<String>,
+) -> anyhow::Result<()> {
     let daemon_state = Arc::new(DaemonState::new(app_state).await);
 
     // Recover persisted sessions as lightweight index entries so the
@@ -149,19 +156,26 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
 
     info!("daemon listening on http://{}", addr);
 
-    // Thin-client idle-shutdown monitor: the daemon shuts down gracefully
-    // when no thin client is connected AND no authenticated API request has
-    // arrived for THIN_CLIENT_IDLE_TIMEOUT_SECS. The window starts at daemon
-    // boot, so a daemon that never serves any client also exits instead of
-    // lingering forever; any activity (client connect or API request) pushes
-    // the deadline out.
+    // Thin-client shutdown monitor. Two policies:
+    //   • unowned (manual `wgenty-code daemon`): exit when no thin client is
+    //     connected AND no authenticated API request has arrived for
+    //     THIN_CLIENT_IDLE_TIMEOUT_SECS. The window starts at daemon boot, so
+    //     a daemon that never serves any client also exits instead of
+    //     lingering forever; any activity pushes the deadline out.
+    //   • client-bound (`--spawned-by web|tui|desktop`): exit once the last
+    //     client has been gone for CLIENT_BOUND_GRACE_SECS — the daemon
+    //     follows its owner down instead of idling out from under it.
     let active_clients = daemon_state.active_clients.clone();
     let shutdown_notify = daemon_state.shutdown_notify.clone();
+    let spawn_owner = spawned_by.clone();
     let shutdown_signal = async move {
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
-        let idle_timeout =
-            std::time::Duration::from_secs(crate::daemon::state::THIN_CLIENT_IDLE_TIMEOUT_SECS);
+        let idle_timeout = if spawn_owner.is_some() {
+            std::time::Duration::from_secs(crate::daemon::state::CLIENT_BOUND_GRACE_SECS)
+        } else {
+            std::time::Duration::from_secs(crate::daemon::state::THIN_CLIENT_IDLE_TIMEOUT_SECS)
+        };
 
         loop {
             // Sleep until the idle deadline (with a small floor so the
@@ -181,10 +195,17 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
                     if active_clients.client_count() == 0
                         && active_clients.idle_for() >= idle_timeout
                     {
-                        tracing::info!(
-                            "idle timeout elapsed ({}s with no clients and no API activity); initiating graceful shutdown",
-                            idle_timeout.as_secs(),
-                        );
+                        match spawn_owner.as_deref() {
+                            Some(owner) => tracing::info!(
+                                "client-bound daemon (spawned by {}): no clients for {}s; following owner down, initiating graceful shutdown",
+                                owner,
+                                idle_timeout.as_secs(),
+                            ),
+                            None => tracing::info!(
+                                "idle timeout elapsed ({}s with no clients and no API activity); initiating graceful shutdown",
+                                idle_timeout.as_secs(),
+                            ),
+                        }
                         active_clients.initiate_shutdown();
                         break;
                     }

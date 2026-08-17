@@ -5,6 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { daemonAutostart } from "./plugins/daemonAutostart";
 
 // ── Daemon connection ────────────────────────────────────────────────────────
 // The daemon binds 127.0.0.1 only and writes a per-start bearer token to
@@ -60,6 +61,7 @@ function readDaemonPort(): number {
 
 export default defineConfig({
   plugins: [
+    daemonAutostart(),
     react(),
     tailwindcss(),
     {
