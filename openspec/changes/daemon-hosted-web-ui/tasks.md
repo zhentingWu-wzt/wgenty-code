@@ -2,7 +2,7 @@
 
 ## 1. Daemon 静态托管基础（Rust）
 
-- [ ] 1.1 新增 `build.rs`：编译前确保 `web/dist/` 存在（`create_dir_all` + `.gitkeep` 占位，纯 std，不依赖 Node）
+- [x] 1.1 新增 `build.rs`：编译前确保 `web/dist/` 存在（`create_dir_all` + `.gitkeep` 占位，纯 std，不依赖 Node）
 - [ ] 1.2 `Cargo.toml`：确认 `rust-embed` 依赖挂到 `daemon` feature（沿用 `src/knowledge/embedded.rs` 先例）
 - [ ] 1.3 新增 `src/daemon/web_ui.rs`：`RustEmbed`（`web/dist`）+ 扩展名→MIME 映射 + `GET /` 与 `GET /assets/*` 处理器（`/assets/*` immutable 长缓存，其余 no-cache）
 - [ ] 1.4 降级路径：嵌入资产无 `index.html` 时返回 Rust 内联的最小提示页（非 500）
