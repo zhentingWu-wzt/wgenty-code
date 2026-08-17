@@ -626,6 +626,13 @@ pub struct DaemonState {
     /// RwLock so a future in-process rotation can close live ws connections
     /// with code 4001 (pump tick guard).
     api_token: std::sync::RwLock<String>,
+    /// Port the HTTP listener actually bound to (design §2). Set once after
+    /// `TcpListener::bind` succeeds in `run()`; read by the bootstrap
+    /// endpoint's same-origin predicate to build the allowed host:port set
+    /// (`127.0.0.1:<port>` / `localhost:<port>`). `None` until set — the
+    /// bootstrap endpoint fail-closes while unset. Same RwLock shape as
+    /// `api_token` for consistency.
+    bind_port: std::sync::RwLock<Option<u16>>,
     /// Broadcast hub for daemon-wide (cross-project) global events
     /// (`GlobalEvent` envelope). Independent from `session_event_hub` so
     /// high-frequency session deltas can't starve global events (design §3.1).
@@ -681,6 +688,17 @@ impl DaemonState {
             .read()
             .expect("api token lock poisoned")
             .clone()
+    }
+
+    /// Record the port the listener actually bound to. Called once after
+    /// `TcpListener::bind` succeeds in `run()` (near `set_api_token`).
+    pub fn set_bind_port(&self, port: u16) {
+        *self.bind_port.write().expect("bind port lock poisoned") = Some(port);
+    }
+
+    /// Port the listener bound to (`None` until [`DaemonState::set_bind_port`]).
+    pub fn current_bind_port(&self) -> Option<u16> {
+        *self.bind_port.read().expect("bind port lock poisoned")
     }
 
     pub async fn new(app_state: AppState) -> Self {
@@ -1131,6 +1149,7 @@ impl DaemonState {
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             api_token: std::sync::RwLock::new(String::new()),
+            bind_port: std::sync::RwLock::new(None),
             active_clients: Arc::new(ActiveClientTracker::new()),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             http_client,
