@@ -136,7 +136,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 [features]
 default = ["i18n", "daemon", "bundled-skills"]
 wasm = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
-daemon = ["axum", "tower", "tower-http", "tokio-stream"]
+daemon = ["axum", "tower", "tower-http", "tokio-stream", "rust-embed"]
 i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
 bundled-skills = ["rust-embed"]
 export-icon = ["image"]
