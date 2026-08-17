@@ -10,7 +10,7 @@
 
 use crate::daemon::state::DaemonState;
 use axum::{
-    http::{header, StatusCode},
+    http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -125,6 +125,31 @@ pub(crate) fn public_router() -> Router<Arc<DaemonState>> {
     // Task 2.1 追加：.route("/auth/bootstrap", get(bootstrap_token))
 }
 
+/// 挂在 mod.rs merge 后的最终 app（.fallback），不受 protected 组
+/// route_layer 影响——静态深链公开可达，与 §2 "跨源读不到 token" 边界
+/// 一致。
+///
+/// 分支顺序（设计 §1）：
+/// 1. `/api/` 前缀 → 404 JSON：未知 API 路径绝不能吐 HTML——SPA 兜底页
+///    会伪装成 API 响应，破坏客户端错误处理；
+/// 2. 非 GET → 405：fallback 只为页面深链兜底，不承载任何写语义；
+/// 3. 其余 GET → [`serve_index`]（SPA 深链兜底；单视图应用，仅兜 / 与
+///    未来扩展）。
+pub(crate) async fn spa_fallback(uri: Uri, method: axum::http::Method) -> Response {
+    if uri.path().starts_with("/api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"not found"}"#,
+        )
+            .into_response();
+    }
+    if method != axum::http::Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    serve_index().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +203,76 @@ mod tests {
         assert!(html.contains("<title>wgenty-code daemon</title>"));
         assert!(html.contains("Web UI not bundled"));
         assert!(html.contains("npm --prefix web run build"));
+    }
+
+    // ---------- spa_fallback 行为（Task 1.5 路由接线） ----------
+
+    /// 构造只挂 fallback 的最小 app 直接驱动 spa_fallback——不经过
+    /// create_routers / auth 层，测试聚焦 fallback 自身的三条分支。
+    /// tower 的 `util` feature 未启用（无 ServiceExt::oneshot），用原生
+    /// `Service::poll_ready` + `call` 驱动；Router 的 poll_ready 恒就绪。
+    async fn drive(method: &str, uri: &str) -> Response {
+        use std::future::poll_fn;
+        use tower::Service;
+
+        let mut app = Router::new().fallback(spa_fallback);
+        // Router 有两个 Service impl（IncomingStream / Request<B>），完全
+        // 限定到 Request 消除 poll_ready 推断歧义
+        poll_fn(|cx| {
+            <axum::Router as Service<axum::http::Request<axum::body::Body>>>::poll_ready(
+                &mut app, cx,
+            )
+        })
+        .await
+        .expect("router ready");
+        app.call(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("call request")
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_returns_404_json_for_unknown_api_paths() {
+        let resp = drive("GET", "/api/v1/nonexistent").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // 未知 API 路径必须吐 JSON 而非 HTML——SPA 兜底页会伪装成 API
+        // 响应，破坏客户端错误处理
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let text = std::str::from_utf8(&body).expect("utf-8 body");
+        assert!(!text.contains('<'), "must not return HTML: {text}");
+        assert!(text.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_serves_html_for_deep_links() {
+        // 200 + text/html 即可：磁盘有无 web/dist/index.html 决定走 index
+        // 还是降级页，两者 Content-Type 相同（任务验收只断言 200 + HTML）
+        let resp = drive("GET", "/some/deep/link").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_rejects_non_get_methods() {
+        let resp = drive("POST", "/foo").await;
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }

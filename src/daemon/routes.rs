@@ -12,6 +12,7 @@ use crate::daemon::run_loop;
 use crate::daemon::session_admin;
 use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
+use crate::daemon::web_ui;
 use crate::daemon::workspace_files;
 use crate::daemon::worktrees;
 use crate::daemon::ws_push;
@@ -67,6 +68,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // Thin-client heartbeat (SSE keepalive); daemon tracks connected
         // clients and initiates graceful shutdown when the last one leaves.
         .route("/api/v1/client/heartbeat", get(handlers::client_heartbeat))
+        // Embedded Web UI static hosting (design §1): page load precedes any
+        // token acquisition, so these routes live in the public group. Merged
+        // BEFORE `.with_state` — public_router() is Router<Arc<DaemonState>>.
+        .merge(web_ui::public_router())
         .with_state(state.clone());
 
     // Cloned for the activity middleware; the original is consumed by
