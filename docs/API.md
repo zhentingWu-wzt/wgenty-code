@@ -109,6 +109,31 @@ version always conflicts instead of silently overwriting run output.
 New sessions start at `version: 0`; legacy sessions without the field
 deserialize as 0.
 
+### Queued user messages (run queue)
+
+One session runs one agent turn at a time. When `POST /api/v1/sessions/:id/run`
+finds the run slot busy, the message joins a per-session FIFO instead of
+failing (opt out with `"queue": false` in the request body to keep the legacy
+immediate-409 contract). A queued submission still answers `202` with
+`{"run_id": "", "queued": true, "queue_position": N}` — the scheduler assigns
+the real run id later, and clients adopt it from the first SSE event of the
+new turn.
+
+After a run finishes, the daemon-owned scheduler drains pending work in a
+fixed order: background results first, then ready task groups, then queued
+user messages. Queue depth is capped at 8 per session; beyond that the
+endpoint answers `429`.
+
+Queue management:
+
+| Endpoint | Effect |
+|:---------|:-------|
+| `GET /api/v1/sessions/:id/queue` | `{"session_id", "messages": [{message_id, message, plan_mode}]}` (pending only) |
+| `DELETE /api/v1/sessions/:id/queue` | drop all pending messages; answers `{"dropped": N}` |
+| `DELETE /api/v1/sessions/:id/queue/:message_id` | retract one pending message; `204` or `404` (already started/gone) |
+
+The queue is in-memory: pending messages do not survive a daemon restart.
+
 ### 409 semantics
 
 | Endpoint | Condition | 409 body |
@@ -117,7 +142,7 @@ deserialize as 0.
 | `POST /api/v1/tools/resolve-permission` | permission already resolved | `{"success": false, "resolved": true, "approved": <first decision>}` |
 | `PUT /api/v1/sessions/:id` | stale `expected_version` | `{"error": "version conflict", "current_version": N}` |
 | `PUT /api/v1/sessions/:id` | a server-side run is active | `{"error": "run active"}` |
-| `POST /api/v1/sessions/:id/run` | a run is already active | plain text message |
+| `POST /api/v1/sessions/:id/run` | a run is already active and `"queue": false` (default queues instead) | plain text message |
 
 Duplicate resolutions never overwrite the first decision and trigger no
 second side effect; unknown interaction/permission ids return 404.
