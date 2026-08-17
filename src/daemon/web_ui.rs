@@ -48,8 +48,8 @@ fn mime_for(ext: &str) -> &'static str {
 /// `Cache-Control: no-cache`（入口 HTML 必须每次重新验证，否则发新版本后
 /// 浏览器仍拿旧入口、引用已不存在的 hashed 资产）。
 ///
-/// 无 `index.html`（未执行 `npm --prefix web run build`）→ 返回 200 占位
-/// 提示。完整内联降级页由 Task 1.4 提供，届时替换此占位。
+/// 无 `index.html`（未执行 `npm --prefix web run build`）→ 返回 200 内联
+/// 降级页（设计 §1），提示如何构建前端。
 async fn serve_index() -> Response {
     match WebAssets::get("index.html") {
         Some(asset) => (
@@ -60,12 +60,40 @@ async fn serve_index() -> Response {
             asset.data.into_owned(),
         )
             .into_response(),
-        None => (
-            [(header::CACHE_CONTROL, "no-cache")],
-            "Web UI bundle not found: run `npm --prefix web run build`, then restart the daemon.",
-        )
-            .into_response(),
+        None => degradation_response(),
     }
+}
+
+/// 降级页 HTML（设计 §1）：`web/dist` 未构建时 `GET /` 返回的内联最小页面。
+/// 纯 Rust 字符串常量、零外部依赖 —— 降级路径必须不依赖任何嵌入资产存在
+/// （正因为资产缺失才走到这里）。提为纯函数供单元测试直接驱动，避免测试
+/// 依赖 `web/dist` 磁盘状态（debug 构建下 rust-embed 运行时读盘）。
+fn degradation_page() -> &'static str {
+    r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wgenty-code daemon</title>
+</head>
+<body>
+<p>Web UI not bundled — run <code>npm --prefix web run build</code>, then restart the daemon.</p>
+</body>
+</html>"#
+}
+
+/// 降级响应：200（非 500 —— 缺前端产物是可恢复的构建前置问题，不是服务端
+/// 错误）+ `text/html` + `Cache-Control: no-cache`（构建完成后立即恢复正常
+/// 页面，不允许缓存降级页）。
+fn degradation_response() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        degradation_page(),
+    )
+        .into_response()
 }
 
 /// `GET /assets/*path`：按 `assets/<path>` 查嵌入资产，MIME 按扩展名映射，
@@ -121,5 +149,34 @@ mod tests {
         assert_eq!(mime_for("exe"), "application/octet-stream");
         assert_eq!(mime_for("unknown-ext"), "application/octet-stream");
         assert_eq!(mime_for(""), "application/octet-stream");
+    }
+
+    #[tokio::test]
+    async fn serve_index_without_index_html_serves_degradation_page() {
+        // 直接驱动降级响应函数而非 serve_index：debug 构建下 rust-embed 运行时
+        // 读盘，web/dist/index.html 是否存在会决定 serve_index 走哪个分支，
+        // 单测必须确定性只测降级分支。
+        let resp = degradation_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+        assert_eq!(
+            resp.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache")
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let html = std::str::from_utf8(&body).expect("utf-8");
+        assert!(html.contains("<!doctype html>"));
+        assert!(html.contains("<title>wgenty-code daemon</title>"));
+        assert!(html.contains("Web UI not bundled"));
+        assert!(html.contains("npm --prefix web run build"));
     }
 }
