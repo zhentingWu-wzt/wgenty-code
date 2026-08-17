@@ -26,6 +26,12 @@ use tokio::sync::RwLock;
 /// client also exits instead of lingering forever.
 pub const THIN_CLIENT_IDLE_TIMEOUT_SECS: u64 = 300;
 
+/// Grace window for a client-bound daemon (spawned with `--spawned-by`):
+/// once the LAST client (WS push or heartbeat SSE) disconnects, the daemon
+/// exits after this window. Short enough to follow its owner down promptly,
+/// long enough to absorb page refreshes and reconnect jitter.
+pub const CLIENT_BOUND_GRACE_SECS: u64 = 30;
+
 /// Tracks active thin-client connections and the last API activity time;
 /// signals the daemon to exit when it has been idle for
 /// [`THIN_CLIENT_IDLE_TIMEOUT_SECS`].

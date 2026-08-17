@@ -194,6 +194,12 @@ pub enum Commands {
         /// Port to listen on
         #[arg(long, default_value = "8371")]
         port: u16,
+
+        /// Owner that spawned this daemon (web|tui|desktop). Switches the
+        /// shutdown policy from idle-timeout to "exit once all clients have
+        /// been gone for the grace window" so the daemon follows its owner.
+        #[arg(long)]
+        spawned_by: Option<String>,
     },
 
     /// Inspect subagent transcripts offline (list / trace / health)
