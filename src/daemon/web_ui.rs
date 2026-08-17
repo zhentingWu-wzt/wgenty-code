@@ -227,7 +227,7 @@ pub(crate) fn public_router() -> Router<Arc<DaemonState>> {
 /// 2. 非 GET → 405：fallback 只为页面深链兜底，不承载任何写语义；
 /// 3. 其余 GET → [`serve_index`]（SPA 深链兜底；单视图应用，仅兜 / 与
 ///    未来扩展）。
-pub(crate) async fn spa_fallback(uri: Uri, method: axum::http::Method) -> Response {
+pub async fn spa_fallback(uri: Uri, method: axum::http::Method) -> Response {
     if uri.path().starts_with("/api/") {
         return (
             StatusCode::NOT_FOUND,
