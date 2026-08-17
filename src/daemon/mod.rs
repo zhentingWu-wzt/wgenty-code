@@ -41,11 +41,7 @@ use tracing::info;
 /// `--spawned-by`): instead of the 300s idle timeout it exits once its last
 /// client has been gone for [`state::CLIENT_BOUND_GRACE_SECS`] — the daemon
 /// follows its owner down instead of idling out from under it.
-pub async fn run(
-    app_state: AppState,
-    port: u16,
-    spawned_by: Option<String>,
-) -> anyhow::Result<()> {
+pub async fn run(app_state: AppState, port: u16, spawned_by: Option<String>) -> anyhow::Result<()> {
     let daemon_state = Arc::new(DaemonState::new(app_state).await);
 
     // Recover persisted sessions as lightweight index entries so the
@@ -130,6 +126,12 @@ pub async fn run(
 
     let app = health_router
         .merge(protected_router)
+        // SPA fallback on the merged final app (design §1): axum only wraps
+        // routes registered before a route_layer call, so the fallback stays
+        // outside the protected group's auth layer — static deep links remain
+        // publicly reachable (§2 cross-origin token boundary). Unknown /api/
+        // paths still get 404 JSON instead of the SPA shell.
+        .fallback(web_ui::spa_fallback)
         // Localhost daemon: disable Axum's default 2 MiB request body cap so
         // long-session chat/compaction POSTs are not rejected with 413.
         .layer(DefaultBodyLimit::disable())
