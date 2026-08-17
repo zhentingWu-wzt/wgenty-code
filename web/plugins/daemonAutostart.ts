@@ -63,17 +63,32 @@ async function probeHealth(port: number): Promise<boolean> {
   }
 }
 
-function findDaemonBinary(): string | null {
+function findDaemonBinary(): { binary: string; root: string } | null {
   const exe = process.platform === "win32" ? "wgenty-code.exe" : "wgenty-code";
+  if (process.env.WGENTY_BIN && existsSync(process.env.WGENTY_BIN)) {
+    return { binary: process.env.WGENTY_BIN, root: findRepoRoot(process.cwd()) };
+  }
   const roots = [process.cwd(), resolve(process.cwd(), ".."), resolve(process.cwd(), "..", "..")];
-  const candidates = [
-    process.env.WGENTY_BIN,
-    ...roots.flatMap((root) => [
-      resolve(root, "target", "debug", exe),
-      resolve(root, "target", "release", exe),
-    ]),
-  ].filter((path): path is string => typeof path === "string" && path.length > 0);
-  return candidates.find((path) => existsSync(path)) ?? null;
+  for (const root of roots) {
+    for (const profile of ["debug", "release"]) {
+      const binary = resolve(root, "target", profile, exe);
+      if (existsSync(binary)) return { binary, root };
+    }
+  }
+  return null;
+}
+
+/** Walk up until a Cargo.toml marks the workspace root — the daemon resolves
+ *  its MAIN working root (project fallback, permission paths, memory routing)
+ *  from its cwd, so it must never inherit vite's `web/` cwd. */
+function findRepoRoot(from: string): string {
+  let dir = resolve(from);
+  for (;;) {
+    if (existsSync(resolve(dir, "Cargo.toml"))) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir) return from;
+    dir = parent;
+  }
 }
 
 function candidatePorts(): number[] {
@@ -97,16 +112,20 @@ async function ensureDaemon(server: ViteDevServer): Promise<void> {
     }
   }
 
-  const binary = findDaemonBinary();
-  if (!binary) {
+  const found = findDaemonBinary();
+  if (!found) {
     logger.warn(
       "daemon not running and no wgenty-code binary found — build it with `cargo build` or set WGENTY_BIN",
     );
     return;
   }
+  const { binary, root } = found;
 
   logger.info(`daemon not running — starting detached: ${binary} daemon --port ${port}`);
   const child = spawn(binary, ["daemon", "--port", String(port), "--spawned-by", "web"], {
+    // cwd = repo root, NOT web/: the daemon binds its main working root
+    // (project fallback, permission/memory paths) from the process cwd.
+    cwd: root,
     detached: true,
     stdio: "ignore", // Fully detached: survives `npm run dev` shutdown.
   });
