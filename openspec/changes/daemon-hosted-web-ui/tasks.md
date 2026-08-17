@@ -11,7 +11,7 @@
 ## 2. 同源 Bootstrap 认证端点（Rust）
 
 - [x] 2.1 `GET /auth/bootstrap` 处理器：同源判定（`Origin` host 白名单 + `Sec-Fetch-Site ∈ {same-origin, none}` + `Host` 校验），返回 `{ token }`，`Cache-Control: no-store`，跨源 403
-- [ ] 2.2 bootstrap 单元/边界测试：同源放行、跨源 Origin 拒绝、DNS-rebinding Host 拒绝、无 token 调 API 仍 401
+- [x] 2.2 bootstrap 单元/边界测试：同源放行、跨源 Origin 拒绝、DNS-rebinding Host 拒绝、无 token 调 API 仍 401
 
 ## 3. Daemon 测试与启动日志（Rust）
 
