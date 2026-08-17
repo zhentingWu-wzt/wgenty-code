@@ -116,11 +116,16 @@ export function ChatView() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1100px] flex-col gap-2 px-6 pt-6">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-2 px-3 pt-4 sm:px-6 sm:pt-6">
       {messages.map((m, i) => (
         <Fragment key={m.id}>
           {m.role === "user" && i > 0 && <div className="my-2 border-t border-border" />}
-          <div className={cn("flex flex-col gap-1 px-4 py-2", m.role === "user" && "items-end")}>
+          <div
+            className={cn(
+              "flex flex-col gap-1 px-2 py-2 sm:px-4",
+              m.role === "user" && "items-end",
+            )}
+          >
             {m.role === "tool" ? (
               <ToolEntry m={m} />
             ) : (
@@ -147,8 +152,10 @@ export function ChatView() {
                 {m.content && (
                   <div
                     className={cn(
-                      "max-w-[85%] rounded-lg px-3 py-2 text-[13px]",
-                      m.role === "user" ? "bg-primary/10 whitespace-pre-wrap" : "bg-card",
+                      "rounded-lg px-3 py-2 text-[13px]",
+                      m.role === "user"
+                        ? "max-w-[85%] bg-primary/10 whitespace-pre-wrap"
+                        : "bg-card",
                     )}
                   >
                     {m.role === "assistant" ? (

@@ -205,7 +205,7 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
   const terminal = isTerminal(curStatus);
 
   return (
-    <div className="mx-auto flex max-w-[1100px] flex-col gap-3 px-6 py-4">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-3 px-3 py-4 sm:px-6">
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
@@ -353,7 +353,7 @@ function SubagentMessages({
               {m.role}
             </div>
             {m.content && (
-              <div className="max-w-[85%] text-[13px]">
+              <div className={cn("text-[13px]", m.role === "user" && "max-w-[85%]")}>
                 {m.role === "assistant" ? (
                   <Markdown>{m.content}</Markdown>
                 ) : (
