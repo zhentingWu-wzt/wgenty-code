@@ -81,10 +81,7 @@ async fn serve_asset(axum::extract::Path(path): axum::extract::Path<String>) -> 
     (
         [
             (header::CONTENT_TYPE, mime_for(ext)),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=31536000, immutable",
-            ),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         asset.data.into_owned(),
     )
@@ -97,7 +94,7 @@ pub(crate) fn public_router() -> Router<Arc<DaemonState>> {
     Router::new()
         .route("/", get(serve_index))
         .route("/assets/*path", get(serve_asset))
-        // Task 2.1 追加：.route("/auth/bootstrap", get(bootstrap_token))
+    // Task 2.1 追加：.route("/auth/bootstrap", get(bootstrap_token))
 }
 
 #[cfg(test)]
