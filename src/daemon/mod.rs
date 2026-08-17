@@ -110,6 +110,9 @@ pub async fn run(app_state: AppState, port: u16, spawned_by: Option<String>) -> 
     // In-handler auth (WebSocket query token) reads the expected value from
     // the shared state; the middleware path keeps its own copy below.
     daemon_state.set_api_token(api_token.clone());
+    // Bootstrap 同源谓词（设计 §2）需要实际 bind 的端口来构建允许的
+    // host:port 白名单；bind 已成功，端口确定可用。
+    daemon_state.set_bind_port(port);
     eprintln!(
         "Daemon API token saved to: {}",
         crate::utils::daemon_token_path().display()
