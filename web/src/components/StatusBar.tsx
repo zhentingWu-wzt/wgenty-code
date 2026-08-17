@@ -2,6 +2,7 @@ import { useState, useSyncExternalStore } from "react";
 import { selectPendingApprovalCount, useSessionManager } from "../state/sessionManager";
 import type { DaemonClient } from "../api/client";
 import type { PermissionMode } from "../api/types";
+import { useWorkspaceRoot } from "../features/files/useWorkspaceRoot";
 
 const MODE_LABELS: Record<PermissionMode, string> = {
   normal: "normal",
@@ -24,12 +25,15 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const setPermissionMode = useSessionManager((s) => s.setPermissionMode);
   const contextWindow = useSessionManager((s) => s.contextWindow);
   const activeStore = useSessionManager((s) =>
-     s.activeId ? (s.entries[s.activeId]?.store ?? null) : null,
+    s.activeId ? (s.entries[s.activeId]?.store ?? null) : null,
   );
   const pendingApprovals = useSessionManager(selectPendingApprovalCount);
   const activeStatus = useSessionManager((s) =>
     s.activeId ? s.entries[s.activeId]?.status : undefined,
   );
+  // Workspace root of the ACTIVE session (worktree, else project path, else
+  // the main project) — shows which checkout a turn will land in.
+  const { root: workRoot } = useWorkspaceRoot(client);
   const isRunning = activeStatus === "running" || activeStatus === "awaiting_approval";
   const [modeOpen, setModeOpen] = useState(false);
 
@@ -84,6 +88,11 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
       {pendingApprovals > 0 && (
         <span className="rounded-sm bg-warning/20 px-1 text-warning">
           {pendingApprovals} approval{pendingApprovals > 1 ? "s" : ""}
+        </span>
+      )}
+      {workRoot && (
+        <span className="shrink-0 font-mono" title={workRoot}>
+          {workRoot}
         </span>
       )}
       <div className="flex-1" />
