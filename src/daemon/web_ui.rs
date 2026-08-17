@@ -490,4 +490,128 @@ mod tests {
             PORT,
         ));
     }
+
+    // ---------- /auth/bootstrap HTTP 层（Task 2.2，设计 §2） ----------
+
+    const BOOTSTRAP_TEST_TOKEN: &str = "bootstrap-http-layer-token";
+
+    /// 组装真实路由测 `/auth/bootstrap`（跟随 ws_push 测试先例）：走
+    /// `create_routers` 而非只挂 public_router——同时验证端点在 public 组
+    /// 真实可达、未被 protected 组的 auth 层拦截（页面加载先于 token
+    /// 获取，请求本身不带 Authorization）。state 预置 api token + bind
+    /// port，模拟 run() 完成 bind 后的初始化状态——bind_port 未设时处理
+    /// 器 fail-closed，测试就测不到放行路径了。projects registry 指到
+    /// 临时目录，隔离开发者的真实 projects.json。
+    async fn bootstrap_app() -> Router {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.keep();
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = root.clone();
+        let mut state = DaemonState::new(crate::state::AppState::new(settings)).await;
+        state.projects = crate::daemon::projects::ProjectRegistry::load(
+            root.clone(),
+            root.join("projects.json"),
+        );
+        let state = Arc::new(state);
+        state.set_bind_port(PORT);
+        state.set_api_token(BOOTSTRAP_TEST_TOKEN.to_string());
+        let (health, protected) =
+            crate::daemon::routes::create_routers(state, BOOTSTRAP_TEST_TOKEN.to_string());
+        health.merge(protected)
+    }
+
+    /// 带任意头驱动 app（tower 的 `util` feature 未启用，无
+    /// ServiceExt::oneshot，跟随本模块 drive 先例用原生 poll_ready + call）。
+    async fn drive_with_headers(
+        app: &mut Router,
+        method: &str,
+        uri: &str,
+        headers: &[(&'static str, &str)],
+    ) -> Response {
+        use std::future::poll_fn;
+        use tower::Service;
+
+        let mut builder = axum::http::Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        poll_fn(|cx| {
+            <axum::Router as Service<axum::http::Request<axum::body::Body>>>::poll_ready(app, cx)
+        })
+        .await
+        .expect("router ready");
+        app.call(
+            builder
+                .body(axum::body::Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("call request")
+    }
+
+    /// 放行路径：同源头组合（Origin/Sec-Fetch-Site/Host 三检查全过）→ 200、
+    /// 响应体含 token 字段且值是 state 预置的 api token、
+    /// Cache-Control: no-store（token 绝不能进任何缓存）。
+    #[tokio::test]
+    async fn bootstrap_endpoint_returns_token_to_same_origin_request() {
+        let mut app = bootstrap_app().await;
+        let resp = drive_with_headers(
+            &mut app,
+            "GET",
+            "/auth/bootstrap",
+            &[
+                ("origin", "http://127.0.0.1:8371"),
+                ("sec-fetch-site", "same-origin"),
+                ("host", "127.0.0.1:8371"),
+            ],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let text = std::str::from_utf8(&body).expect("utf-8 body");
+        assert!(
+            text.contains("\"token\""),
+            "响应体必须含 token 字段: {text}"
+        );
+        assert!(
+            text.contains(BOOTSTRAP_TEST_TOKEN),
+            "token 值必须是 state 预置的 api token: {text}"
+        );
+    }
+
+    /// 拒绝路径：跨源头组合（Origin 越界，即使 Host 合法、Fetch Metadata
+    /// 标记 cross-site）→ 403 + 固定错误 JSON、响应体无 token。
+    #[tokio::test]
+    async fn bootstrap_endpoint_rejects_cross_origin_request() {
+        let mut app = bootstrap_app().await;
+        let resp = drive_with_headers(
+            &mut app,
+            "GET",
+            "/auth/bootstrap",
+            &[
+                ("origin", "http://evil.example"),
+                ("sec-fetch-site", "cross-site"),
+                ("host", "127.0.0.1:8371"),
+            ],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let text = std::str::from_utf8(&body).expect("utf-8 body");
+        assert_eq!(text, r#"{"error":"cross-origin request rejected"}"#);
+        assert!(
+            !text.contains("token"),
+            "拒绝路径响应体不得含 token: {text}"
+        );
+    }
 }
