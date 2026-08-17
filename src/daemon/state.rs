@@ -338,6 +338,152 @@ impl BackgroundResultInbox {
     }
 }
 
+/// Maximum queued user messages per session. `POST /sessions/:id/run` answers
+/// `429` beyond this depth so a runaway client cannot balloon memory; the
+/// queue itself is intentionally short (typing ahead a few turns).
+pub const MESSAGE_QUEUE_MAX_DEPTH: usize = 8;
+
+/// One user message parked while the session's single run slot is busy.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct QueuedMessage {
+    pub message_id: String,
+    pub message: String,
+    /// Preserved from the submitting request so a queued Plan-mode turn still
+    /// runs as Plan mode when the scheduler finally starts it.
+    pub plan_mode: bool,
+}
+
+#[derive(Default)]
+struct SessionMessageQueue {
+    /// FIFO of not-yet-started messages.
+    pending: VecDeque<QueuedMessage>,
+    /// The single head claimed by the active continuation run. At most one
+    /// because `RunRegistry` permits one run per session. Retained (not
+    /// removed) until the run's start save succeeds, so a crashed start can
+    /// requeue it — mirrors `BackgroundResultClaim`.
+    claim: Option<(String, QueuedMessage)>,
+}
+
+/// Per-session FIFO of user messages submitted while a run was active.
+///
+/// Lifecycle mirrors [`BackgroundResultInbox`]: a claimed head stays visible
+/// until the continuation run persists its start save (`ack_claim`); a failed
+/// start requeues it ahead of the rest (`requeue_claim`). Unlike background
+/// results there is no dedup/tombstone layer — messages are unique by id.
+#[derive(Default)]
+struct MessageInbox {
+    by_session: HashMap<String, SessionMessageQueue>,
+}
+
+/// Error returned by [`MessageInbox::enqueue`] when the session's queue is at
+/// [`MESSAGE_QUEUE_MAX_DEPTH`].
+#[derive(Debug)]
+pub struct MessageQueueFull;
+
+impl MessageInbox {
+    fn enqueue(
+        &mut self,
+        session_id: &str,
+        message: String,
+        plan_mode: bool,
+    ) -> Result<QueuedMessage, MessageQueueFull> {
+        let session = self.by_session.entry(session_id.to_string()).or_default();
+        if session.pending.len() >= MESSAGE_QUEUE_MAX_DEPTH {
+            return Err(MessageQueueFull);
+        }
+        let queued = QueuedMessage {
+            message_id: uuid::Uuid::new_v4().to_string(),
+            message,
+            plan_mode,
+        };
+        session.pending.push_back(queued.clone());
+        Ok(queued)
+    }
+
+    fn snapshot_for_session(&self, session_id: &str) -> Vec<QueuedMessage> {
+        self.by_session
+            .get(session_id)
+            .map(|session| session.pending.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn depth(&self, session_id: &str) -> usize {
+        self.by_session
+            .get(session_id)
+            .map_or(0, |session| session.pending.len())
+    }
+
+    fn has_pending(&self, session_id: &str) -> bool {
+        self.depth(session_id) > 0
+    }
+
+    /// Move the head message into an exclusive claim by `run_id`.
+    fn claim_head(&mut self, session_id: &str, run_id: &str) -> Option<QueuedMessage> {
+        let session = self.by_session.get_mut(session_id)?;
+        if session.claim.is_some() {
+            return None;
+        }
+        let head = session.pending.pop_front()?;
+        session.claim = Some((run_id.to_string(), head.clone()));
+        Some(head)
+    }
+
+    /// Drop the claim after the run's start save succeeded. The message is
+    /// now durable session history.
+    fn ack_claim(&mut self, session_id: &str, run_id: &str) -> bool {
+        let Some(session) = self.by_session.get_mut(session_id) else {
+            return false;
+        };
+        match session.claim.take() {
+            Some((claim_run_id, _)) if claim_run_id == run_id => true,
+            other => {
+                session.claim = other;
+                false
+            }
+        }
+    }
+
+    /// Restore a failed run's claim to the queue head.
+    fn requeue_claim(&mut self, session_id: &str, run_id: &str) -> bool {
+        let Some(session) = self.by_session.get_mut(session_id) else {
+            return false;
+        };
+        match session.claim.take() {
+            Some((claim_run_id, message)) if claim_run_id == run_id => {
+                session.pending.push_front(message);
+                true
+            }
+            other => {
+                session.claim = other;
+                false
+            }
+        }
+    }
+
+    /// Remove one still-pending message (user retracting a queued turn).
+    /// Claimed heads cannot be removed — their run may already be saving.
+    fn remove(&mut self, session_id: &str, message_id: &str) -> bool {
+        let Some(session) = self.by_session.get_mut(session_id) else {
+            return false;
+        };
+        let before = session.pending.len();
+        session.pending.retain(|m| m.message_id != message_id);
+        before != session.pending.len()
+    }
+
+    /// Drop every pending message for the session. Returns how many.
+    fn clear(&mut self, session_id: &str) -> usize {
+        self.by_session
+            .get_mut(session_id)
+            .map(|session| {
+                let n = session.pending.len();
+                session.pending.clear();
+                n
+            })
+            .unwrap_or(0)
+    }
+}
+
 /// Per-session permission rules.
 struct SessionRules {
     approved: HashSet<String>,
@@ -390,6 +536,10 @@ pub struct DaemonState {
     /// Session-scoped, task-ID-deduplicated background result inbox. Fed by
     /// the tool-layer manager hook and retained before any SSE notification.
     background_result_inbox: Arc<RwLock<BackgroundResultInbox>>,
+    /// Session-scoped FIFO of user messages submitted while the single run
+    /// slot was busy. Drained by the continuation scheduler after a run
+    /// finishes (and after pending background results / ready task groups).
+    message_inbox: Arc<RwLock<MessageInbox>>,
     /// Scheduler mailbox. Result-ready and run-finished notifications share
     /// one consumer so their relative ordering cannot strand a busy session's
     /// pending inbox entries.
@@ -946,6 +1096,7 @@ impl DaemonState {
             skill_loader,
             background_manager: bg_manager,
             background_result_inbox,
+            message_inbox: Arc::new(RwLock::new(MessageInbox::default())),
             background_scheduler_tx,
             background_scheduler_rx: std::sync::Mutex::new(Some(background_scheduler_rx)),
             background_scheduler_started: std::sync::atomic::AtomicBool::new(false),
@@ -1075,6 +1226,71 @@ impl DaemonState {
             .read()
             .await
             .has_pending_for_session(session_id)
+    }
+
+    // ── Queued user messages (run-slot busy → FIFO, drained by scheduler) ──
+
+    pub(crate) async fn enqueue_message(
+        &self,
+        session_id: &str,
+        message: String,
+        plan_mode: bool,
+    ) -> Result<QueuedMessage, MessageQueueFull> {
+        self.message_inbox
+            .write()
+            .await
+            .enqueue(session_id, message, plan_mode)
+    }
+
+    pub async fn queued_messages_snapshot(&self, session_id: &str) -> Vec<QueuedMessage> {
+        self.message_inbox
+            .read()
+            .await
+            .snapshot_for_session(session_id)
+    }
+
+    pub(crate) async fn message_queue_depth(&self, session_id: &str) -> usize {
+        self.message_inbox.read().await.depth(session_id)
+    }
+
+    pub(crate) async fn has_queued_messages(&self, session_id: &str) -> bool {
+        self.message_inbox.read().await.has_pending(session_id)
+    }
+
+    pub(crate) async fn claim_queued_message(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Option<QueuedMessage> {
+        self.message_inbox
+            .write()
+            .await
+            .claim_head(session_id, run_id)
+    }
+
+    pub(crate) async fn ack_message_claim(&self, session_id: &str, run_id: &str) -> bool {
+        self.message_inbox
+            .write()
+            .await
+            .ack_claim(session_id, run_id)
+    }
+
+    pub(crate) async fn requeue_message_claim(&self, session_id: &str, run_id: &str) -> bool {
+        self.message_inbox
+            .write()
+            .await
+            .requeue_claim(session_id, run_id)
+    }
+
+    pub(crate) async fn remove_queued_message(&self, session_id: &str, message_id: &str) -> bool {
+        self.message_inbox
+            .write()
+            .await
+            .remove(session_id, message_id)
+    }
+
+    pub(crate) async fn clear_queued_messages(&self, session_id: &str) -> usize {
+        self.message_inbox.write().await.clear(session_id)
     }
 
     pub(crate) async fn background_continuation_is_blocked(&self, session_id: &str) -> bool {

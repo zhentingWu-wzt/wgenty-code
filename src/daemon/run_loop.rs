@@ -354,7 +354,7 @@ use crate::agent::runtime::ports::{InteractionPort, ToolPort, ToolRequest, ToolR
 use crate::agent::SessionId;
 use crate::agent::{AgentExecutionContext, ToolContext, ToolInvocationId};
 use crate::api::ToolDefinition;
-use crate::daemon::state::DaemonState;
+use crate::daemon::state::{DaemonState, MESSAGE_QUEUE_MAX_DEPTH};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::teams::permission_bridge::{PermissionBridge, StructuredApproval};
 use crate::tools::executor::validate_tool_call_shared;
@@ -892,6 +892,7 @@ struct BackgroundContinuation {
     run_id: String,
     cancel: CancellationToken,
     message: String,
+    plan_mode: bool,
 }
 
 /// Completes the session's run claim on drop. With a live scheduler it queues
@@ -1040,6 +1041,7 @@ async fn prepare_task_group_continuation(
         run_id,
         cancel,
         message: structured_task_group_continuation(&delivery.results),
+        plan_mode: false,
     })
 }
 
@@ -1135,6 +1137,63 @@ async fn prepare_background_continuation(
         run_id,
         cancel,
         message: structured_background_continuation(&results),
+        plan_mode: false,
+    })
+}
+
+/// Start the session's next queued user message (submitted while the run slot
+/// was busy) as a daemon-owned turn. Last priority: only reached when a
+/// finished run leaves no pending background results and no ready task group,
+/// so old-turn continuations always settle before a queued new turn starts.
+///
+/// The failed-save barrier applies equally here — queued messages must not
+/// layer new history on top of an unpersisted run; an explicit run (which
+/// re-persists) clears the barrier.
+async fn prepare_message_continuation(
+    state: &Arc<DaemonState>,
+    session_id: &str,
+) -> Option<BackgroundContinuation> {
+    if state.background_continuation_is_blocked(session_id).await {
+        return None;
+    }
+    state.resolve_session(session_id).await.as_ref()?;
+    if !state.has_queued_messages(session_id).await {
+        return None;
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    let next_run = SessionRun {
+        run_id: run_id.clone(),
+        cancel: cancel.clone(),
+        started_at: Instant::now(),
+    };
+    // Plain claim: every earlier path that returned None either finished the
+    // previous owner's registry claim or never owned it. A lost race simply
+    // fails here and the queue waits for the next RunFinished.
+    state.session_runs.claim(session_id, next_run).ok()?;
+
+    let queued = match state.claim_queued_message(session_id, &run_id).await {
+        Some(queued) => queued,
+        None => {
+            state.session_runs.finish(session_id, &run_id);
+            return None;
+        }
+    };
+    let remaining = state.message_queue_depth(session_id).await;
+    tracing::debug!(
+        session_id,
+        run_id = %run_id,
+        message_id = %queued.message_id,
+        remaining,
+        "scheduler starting queued user message"
+    );
+    Some(BackgroundContinuation {
+        session_id: session_id.to_string(),
+        run_id,
+        cancel,
+        message: queued.message,
+        plan_mode: queued.plan_mode,
     })
 }
 
@@ -1174,15 +1233,25 @@ pub(crate) fn spawn_background_continuation_scheduler(
             let session_id = event.session_id().to_string();
             let continuation = match event {
                 BackgroundSchedulerEvent::TaskGroupReady { .. } => {
-                    prepare_task_group_continuation(&state, &session_id).await
+                    // An idle session may also hold queued user messages:
+                    // drain them whenever the group was not ready (or the
+                    // claim was lost to a user run).
+                    match prepare_task_group_continuation(&state, &session_id).await {
+                        Some(continuation) => Some(continuation),
+                        None => prepare_message_continuation(&state, &session_id).await,
+                    }
                 }
                 event => match prepare_background_continuation(&state, event).await {
                     Some(continuation) => Some(continuation),
                     // No background-result continuation happened (nothing
                     // pending, blocked, or the claim moved on). The session may
                     // be idle now with a ready task group waiting — e.g. the
-                    // group completed while this run was still active.
-                    None => prepare_task_group_continuation(&state, &session_id).await,
+                    // group completed while this run was still active. Last,
+                    // drain any user message queued while the run was active.
+                    None => match prepare_task_group_continuation(&state, &session_id).await {
+                        Some(continuation) => Some(continuation),
+                        None => prepare_message_continuation(&state, &session_id).await,
+                    },
                 },
             };
             if let Some(continuation) = continuation {
@@ -1191,7 +1260,7 @@ pub(crate) fn spawn_background_continuation_scheduler(
                     continuation.session_id,
                     continuation.run_id,
                     continuation.message,
-                    false,
+                    continuation.plan_mode,
                     continuation.cancel,
                 );
             }
@@ -1207,18 +1276,38 @@ pub struct RunRequest {
     /// Absent (e.g. the web client has no plan toggle) defaults to `false`.
     #[serde(default)]
     pub plan_mode: bool,
+    /// When a run is already active: `true` (default) parks the message in
+    /// the session's FIFO queue — the scheduler starts it after the current
+    /// run settles (pending background results and ready task groups first).
+    /// `false` preserves the legacy immediate-409 contract.
+    #[serde(default = "queue_default_true")]
+    pub queue: bool,
+}
+
+const fn queue_default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]
 pub struct RunResponse {
+    /// Empty string when the turn was queued instead of started.
     pub run_id: String,
     pub session_id: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
+    /// 1-based queue position, present only when queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<usize>,
 }
 
 /// POST /api/v1/sessions/:id/run — spawn a server-side agent turn.
 ///
-/// 400 empty message / 404 unknown session / 409 run already active; on
-/// success 202 with the run id and the turn proceeds in a spawned task.
+/// 400 empty message / 404 unknown session. On success 202: either the turn
+/// starts immediately (`run_id` set), or — when a run is already active and
+/// `queue != false` — the message joins the session FIFO (`queued: true`,
+/// empty `run_id`; the scheduler assigns the run later and clients adopt the
+/// run id from the first SSE event). 409 only when `queue=false` collides
+/// with an active run; 429 when the queue is at `MESSAGE_QUEUE_MAX_DEPTH`.
 pub(crate) async fn post_run(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
@@ -1241,7 +1330,39 @@ pub(crate) async fn post_run(
         cancel: cancel.clone(),
         started_at: Instant::now(),
     };
-    state.session_runs.claim(&id, run)?;
+    if state.session_runs.claim(&id, run).is_err() {
+        if !body.queue {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("session {id} already has an active run"),
+            ));
+        }
+        let queued = state
+            .enqueue_message(&id, body.message, body.plan_mode)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!("session {id} message queue full (max {MESSAGE_QUEUE_MAX_DEPTH})"),
+                )
+            })?;
+        let depth = state.message_queue_depth(&id).await;
+        tracing::debug!(
+            session_id = %id,
+            message_id = %queued.message_id,
+            depth,
+            "run busy; user message queued"
+        );
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(RunResponse {
+                run_id: String::new(),
+                session_id: id,
+                queued: true,
+                queue_position: Some(depth),
+            }),
+        ));
+    }
 
     spawn_claimed_session_turn(
         Arc::clone(&state),
@@ -1257,6 +1378,8 @@ pub(crate) async fn post_run(
         Json(RunResponse {
             run_id,
             session_id: id,
+            queued: false,
+            queue_position: None,
         }),
     ))
 }
@@ -1268,6 +1391,53 @@ pub(crate) async fn post_cancel(
     Path(id): Path<String>,
 ) -> StatusCode {
     if state.session_runs.cancel(&id) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueueResponse {
+    pub session_id: String,
+    pub messages: Vec<crate::daemon::state::QueuedMessage>,
+}
+
+/// GET /api/v1/sessions/:id/queue — list the session's queued user messages
+/// (pending only; the claimed head is already being persisted by its run).
+pub(crate) async fn get_queue(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Json<QueueResponse> {
+    Json(QueueResponse {
+        session_id: id.clone(),
+        messages: state.queued_messages_snapshot(&id).await,
+    })
+}
+
+/// DELETE /api/v1/sessions/:id/queue — drop every still-pending message.
+/// 404 unknown session; 200 with the dropped count otherwise.
+pub(crate) async fn delete_queue(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if state.resolve_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let dropped = state.clear_queued_messages(&id).await;
+    Ok(Json(serde_json::json!({ "dropped": dropped })))
+}
+
+/// DELETE /api/v1/sessions/:id/queue/:message_id — retract one queued
+/// message. 404 unknown session or already-started/gone message.
+pub(crate) async fn delete_queued_message(
+    State(state): State<Arc<DaemonState>>,
+    Path((id, message_id)): Path<(String, String)>,
+) -> StatusCode {
+    if state.resolve_session(&id).await.is_none() {
+        return StatusCode::NOT_FOUND;
+    }
+    if state.remove_queued_message(&id, &message_id).await {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
@@ -1635,18 +1805,21 @@ async fn run_session_turn(
     let seed_len_before_run = seed.len(); // for TurnContext new_messages slice
 
     // 2. Start save: the user message is durable even if the run dies. A
-    // background batch remains claimed (and snapshot-visible) until this
-    // succeeds; failure requeues it for a later continuation attempt.
+    // background batch and any queued-message claim remain claimed (and
+    // snapshot-visible) until this succeeds; failure requeues them for a
+    // later continuation attempt.
     if !save_session_history(&sessions, session_id, &seed).await {
         state
             .requeue_background_result_claim(session_id, run_id)
             .await;
+        state.requeue_message_claim(session_id, run_id).await;
         sink.emit(RuntimeEvent::StreamError(
             "run start history save failed".to_string(),
         ));
         return false;
     }
     state.ack_background_result_claim(session_id, run_id).await;
+    state.ack_message_claim(session_id, run_id).await;
 
     // 2b. Auto-title unnamed sessions from the first user message. Sessions
     // created without an explicit name default `name` to the session id (a
@@ -2461,6 +2634,19 @@ mod tests {
         assert!(with_field.plan_mode);
     }
 
+    #[test]
+    fn run_request_queue_defaults_true_and_reads_false() {
+        // Absent queue field defaults to true: a busy session parks the
+        // message instead of answering 409.
+        let no_field: RunRequest =
+            serde_json::from_str(r#"{"message":"hi"}"#).expect("deserialize");
+        assert!(no_field.queue);
+        // An explicit false preserves the legacy immediate-409 contract.
+        let legacy: RunRequest =
+            serde_json::from_str(r#"{"message":"hi","queue":false}"#).expect("deserialize");
+        assert!(!legacy.queue);
+    }
+
     fn write_req(path: &str) -> ToolRequest {
         ToolRequest {
             name: "file_write".into(),
@@ -2738,6 +2924,147 @@ mod tests {
             .await
             .is_none());
         assert!(!state.session_runs.is_active("session-a"));
+    }
+
+    // ── Queued user messages ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn queued_message_waits_for_an_idle_session() {
+        let state = continuation_test_state().await;
+        state
+            .enqueue_message("session-a", "follow-up".to_string(), true)
+            .await
+            .expect("enqueue");
+
+        // A user-driven run owns the session: the queued message stays put.
+        state
+            .session_runs
+            .claim("session-a", test_run("user-run"))
+            .expect("claim user run");
+        assert!(prepare_message_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert_eq!(state.message_queue_depth("session-a").await, 1);
+
+        // Once the run finishes, the queued message starts as the next run
+        // with its plan_mode preserved.
+        state.session_runs.finish("session-a", "user-run");
+        let continuation = prepare_message_continuation(&state, "session-a")
+            .await
+            .expect("idle session with a queued message should continue");
+        assert_eq!(continuation.message, "follow-up");
+        assert!(continuation.plan_mode);
+        assert_eq!(
+            state.session_runs.active_run_id("session-a").as_deref(),
+            Some(continuation.run_id.as_str())
+        );
+        // The head is claimed (not dropped) until the run's start save acks.
+        assert_eq!(state.message_queue_depth("session-a").await, 0);
+    }
+
+    #[tokio::test]
+    async fn message_continuation_respects_the_failed_save_barrier() {
+        let state = continuation_test_state().await;
+        state
+            .enqueue_message("session-a", "follow-up".to_string(), false)
+            .await
+            .expect("enqueue");
+        state.block_background_continuation("session-a").await;
+        assert!(prepare_message_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert!(!state.session_runs.is_active("session-a"));
+        assert_eq!(state.message_queue_depth("session-a").await, 1);
+    }
+
+    #[tokio::test]
+    async fn message_continuation_claim_requeues_on_failed_start_save() {
+        let state = continuation_test_state().await;
+        state
+            .enqueue_message("session-a", "follow-up".to_string(), false)
+            .await
+            .expect("enqueue");
+        let continuation = prepare_message_continuation(&state, "session-a")
+            .await
+            .expect("continuation");
+
+        // Simulate a failed start save: the claim returns to the queue head
+        // and the run slot is free for the next attempt.
+        assert!(
+            state
+                .requeue_message_claim("session-a", &continuation.run_id)
+                .await
+        );
+        state.session_runs.finish("session-a", &continuation.run_id);
+        assert_eq!(state.message_queue_depth("session-a").await, 1);
+
+        let retry = prepare_message_continuation(&state, "session-a")
+            .await
+            .expect("requeued message continues again");
+        assert_eq!(retry.message, "follow-up");
+
+        // A stale run id must not ack or requeue another run's claim.
+        assert!(!state.ack_message_claim("session-a", "stale-run").await);
+        assert!(!state.requeue_message_claim("session-a", "stale-run").await);
+
+        // After the start save succeeds the claim is acked for good.
+        assert!(state.ack_message_claim("session-a", &retry.run_id).await);
+        assert_eq!(state.message_queue_depth("session-a").await, 0);
+    }
+
+    #[tokio::test]
+    async fn queued_messages_are_fifo_and_retractable() {
+        let state = continuation_test_state().await;
+        let first = state
+            .enqueue_message("session-a", "one".to_string(), false)
+            .await
+            .expect("enqueue one");
+        state
+            .enqueue_message("session-a", "two".to_string(), false)
+            .await
+            .expect("enqueue two");
+
+        let snapshot = state.queued_messages_snapshot("session-a").await;
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].message, "one");
+        assert_eq!(snapshot[1].message, "two");
+
+        assert!(
+            state
+                .remove_queued_message("session-a", &first.message_id)
+                .await
+        );
+        assert!(
+            !state
+                .remove_queued_message("session-a", &first.message_id)
+                .await
+        );
+        let snapshot = state.queued_messages_snapshot("session-a").await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].message, "two");
+
+        assert_eq!(state.clear_queued_messages("session-a").await, 1);
+        assert!(!state.has_queued_messages("session-a").await);
+    }
+
+    #[tokio::test]
+    async fn message_queue_enforces_max_depth() {
+        let state = continuation_test_state().await;
+        for i in 0..MESSAGE_QUEUE_MAX_DEPTH {
+            state
+                .enqueue_message("session-a", format!("msg {i}"), false)
+                .await
+                .expect("within capacity");
+        }
+        assert!(state
+            .enqueue_message("session-a", "overflow".to_string(), false)
+            .await
+            .is_err());
+        // A different session is unaffected.
+        assert!(state
+            .enqueue_message("session-b", "ok".to_string(), false)
+            .await
+            .is_ok());
     }
 
     #[test]

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added (Daemon run queue)
+
+- **session run 槽位忙时消息自动排队**：`POST /api/v1/sessions/:id/run` 遇到活跃
+  run 不再直接 409，默认将消息存入 per-session FIFO（上限 8 条，超限 429），
+  响应 `202 {queued: true, queue_position: N}`（`run_id` 为空，客户端从该 turn
+  首个 SSE 事件认领）。run 结束后由 daemon scheduler 按 background results →
+  ready task groups → 排队消息的优先级自动启动下一轮；`"queue": false` 保留旧的
+  立即 409 契约。修复多客户端同 session、turn_done 与 final save 竞态窗口、
+  observer/重连状态失真等客户端本地队列覆盖不到的场景。
+- 新增队列管理端点：`GET /sessions/:id/queue`（查看）、
+  `DELETE /sessions/:id/queue`（清空）、`DELETE /sessions/:id/queue/:message_id`
+  （撤回单条）。队列为纯内存结构，daemon 重启后 pending 消息不保留。
+
 ### Fixed (Daemon lifecycle)
 
 - 双实例竞态：旧 daemon 退出时无条件删除 `daemon.token` / `daemon.json`，会把仍在

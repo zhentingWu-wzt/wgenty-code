@@ -215,6 +215,15 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // Session server-side runs (spawn / cancel an agent turn, live SSE events)
         .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
         .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))
+        // Queued user messages (submitted while the run slot was busy)
+        .route(
+            "/api/v1/sessions/:id/queue",
+            get(run_loop::get_queue).delete(run_loop::delete_queue),
+        )
+        .route(
+            "/api/v1/sessions/:id/queue/:message_id",
+            delete(run_loop::delete_queued_message),
+        )
         .route(
             "/api/v1/sessions/:id/events",
             get(run_loop::get_session_events),
