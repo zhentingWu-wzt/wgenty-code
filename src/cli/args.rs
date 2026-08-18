@@ -90,13 +90,14 @@ impl Cli {
             Some(super::Commands::Daemon {
                 action,
                 port,
+                host,
                 spawned_by,
             }) => match action {
                 None => {
                     // Every fresh launch replaces a still-running predecessor
                     // so the daemon never keeps serving a stale binary.
                     super::daemon_admin::kill_predecessor().await?;
-                    crate::daemon::run(state, *port, spawned_by.clone()).await?
+                    crate::daemon::run(state, host, *port, spawned_by.clone()).await?
                 }
                 Some(super::DaemonCommands::Status) => {
                     super::daemon_admin::status(*port).await?;
@@ -109,6 +110,7 @@ impl Cli {
             Some(super::Commands::Daemon {
                 action,
                 port,
+                host: _,
                 spawned_by: _,
             }) => match action {
                 Some(super::DaemonCommands::Status) => {

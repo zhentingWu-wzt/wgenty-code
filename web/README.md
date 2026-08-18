@@ -93,6 +93,23 @@ Then open http://127.0.0.1:8371 in a browser. The page is served same-origin
 by the daemon and obtains its bearer token automatically via
 `GET /auth/bootstrap`, so no manual token step is needed.
 
+### Phone / LAN access
+
+The daemon binds `127.0.0.1` by default. To reach the web UI from a phone on
+the same network, bind all interfaces and open the machine's LAN IP instead:
+
+```bash
+cargo run --features daemon -- daemon --host 0.0.0.0 --port 8371
+```
+
+Then open `http://<your-lan-ip>:8371` (find the IP via `ifconfig` /
+`ipconfig`). The bootstrap same-origin allowlist widens to literal private
+IPs (`192.168.x.x`, `10.x.x.x`, `172.16.x.x`, IPv6 ULA) in this mode, so the
+phone still gets its token automatically; hostnames and public IPs stay
+rejected (DNS-rebinding protection). The bearer token remains the only gate
+for the API — anyone on the network can reach the daemon, so only do this on
+trusted networks.
+
 Notes:
 
 - When the UI is embedded, the daemon startup log prints

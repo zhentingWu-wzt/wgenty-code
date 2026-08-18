@@ -195,6 +195,11 @@ pub enum Commands {
         #[arg(long, default_value = "8371")]
         port: u16,
 
+        /// IP address to bind (`0.0.0.0` exposes the daemon — API and
+        /// embedded web UI — to the local network for phone access)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
         /// Owner that spawned this daemon (web|tui|desktop). Switches the
         /// shutdown policy from idle-timeout to "exit once all clients have
         /// been gone for the grace window" so the daemon follows its owner.

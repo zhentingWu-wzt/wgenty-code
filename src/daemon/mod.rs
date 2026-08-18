@@ -41,7 +41,12 @@ use tracing::info;
 /// `--spawned-by`): instead of the 300s idle timeout it exits once its last
 /// client has been gone for [`state::CLIENT_BOUND_GRACE_SECS`] — the daemon
 /// follows its owner down instead of idling out from under it.
-pub async fn run(app_state: AppState, port: u16, spawned_by: Option<String>) -> anyhow::Result<()> {
+pub async fn run(
+    app_state: AppState,
+    host: &str,
+    port: u16,
+    spawned_by: Option<String>,
+) -> anyhow::Result<()> {
     let daemon_state = Arc::new(DaemonState::new(app_state).await);
 
     // Recover persisted sessions as lightweight index entries so the
@@ -98,8 +103,23 @@ pub async fn run(app_state: AppState, port: u16, spawned_by: Option<String>) -> 
     // and then failing on bind would leave a stale token on disk that doesn't
     // match the running daemon, breaking all clients. This mirrors the order
     // in `src/tui/util.rs::start_daemon`.
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let ip: std::net::IpAddr = host.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "invalid --host `{host}`: expected an IP address (e.g. 127.0.0.1 or 0.0.0.0)"
+        )
+    })?;
+    // Non-loopback binds (`--host 0.0.0.0`) expose the daemon (API + embedded
+    // web UI) to the LAN. Flag it so the web-UI bootstrap predicate can admit
+    // same-origin requests addressed to the machine's private LAN IPs.
+    let lan_exposed = !ip.is_loopback();
+    let addr = SocketAddr::from((ip, port));
     info!("daemon binding to http://{}", addr);
+    if lan_exposed {
+        tracing::warn!(
+            "daemon bound to a non-loopback address ({host}) — any device on this \
+             network can reach the API; the bearer token remains the only gate"
+        );
+    }
     if web_ui::has_index() {
         info!("Web UI: http://{}", addr);
     } else {
@@ -115,9 +135,9 @@ pub async fn run(app_state: AppState, port: u16, spawned_by: Option<String>) -> 
     // In-handler auth (WebSocket query token) reads the expected value from
     // the shared state; the middleware path keeps its own copy below.
     daemon_state.set_api_token(api_token.clone());
-    // Bootstrap 同源谓词（设计 §2）需要实际 bind 的端口来构建允许的
-    // host:port 白名单；bind 已成功，端口确定可用。
-    daemon_state.set_bind_port(port);
+    // Bootstrap 同源谓词（设计 §2）需要实际 bind 的端口与暴露面来构建允许
+    // 的 host:port 白名单；bind 已成功，端口确定可用。
+    daemon_state.set_bind(port, lan_exposed);
     eprintln!(
         "Daemon API token saved to: {}",
         crate::utils::daemon_token_path().display()

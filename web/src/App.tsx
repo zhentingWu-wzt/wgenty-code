@@ -297,7 +297,10 @@ export function App() {
 
   return (
     <ConfirmProvider>
-      <div className="flex h-screen flex-col bg-background text-foreground">
+      {/* h-dvh（动态视口高度）：手机地址栏伸缩时 100vh 会大于可视区域，
+          导致文档级滚动条；overflow-hidden + overscroll-none 兜底禁止
+          页面级双轴滚动 —— 滚动只发生在内部容器（消息列表、代码块）。 */}
+      <div className="flex h-dvh flex-col overflow-hidden overscroll-none bg-background text-foreground">
         <AppTopbar />
         <div className="flex min-h-0 flex-1">
           <LeftSidebar client={client} />
