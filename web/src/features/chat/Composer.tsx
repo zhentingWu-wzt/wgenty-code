@@ -79,7 +79,10 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
         <div
           role="listbox"
           aria-label="Slash commands"
-          className="absolute inset-x-3 bottom-full z-20 mb-1.5 overflow-hidden rounded-md border border-border bg-popover shadow-lg"
+          // Cap the menu height (half the dynamic viewport) and scroll
+          // inside — with many skills registered the unbounded list could
+          // cover the whole screen, hiding the chat behind it.
+          className="absolute inset-x-3 bottom-full z-20 mb-1.5 max-h-[50dvh] overflow-y-auto overscroll-contain rounded-md border border-border bg-popover shadow-lg"
         >
           {menuItems.map((c) => (
             <button
