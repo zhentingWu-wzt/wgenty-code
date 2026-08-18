@@ -17,10 +17,10 @@ The frontend SHALL be a browser application (React + Vite + TS in `web/`) that d
 - **WHEN** the model emits tool calls during a chat stream round
 - **THEN** the frontend executes each via `POST /api/v1/tools/execute`, appends results, and re-streams the next round until a round produces no tool calls (the daemon never runs the loop)
 
-#### Scenario: Optional daemon-hosted production build
+#### Scenario: Daemon-hosted production build
 
-- **WHEN** a production build is served (Tier 3)
-- **THEN** it MAY be hosted by the daemon as static assets, reusing the same bearer-token auth as the API
+- **WHEN** a production build is embedded in the daemon binary (Tier 3)
+- **THEN** the browser opening the daemon origin gets the full UI with no Node/Vite toolchain required, and the page authenticates to the API via the daemon's same-origin bootstrap flow
 
 ### Requirement: Token-gated API access
 
@@ -35,6 +35,11 @@ The frontend SHALL authenticate to protected `/api/v1/*` endpoints with the daem
 
 - **WHEN** the production frontend bundle is inspected
 - **THEN** it contains no hardcoded daemon token
+
+#### Scenario: Daemon-hosted bootstrap token acquisition
+
+- **WHEN** the page is served by the daemon itself (same-origin) and needs the bearer token
+- **THEN** it obtains the token from the daemon's same-origin bootstrap endpoint at startup and attaches it to protected API calls, with no token embedded in the served HTML
 
 ### Requirement: Rich content rendering
 
