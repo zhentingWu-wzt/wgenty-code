@@ -132,19 +132,21 @@ export async function resolveDaemonDirect(): Promise<DaemonDirectInfo | null> {
         return { base: `http://127.0.0.1:${info.port}/api/v1`, token: info.token };
       }
     }
-  } catch { /* fall through */ }
+  } catch {
+    /* fall through */
+  }
   // __daemon-info 不可用（hosted 模式无 vite 中间件）。dev 下不尝试：vite dev server
   // 会对未知路径回退返回 index.html（appType: "spa"），徒增一次无效往返。
   if (import.meta.env.DEV) return null;
   try {
     const res = await fetch("/auth/bootstrap");
-    if (!res.ok) return null;                       // 旧 daemon：404 → null → 现行为
+    if (!res.ok) return null; // 旧 daemon：404 → null → 现行为
     const info = (await res.json()) as { token?: string };
     if (!info.token) return null;
     // 绝对地址保证 wsChannel 的 ws:// 推导成立（设计 §3）
     return { base: location.origin + "/api/v1", token: info.token };
   } catch {
-    return null;                                    // 客户端 bootstrap 失败 → 回退现行为（错误处理表）
+    return null; // 客户端 bootstrap 失败 → 回退现行为（错误处理表）
   }
 }
 
@@ -155,6 +157,16 @@ export class DaemonClient {
    * daemon origin.
    */
   constructor(private readonly base = "/api/v1") {}
+
+  /** token 可用（dev 的 __daemon-info 或 hosted 的 bootstrap）时统一注入
+   *  Authorization 头。dev 下 vite 代理本身会注入同值 token，重复无害。 */
+  private async authedFetch(url: string, init?: RequestInit): Promise<Response> {
+    const direct = await resolveDaemonDirect();
+    if (!direct) return fetch(url, init);
+    const headers = new Headers(init?.headers);
+    headers.set("Authorization", `Bearer ${direct.token}`);
+    return fetch(url, { ...init, headers });
+  }
 
   // ── Trusted UI viewer (scoped-agent endpoints) ─────────────────────────────
 
@@ -168,7 +180,7 @@ export class DaemonClient {
     if (this.viewerToken) return this.viewerToken;
     if (!this.viewerPromise) {
       this.viewerPromise = (async () => {
-        const res = await fetch(`${this.base}/ui/viewers`, { method: "POST" });
+        const res = await this.authedFetch(`${this.base}/ui/viewers`, { method: "POST" });
         const r = await jsonOrThrow<CreateViewerResponse>(res);
         this.viewerToken = r.viewer_token;
         return r.viewer_token;
@@ -197,11 +209,11 @@ export class DaemonClient {
   // ── Health / config ────────────────────────────────────────────────────────
 
   async health(): Promise<HealthResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/health`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/health`));
   }
 
   async getConfig(): Promise<ConfigResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/config`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/config`));
   }
 
   /**
@@ -213,7 +225,7 @@ export class DaemonClient {
     patch: Partial<Pick<ConfigResponse, "max_tokens" | "timeout" | "streaming" | "api_base">>,
   ): Promise<ConfigResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/config`, {
+      await this.authedFetch(`${this.base}/config`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(patch),
@@ -229,7 +241,9 @@ export class DaemonClient {
    */
   async getPermissionMode(sessionId: string): Promise<PermissionModeResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/permission-mode?session_id=${encodeURIComponent(sessionId)}`),
+      await this.authedFetch(
+        `${this.base}/permission-mode?session_id=${encodeURIComponent(sessionId)}`,
+      ),
     );
   }
 
@@ -238,7 +252,7 @@ export class DaemonClient {
     mode: PermissionMode,
   ): Promise<PermissionModeResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/permission-mode`, {
+      await this.authedFetch(`${this.base}/permission-mode`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mode, session_id: sessionId }),
@@ -250,7 +264,7 @@ export class DaemonClient {
 
   async executeTool(req: ExecuteToolRequest): Promise<ExecuteToolResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/tools/execute`, {
+      await this.authedFetch(`${this.base}/tools/execute`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -260,7 +274,7 @@ export class DaemonClient {
 
   async approveTool(sessionRule: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/tools/approve`, {
+      await this.authedFetch(`${this.base}/tools/approve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ session_rule: sessionRule }),
@@ -270,7 +284,7 @@ export class DaemonClient {
 
   async unapproveTool(sessionRule: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/tools/unapprove`, {
+      await this.authedFetch(`${this.base}/tools/unapprove`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ session_rule: sessionRule }),
@@ -287,7 +301,7 @@ export class DaemonClient {
     sessionRule?: string,
   ): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/tools/resolve-permission`, {
+      await this.authedFetch(`${this.base}/tools/resolve-permission`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -304,18 +318,18 @@ export class DaemonClient {
    *  server-side. Used to re-surface prompts after a page refresh or a
    *  trace-stream reconnect (pending state otherwise lives only in memory). */
   async listPendingPermissions(): Promise<ListPendingPermissionsResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/tools/pending-permissions`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/tools/pending-permissions`));
   }
 
   // ── Models ─────────────────────────────────────────────────────────────────
 
   async listModels(): Promise<ListModelsResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/models`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/models`));
   }
 
   async switchModel(req: SwitchModelRequest): Promise<SwitchModelResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/model/switch`, {
+      await this.authedFetch(`${this.base}/model/switch`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -326,7 +340,7 @@ export class DaemonClient {
   // ── Sessions ───────────────────────────────────────────────────────────────
 
   async listSessions(): Promise<SessionInfo[]> {
-    return jsonOrThrow(await fetch(`${this.base}/sessions`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/sessions`));
   }
 
   /**
@@ -336,12 +350,14 @@ export class DaemonClient {
    */
   async searchSessions(query: string): Promise<SessionInfo[]> {
     const q = query.trim();
-    return jsonOrThrow(await fetch(`${this.base}/sessions/search?q=${encodeURIComponent(q)}`));
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/sessions/search?q=${encodeURIComponent(q)}`),
+    );
   }
 
   async createSession(req: CreateSessionRequest = {}): Promise<SessionResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/sessions`, {
+      await this.authedFetch(`${this.base}/sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -350,33 +366,35 @@ export class DaemonClient {
   }
 
   async loadSession(id: string): Promise<SessionResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(id)}`));
   }
 
   async deleteSession(id: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
     );
   }
 
   // ── Todos / Tasks ──────────────────────────────────────────────────────────
 
   async getTodos(): Promise<GetTodosResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/todos`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/todos`));
   }
 
   async listTasks(): Promise<ListTasksResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/tasks`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/tasks`));
   }
 
   async taskProgress(): Promise<TaskProgressResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/tasks/progress`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/tasks/progress`));
   }
 
   // ── Memory (Tier 2 ops-panel-api) ──────────────────────────────────────────
 
   async memoryStatus(): Promise<MemoryStatus> {
-    return jsonOrThrow(await fetch(`${this.base}/memory/status`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/memory/status`));
   }
 
   async listMemory(query: MemoryListQuery = {}): Promise<MemoryListResponse> {
@@ -386,11 +404,11 @@ export class DaemonClient {
       params.set("min_importance", String(query.min_importance));
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     const qs = params.toString();
-    return jsonOrThrow(await fetch(`${this.base}/memory${qs ? `?${qs}` : ""}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/memory${qs ? `?${qs}` : ""}`));
   }
 
   async getMemory(id: string): Promise<MemoryItem> {
-    return jsonOrThrow(await fetch(`${this.base}/memory/${encodeURIComponent(id)}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/memory/${encodeURIComponent(id)}`));
   }
 
   /**
@@ -398,9 +416,12 @@ export class DaemonClient {
    * the pool ("project" or "global").
    */
   async deleteMemory(id: string, origin: "project" | "global"): Promise<void> {
-    const res = await fetch(`${this.base}/memory/${encodeURIComponent(id)}?origin=${origin}`, {
-      method: "DELETE",
-    });
+    const res = await this.authedFetch(
+      `${this.base}/memory/${encodeURIComponent(id)}?origin=${origin}`,
+      {
+        method: "DELETE",
+      },
+    );
     if (!res.ok) {
       const body = await res.text();
       throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
@@ -409,7 +430,7 @@ export class DaemonClient {
 
   async pruneMemory(dryRun = false): Promise<PruneResult> {
     return jsonOrThrow(
-      await fetch(`${this.base}/memory/prune`, {
+      await this.authedFetch(`${this.base}/memory/prune`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ dry_run: dryRun }),
@@ -527,7 +548,7 @@ export class DaemonClient {
   async traceReplay(sessionId: string, since?: number): Promise<TraceEvent[]> {
     const params = new URLSearchParams({ session_id: sessionId });
     if (since !== undefined) params.set("since", String(since));
-    return jsonOrThrow(await fetch(`${this.base}/subagents/trace/replay?${params}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/subagents/trace/replay?${params}`));
   }
 
   // ── Scoped agent views (subagent local view + transcript + cancel) ─────────
@@ -537,9 +558,12 @@ export class DaemonClient {
   async getAgentSelf(sessionId: string): Promise<LocalAgentViewResponse> {
     const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await fetch(`${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`, {
-        headers,
-      }),
+      await this.authedFetch(
+        `${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`,
+        {
+          headers,
+        },
+      ),
     );
   }
 
@@ -548,9 +572,12 @@ export class DaemonClient {
   async getAgentDirectory(sessionId: string): Promise<AgentDirectoryResponse> {
     const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await fetch(`${this.base}/agents/directory?session_id=${encodeURIComponent(sessionId)}`, {
-        headers,
-      }),
+      await this.authedFetch(
+        `${this.base}/agents/directory?session_id=${encodeURIComponent(sessionId)}`,
+        {
+          headers,
+        },
+      ),
     );
   }
 
@@ -559,7 +586,7 @@ export class DaemonClient {
   async navigateAgentView(sessionId: string, capability: string): Promise<LocalAgentViewResponse> {
     const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await fetch(
+      await this.authedFetch(
         `${this.base}/agents/children/${encodeURIComponent(capability)}?session_id=${encodeURIComponent(sessionId)}`,
         { headers },
       ),
@@ -574,7 +601,7 @@ export class DaemonClient {
   ): Promise<{ transcript: unknown }> {
     const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await fetch(
+      await this.authedFetch(
         `${this.base}/agents/children/${encodeURIComponent(capability)}/transcript?session_id=${encodeURIComponent(sessionId)}`,
         { headers },
       ),
@@ -585,7 +612,7 @@ export class DaemonClient {
    *  direct child bound by `capability`. Returns true on 204. */
   async cancelChild(sessionId: string, capability: string): Promise<void> {
     const headers = await this.agentHeaders();
-    const res = await fetch(
+    const res = await this.authedFetch(
       `${this.base}/agents/children/${encodeURIComponent(capability)}/cancel?session_id=${encodeURIComponent(sessionId)}`,
       { method: "POST", headers },
     );
@@ -600,12 +627,12 @@ export class DaemonClient {
   // ── Command center: projects / worktrees / skills / checkpoints ────────────
 
   async listProjects(): Promise<ProjectInfo[]> {
-    return jsonOrThrow(await fetch(`${this.base}/projects`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/projects`));
   }
 
   async addProject(path: string): Promise<ProjectInfo> {
     return jsonOrThrow(
-      await fetch(`${this.base}/projects`, {
+      await this.authedFetch(`${this.base}/projects`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ path }),
@@ -616,7 +643,7 @@ export class DaemonClient {
   /** Unregister a project (registry only — files on disk are untouched). */
   async removeProject(path: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/projects?path=${encodeURIComponent(path)}`, {
+      await this.authedFetch(`${this.base}/projects?path=${encodeURIComponent(path)}`, {
         method: "DELETE",
       }),
     );
@@ -626,7 +653,7 @@ export class DaemonClient {
    *  Omit `path` to list the user home directory. Read-only, daemon-side. */
   async listDirs(path?: string): Promise<DirListing> {
     const qs = path ? `?path=${encodeURIComponent(path)}` : "";
-    return jsonOrThrow(await fetch(`${this.base}/fs/dirs${qs}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/fs/dirs${qs}`));
   }
 
   // ── Workspace file preview (read-only, path-bounded) ──────────────────────
@@ -635,7 +662,9 @@ export class DaemonClient {
    *  case-insensitive) for the workspace file tree. The path must resolve
    *  inside a registered project/worktree root; the daemon 403s otherwise. */
   async listEntries(path: string): Promise<FsEntries> {
-    return jsonOrThrow(await fetch(`${this.base}/fs/entries?path=${encodeURIComponent(path)}`));
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/fs/entries?path=${encodeURIComponent(path)}`),
+    );
   }
 
   /** `GET /fs/git-status?path=<root>` — changed files (added/modified/deleted,
@@ -644,11 +673,15 @@ export class DaemonClient {
   /** `GET /fs/git-diff?path=<file>` — full inline diff vs HEAD (staged +
    *  unstaged) with line numbers; untracked files diff against /dev/null. */
   async gitDiff(path: string): Promise<FileDiff> {
-    return jsonOrThrow(await fetch(`${this.base}/fs/git-diff?path=${encodeURIComponent(path)}`));
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/fs/git-diff?path=${encodeURIComponent(path)}`),
+    );
   }
 
   async gitStatus(path: string): Promise<GitFileStatus[]> {
-    return jsonOrThrow(await fetch(`${this.base}/fs/git-status?path=${encodeURIComponent(path)}`));
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/fs/git-status?path=${encodeURIComponent(path)}`),
+    );
   }
 
   /** `GET /fs/file?path=<file>` — file content for the preview panel.
@@ -657,7 +690,7 @@ export class DaemonClient {
    *    binary marker (`{is_binary, version}` → "binary-unsupported");
    *  - anything else → raw bytes as a Blob with the header's mime. */
   async fetchFile(path: string): Promise<FileContent> {
-    const res = await fetch(`${this.base}/fs/file?path=${encodeURIComponent(path)}`);
+    const res = await this.authedFetch(`${this.base}/fs/file?path=${encodeURIComponent(path)}`);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       if (res.status === 413) {
@@ -698,12 +731,12 @@ export class DaemonClient {
 
   async listWorktrees(project?: string): Promise<WorktreeInfo[]> {
     const qs = project ? `?project=${encodeURIComponent(project)}` : "";
-    return jsonOrThrow(await fetch(`${this.base}/worktrees${qs}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/worktrees${qs}`));
   }
 
   async createWorktree(req: { path: string; branch: string; project?: string }): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/worktrees`, {
+      await this.authedFetch(`${this.base}/worktrees`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -715,25 +748,25 @@ export class DaemonClient {
     const params = new URLSearchParams({ path });
     if (project) params.set("project", project);
     await jsonOrThrow(
-      await fetch(`${this.base}/worktrees?${params.toString()}`, { method: "DELETE" }),
+      await this.authedFetch(`${this.base}/worktrees?${params.toString()}`, { method: "DELETE" }),
     );
   }
 
   async listSkills(): Promise<SkillInfoDto[]> {
-    return jsonOrThrow(await fetch(`${this.base}/skills`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/skills`));
   }
 
   // ── MCP servers ────────────────────────────────────────────────────────────
 
   async listMcpServers(): Promise<McpServerInfo[]> {
     const res = await jsonOrThrow<{ servers: McpServerInfo[] }>(
-      await fetch(`${this.base}/mcp/servers`),
+      await this.authedFetch(`${this.base}/mcp/servers`),
     );
     return res.servers;
   }
 
   async addMcpServer(req: AddMcpServerRequest): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers`, {
+    const res = await this.authedFetch(`${this.base}/mcp/servers`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(req),
@@ -742,33 +775,39 @@ export class DaemonClient {
   }
 
   async removeMcpServer(name: string): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}`, {
+    const res = await this.authedFetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}`, {
       method: "DELETE",
     });
     if (!res.ok) throw new DaemonError(await res.text(), res.status);
   }
 
   async startMcpServer(name: string): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}/start`, {
-      method: "POST",
-    });
+    const res = await this.authedFetch(
+      `${this.base}/mcp/servers/${encodeURIComponent(name)}/start`,
+      {
+        method: "POST",
+      },
+    );
     if (!res.ok) throw new DaemonError(await res.text(), res.status);
   }
 
   async stopMcpServer(name: string): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}/stop`, {
-      method: "POST",
-    });
+    const res = await this.authedFetch(
+      `${this.base}/mcp/servers/${encodeURIComponent(name)}/stop`,
+      {
+        method: "POST",
+      },
+    );
     if (!res.ok) throw new DaemonError(await res.text(), res.status);
   }
 
   async listCheckpoints(): Promise<CheckpointInfo[]> {
-    return jsonOrThrow(await fetch(`${this.base}/checkpoints`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/checkpoints`));
   }
 
   async undoTurns(turnIds: string[]): Promise<UndoTurnResult> {
     return jsonOrThrow(
-      await fetch(`${this.base}/tools/undo-turn`, {
+      await this.authedFetch(`${this.base}/tools/undo-turn`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ turn_ids: turnIds }),
@@ -780,7 +819,7 @@ export class DaemonClient {
 
   async bindWorktree(sessionId: string, req: WorktreeBinding): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -790,7 +829,7 @@ export class DaemonClient {
 
   async unbindWorktree(sessionId: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
         method: "DELETE",
       }),
     );
@@ -798,7 +837,7 @@ export class DaemonClient {
 
   async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/archive`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/archive`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ archived }),
@@ -813,7 +852,7 @@ export class DaemonClient {
    *  the per-origin connection budget must surface as an error, not hang. */
   async runSession(sessionId: string, message: string, signal?: AbortSignal): Promise<RunResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ message }),
@@ -827,7 +866,7 @@ export class DaemonClient {
   /** POST /sessions/:id/cancel — cancel an active run. */
   async cancelRun(sessionId: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/cancel`, {
         method: "POST",
       }),
     );
@@ -873,7 +912,7 @@ export class DaemonClient {
   /** POST /interactions/:id/resolve — answer a pending ask_user_question. */
   async resolveInteraction(requestId: string, answer: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/interactions/${encodeURIComponent(requestId)}/resolve`, {
+      await this.authedFetch(`${this.base}/interactions/${encodeURIComponent(requestId)}/resolve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ answer }),
