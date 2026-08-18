@@ -64,6 +64,11 @@ async fn serve_index() -> Response {
     }
 }
 
+/// 是否嵌入了 index.html（web/dist 是否已构建）——供 run() 启动日志选用打印形态。
+pub fn has_index() -> bool {
+    WebAssets::get("index.html").is_some()
+}
+
 /// 降级页 HTML（设计 §1）：`web/dist` 未构建时 `GET /` 返回的内联最小页面。
 /// 纯 Rust 字符串常量、零外部依赖 —— 降级路径必须不依赖任何嵌入资产存在
 /// （正因为资产缺失才走到这里）。提为纯函数供单元测试直接驱动，避免测试
@@ -295,6 +300,14 @@ mod tests {
         assert!(html.contains("<title>wgenty-code daemon</title>"));
         assert!(html.contains("Web UI not bundled"));
         assert!(html.contains("npm --prefix web run build"));
+    }
+
+    // ---------- has_index（Task 3.2 启动日志） ----------
+
+    #[test]
+    fn has_index_matches_embedded_index_presence() {
+        // 环境无关恒等式：无论本机 web/dist 是否已构建，两者必须一致
+        assert_eq!(has_index(), WebAssets::get("index.html").is_some());
     }
 
     // ---------- spa_fallback 行为（Task 1.5 路由接线） ----------

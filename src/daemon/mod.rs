@@ -100,6 +100,11 @@ pub async fn run(app_state: AppState, port: u16, spawned_by: Option<String>) -> 
     // in `src/tui/util.rs::start_daemon`.
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!("daemon binding to http://{}", addr);
+    if web_ui::has_index() {
+        info!("Web UI: http://{}", addr);
+    } else {
+        info!("Web UI not bundled (web/dist empty at build time)");
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Generate a random API token — saved to a restricted-permission file.
