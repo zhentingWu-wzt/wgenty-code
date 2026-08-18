@@ -98,14 +98,45 @@ function ToolEntry({ m }: { m: DisplayMessage }) {
   return null;
 }
 
-/** Scrolling message list. Auto-scrolls to bottom while streaming. */
+/** Scrolling message list with stick-to-bottom auto-scroll.
+ *
+ * While streaming, `messages` changes every token batch. Naively calling
+ * `scrollIntoView({behavior:"smooth"})` on each change (a) queues overlapping
+ * smooth animations → visible jumping, and (b) hijacks the scroll position so
+ * the user cannot scroll up at all. Instead we track whether the user is
+ * "pinned" near the bottom (within PIN_THRESHOLD px) via a passive scroll
+ * listener, and only follow the stream while pinned — using an instant
+ * scrollTop assignment (no animation to fight the user). Sending a new user
+ * message re-pins the view. */
 export function ChatView() {
   const messages = useSessionStore((s) => s.messages);
   const lastError = useSessionStore((s) => s.lastError);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // The scroll container is the <main> wrapper in App.tsx (overflow-y-auto);
+  // discovered from the bottom sentinel via closest().
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const pinnedRef = useRef(true);
+  const PIN_THRESHOLD = 80;
+
+  // (Re)discover the scroll container when the sentinel mounts (the empty
+  // state renders no sentinel, so discovery must retry once messages exist).
+  useEffect(() => {
+    scrollerRef.current = bottomRef.current?.closest("main") ?? null;
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_THRESHOLD;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [messages.length > 0]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    // A fresh user message means a new turn is starting — re-pin so the
+    // response follows even if the user had scrolled up to re-read.
+    if (messages[messages.length - 1]?.role === "user") pinnedRef.current = true;
+    const el = scrollerRef.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [messages, lastError]);
 
   if (messages.length === 0) {

@@ -47,6 +47,10 @@ export function QuestionModal({ client }: { client: DaemonClient }) {
     if (otherText.trim()) submit(otherText.trim());
   };
 
+  // Submit accepts either a picked option or the free-text "Other" answer —
+  // a typed answer alone (no option clicked) must be submittable.
+  const answer = selected ?? (otherText.trim() || null);
+
   // 布局内嵌横幅（App.tsx 中置于聊天区与输入框之间）：不遮挡聊天内容，
   // 选项过多时卡片内部滚动（max-h-[50dvh] 防止过度压缩聊天区）。
   return (
@@ -85,12 +89,17 @@ export function QuestionModal({ client }: { client: DaemonClient }) {
           placeholder="Other…"
           value={otherText}
           onChange={(e) => setOtherText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && onOther()}
+          // IME guard (same as Composer): while composing (Chinese pinyin
+          // etc.) Enter confirms the candidate, not the submission.
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === "Enter") onOther();
+          }}
           disabled={submitting}
         />
       </div>
       <div className="flex justify-end gap-2">
-        <Button onClick={() => selected && submit(selected)} disabled={!selected || submitting}>
+        <Button onClick={() => answer && submit(answer)} disabled={!answer || submitting}>
           Submit
         </Button>
       </div>
