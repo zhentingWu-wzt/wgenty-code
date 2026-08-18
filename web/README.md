@@ -79,6 +79,30 @@ If you used a custom `--port`, set it before starting vite:
 DAEMON_PORT=9000 npm run dev
 ```
 
+## Run it (daemon-hosted)
+
+The daemon can also serve the built web UI directly — no Vite dev server, no
+token copying:
+
+```bash
+npm --prefix web run build
+cargo run --features daemon -- daemon --port 8371
+```
+
+Then open http://127.0.0.1:8371 in a browser. The page is served same-origin
+by the daemon and obtains its bearer token automatically via
+`GET /auth/bootstrap`, so no manual token step is needed.
+
+Notes:
+
+- When the UI is embedded, the daemon startup log prints
+  `Web UI: http://127.0.0.1:<port>`.
+- If `web/dist` was empty at build time (UI not bundled), the log prints
+  `Web UI not bundled (web/dist empty at build time)` and `GET /` returns a
+  degraded placeholder page instead.
+- The Vite dev-server workflow above (`npm run dev`) remains the default path
+  for UI development with hot reload.
+
 ## Scripts
 
 | Command             | What it does                           |
