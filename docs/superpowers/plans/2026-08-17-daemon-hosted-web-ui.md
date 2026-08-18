@@ -2,6 +2,7 @@
 change: daemon-hosted-web-ui
 design-doc: docs/superpowers/specs/2026-08-17-daemon-hosted-web-ui-design.md
 base-ref: 4b7bfd89cac6d308213cc8db95a0325c0947e1f4
+archived-with: 2026-08-18-daemon-hosted-web-ui
 ---
 
 # 实施计划：Daemon-Hosted Web UI

@@ -3,7 +3,8 @@ comet_change: daemon-hosted-web-ui
 role: technical-design
 canonical_spec: openspec
 date: 2026-08-17
-status: approved
+archived-with: 2026-08-18-daemon-hosted-web-ui
+status: final
 ---
 
 # Daemon-Hosted Web UI — 深度设计
