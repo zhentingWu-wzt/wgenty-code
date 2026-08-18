@@ -23,6 +23,7 @@ import { PreviewPanel } from "./features/files/PreviewPanel";
 import { DiffView } from "./features/scm/DiffView";
 import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
+import { setSkillCommands } from "./components/slashCommands";
 import { sessionMessagesToDisplay } from "./agent/sessionLoad";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePermissionModeSync } from "./hooks/usePermissionModeSync";
@@ -167,6 +168,22 @@ export function App() {
 
   // sessionManager → uiStore.openTabs 单向同步（激活补开 tab、删除剪 tab）。
   useEffect(() => startUiSync(), []);
+
+  // Skill slash-command hints: fetch once at bootstrap and register them in
+  // the composer's `/` menu (e.g. `/comet`). Best-effort — a daemon hiccup
+  // just leaves the four built-in commands.
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .listSkills()
+      .then((skills) => {
+        if (!cancelled) setSkillCommands(skills);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   // Warn before unloading the page while any session is mid-turn. The run
   // itself lives on the daemon (closing the tab will not kill it), but leaving
