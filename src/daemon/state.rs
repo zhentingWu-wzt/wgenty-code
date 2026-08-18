@@ -632,7 +632,11 @@ pub struct DaemonState {
     /// (`127.0.0.1:<port>` / `localhost:<port>`). `None` until set — the
     /// bootstrap endpoint fail-closes while unset. Same RwLock shape as
     /// `api_token` for consistency.
-    bind_port: std::sync::RwLock<Option<u16>>,
+    /// `(port, lan_exposed)` of the bound listener (`None` until
+    /// [`DaemonState::set_bind`]). `lan_exposed` marks a non-loopback bind
+    /// (`--host 0.0.0.0`), which widens the web-UI bootstrap same-origin
+    /// allowlist to private-IP hosts.
+    bind: std::sync::RwLock<Option<(u16, bool)>>,
     /// Broadcast hub for daemon-wide (cross-project) global events
     /// (`GlobalEvent` envelope). Independent from `session_event_hub` so
     /// high-frequency session deltas can't starve global events (design §3.1).
@@ -690,15 +694,16 @@ impl DaemonState {
             .clone()
     }
 
-    /// Record the port the listener actually bound to. Called once after
+    /// Record `(port, lan_exposed)` of the listener. Called once after
     /// `TcpListener::bind` succeeds in `run()` (near `set_api_token`).
-    pub fn set_bind_port(&self, port: u16) {
-        *self.bind_port.write().expect("bind port lock poisoned") = Some(port);
+    pub fn set_bind(&self, port: u16, lan_exposed: bool) {
+        *self.bind.write().expect("bind lock poisoned") = Some((port, lan_exposed));
     }
 
-    /// Port the listener bound to (`None` until [`DaemonState::set_bind_port`]).
-    pub fn current_bind_port(&self) -> Option<u16> {
-        *self.bind_port.read().expect("bind port lock poisoned")
+    /// `(port, lan_exposed)` the listener bound to (`None` until
+    /// [`DaemonState::set_bind`]).
+    pub fn current_bind(&self) -> Option<(u16, bool)> {
+        *self.bind.read().expect("bind lock poisoned")
     }
 
     pub async fn new(app_state: AppState) -> Self {
@@ -1149,7 +1154,7 @@ impl DaemonState {
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             api_token: std::sync::RwLock::new(String::new()),
-            bind_port: std::sync::RwLock::new(None),
+            bind: std::sync::RwLock::new(None),
             active_clients: Arc::new(ActiveClientTracker::new()),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             http_client,

@@ -92,7 +92,11 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set) => ({
   theme: readStoredTheme(),
-  leftCollapsed: false,
+  // 移动端（<md，768px）默认收起左栏：抽屉展开态是 fixed 遮罩覆盖，首屏
+  // 糊脸体验差；桌面端保持默认展开。
+  leftCollapsed:
+    typeof window !== "undefined" &&
+    window.matchMedia("(max-width: 767px)").matches,
   leftWidth: 256,
   rightPanel: null,
 

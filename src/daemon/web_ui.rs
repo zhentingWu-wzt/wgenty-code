@@ -121,10 +121,46 @@ async fn serve_asset(axum::extract::Path(path): axum::extract::Path<String>) -> 
         .into_response()
 }
 
-/// host:port 是否 ∈ {`127.0.0.1:<port>`, `localhost:<port>`}（设计 §2
-/// 白名单）。接收已解析出的 authority 部分（无 scheme、无路径）。
-fn is_allowed_host_port(host_port: &str, port: u16) -> bool {
-    host_port == format!("127.0.0.1:{port}") || host_port == format!("localhost:{port}")
+/// host:port 是否在白名单内（设计 §2）。接收已解析出的 authority 部分
+/// （无 scheme、无路径）。
+///
+/// 白名单两档：
+/// - 始终允许：`127.0.0.1:<port>`、`localhost:<port>`（`[::1]` 归 LAN 档）
+/// - `lan_exposed`（`--host 0.0.0.0` 等非回环绑定）追加：任何**字面量私网
+///   IP**（v4 10/8、172.16/12、192.168/16、169.254/16；v6 ULA fc00::/7、
+///   链路本地 fe80::/10）——手机通过局域网 IP 访问嵌入式 Web UI 的场景。
+///
+/// 域名一律拒绝：DNS rebinding 攻击者把 `attacker.example` 解析到本机 IP，
+/// 但浏览器发出的 Host/Origin 仍携带域名而非 IP，无法冒充字面量私网 IP。
+fn is_allowed_host_port(host_port: &str, port: u16, lan_exposed: bool) -> bool {
+    let Some((host, port_str)) = host_port.rsplit_once(':') else {
+        return false;
+    };
+    if port_str != port.to_string() {
+        return false;
+    }
+    if host == "127.0.0.1" || host == "localhost" {
+        return true;
+    }
+    if !lan_exposed {
+        return false;
+    }
+    // Strip IPv6 bracket form (`[fe80::1]` → `fe80::1`) then require a literal
+    // private/loopback address.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    match bare.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            let seg = ip.segments()[0];
+            ip.is_loopback()
+                || (seg & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (seg & 0xffc0) == 0xfe80 // link-local fe80::/10
+        }
+        Err(_) => false,
+    }
 }
 
 /// 设计 §2：三检查全部通过才放行。
@@ -140,10 +176,11 @@ fn is_same_origin_request(
     sec_fetch_site: Option<&str>,
     host: Option<&str>,
     port: u16,
+    lan_exposed: bool,
 ) -> bool {
     // 检查 3（必查）：Host 防 DNS rebinding
     let Some(host) = host else { return false };
-    if !is_allowed_host_port(host, port) {
+    if !is_allowed_host_port(host, port, lan_exposed) {
         return false;
     }
     // 检查 1（可选）：Origin 的 host:port 必须同源。Origin 形如
@@ -155,7 +192,7 @@ fn is_same_origin_request(
             .map(|(_, rest)| rest)
             .unwrap_or(origin);
         let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
-        if !is_allowed_host_port(authority, port) {
+        if !is_allowed_host_port(authority, port, lan_exposed) {
             return false;
         }
     }
@@ -181,15 +218,16 @@ async fn bootstrap_token(
     axum::extract::State(state): axum::extract::State<Arc<DaemonState>>,
 ) -> Response {
     let same_origin = state
-        .current_bind_port()
-        // bind_port 在 run() bind 成功后设置；路由已可达却读不到端口属
-        // 于初始化窗口异常，fail-closed
-        .map(|port| {
+        .current_bind()
+        // bind 在 run() bind 成功后设置；路由已可达却读不到端口属于
+        // 初始化窗口异常，fail-closed
+        .map(|(port, lan_exposed)| {
             is_same_origin_request(
                 headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()),
                 headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()),
                 headers.get(header::HOST).and_then(|v| v.to_str().ok()),
                 port,
+                lan_exposed,
             )
         })
         .unwrap_or(false);
@@ -393,6 +431,7 @@ mod tests {
             Some("same-origin"),
             Some("127.0.0.1:8371"),
             PORT,
+            false,
         ));
         // localhost 变体同样放行
         assert!(is_same_origin_request(
@@ -400,6 +439,7 @@ mod tests {
             Some("same-origin"),
             Some("localhost:8371"),
             PORT,
+            false,
         ));
         // Sec-Fetch-Site=none：用户直接在地址栏打开 URL，属合法首次加载
         assert!(is_same_origin_request(
@@ -407,6 +447,7 @@ mod tests {
             Some("none"),
             Some("127.0.0.1:8371"),
             PORT,
+            false,
         ));
     }
 
@@ -418,13 +459,15 @@ mod tests {
             None,
             None,
             Some("127.0.0.1:8371"),
-            PORT
+            PORT,
+            false
         ));
         assert!(is_same_origin_request(
             None,
             None,
             Some("localhost:8371"),
-            PORT
+            PORT,
+            false
         ));
         // 只有 Origin 缺失
         assert!(is_same_origin_request(
@@ -432,6 +475,7 @@ mod tests {
             Some("same-origin"),
             Some("127.0.0.1:8371"),
             PORT,
+            false,
         ));
         // 只有 Sec-Fetch-Site 缺失
         assert!(is_same_origin_request(
@@ -439,6 +483,7 @@ mod tests {
             None,
             Some("localhost:8371"),
             PORT,
+            false,
         ));
     }
 
@@ -450,6 +495,7 @@ mod tests {
             Some("cross-site"),
             Some("127.0.0.1:8371"),
             PORT,
+            false,
         ));
         // 即使其余头全过，Origin 单独越界即拒
         assert!(!is_same_origin_request(
@@ -457,6 +503,7 @@ mod tests {
             Some("same-origin"),
             Some("127.0.0.1:8371"),
             PORT,
+            false,
         ));
     }
 
@@ -469,6 +516,7 @@ mod tests {
             Some("same-origin"),
             Some("attacker.example"),
             PORT,
+            false,
         ));
         // Host 单独越界（Origin 合法）也拒
         assert!(!is_same_origin_request(
@@ -476,6 +524,7 @@ mod tests {
             Some("same-origin"),
             Some("attacker.example"),
             PORT,
+            false,
         ));
         // Host 缺失即拒：无法确认访问目标
         assert!(!is_same_origin_request(
@@ -483,6 +532,7 @@ mod tests {
             Some("same-origin"),
             None,
             PORT,
+            false,
         ));
     }
 
@@ -494,6 +544,7 @@ mod tests {
             Some("cross-site"),
             Some("127.0.0.1:8371"),
             PORT,
+            false,
         ));
         // same-site 也不行：同站≠同源，端口不同即不同源
         assert!(!is_same_origin_request(
@@ -501,6 +552,101 @@ mod tests {
             Some("same-site"),
             Some("127.0.0.1:8371"),
             PORT,
+            false,
+        ));
+    }
+
+    #[test]
+    fn same_origin_predicate_lan_mode_admits_private_ip_hosts() {
+        // --host 0.0.0.0：手机经局域网 IP（192.168.x.x 等）访问嵌入式 Web UI
+        assert!(is_same_origin_request(
+            Some("http://192.168.1.5:8371"),
+            Some("same-origin"),
+            Some("192.168.1.5:8371"),
+            PORT,
+            true,
+        ));
+        // 地址栏直接打开（none）
+        assert!(is_same_origin_request(
+            None,
+            Some("none"),
+            Some("10.0.0.8:8371"),
+            PORT,
+            true,
+        ));
+        // 其他私网段与 IPv6 ULA / [::1]
+        assert!(is_same_origin_request(
+            None,
+            None,
+            Some("172.16.0.2:8371"),
+            PORT,
+            true,
+        ));
+        assert!(is_same_origin_request(
+            None,
+            None,
+            Some("[fd00::1234]:8371"),
+            PORT,
+            true,
+        ));
+        assert!(is_same_origin_request(
+            None,
+            None,
+            Some("[::1]:8371"),
+            PORT,
+            true,
+        ));
+        // 回环白名单在 LAN 模式下依然有效
+        assert!(is_same_origin_request(
+            None,
+            None,
+            Some("localhost:8371"),
+            PORT,
+            true,
+        ));
+    }
+
+    #[test]
+    fn same_origin_predicate_lan_mode_still_rejects_hostnames_and_public_ips() {
+        // DNS rebinding：域名（哪怕解析到本机）不能冒充字面量 IP
+        assert!(!is_same_origin_request(
+            Some("http://attacker.example:8371"),
+            Some("same-origin"),
+            Some("attacker.example:8371"),
+            PORT,
+            true,
+        ));
+        // 公网 IP 不放行：--host 0.0.0.0 面向局域网，不鼓励暴露公网
+        assert!(!is_same_origin_request(
+            None,
+            None,
+            Some("8.8.8.8:8371"),
+            PORT,
+            true,
+        ));
+        // 端口不匹配
+        assert!(!is_same_origin_request(
+            None,
+            None,
+            Some("192.168.1.5:9999"),
+            PORT,
+            true,
+        ));
+        // 跨源 fetch 元数据标记在 LAN 模式下照旧拒绝
+        assert!(!is_same_origin_request(
+            Some("http://192.168.1.5:8371"),
+            Some("cross-site"),
+            Some("192.168.1.5:8371"),
+            PORT,
+            true,
+        ));
+        // 回环模式（默认）下私网 IP 不放行：白名单必须显式开启
+        assert!(!is_same_origin_request(
+            None,
+            None,
+            Some("192.168.1.5:8371"),
+            PORT,
+            false,
         ));
     }
 
@@ -526,7 +672,7 @@ mod tests {
             root.join("projects.json"),
         );
         let state = Arc::new(state);
-        state.set_bind_port(PORT);
+        state.set_bind(PORT, false);
         state.set_api_token(BOOTSTRAP_TEST_TOKEN.to_string());
         let (health, protected) =
             crate::daemon::routes::create_routers(state, BOOTSTRAP_TEST_TOKEN.to_string());

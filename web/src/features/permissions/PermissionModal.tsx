@@ -78,33 +78,37 @@ function ModalShell({
   rule: string;
   onChoose: (d: PermissionDecision) => void;
 }) {
+  // 底部停靠卡片而非全屏遮罩弹窗：审批需要的上下文（正在执行的工具、
+  // 对话上文）保持可见可滚动，卡片停靠在输入框上方（bottom-8 避开 h-6
+  // 状态栏），超高内容在卡片内部滚动。
   return (
     <div
       role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      aria-label="Permission required"
+      className="fixed bottom-8 left-1/2 z-50 flex max-h-[60dvh] w-[480px] max-w-[calc(100%-16px)] -translate-x-1/2 flex-col overflow-y-auto rounded-lg border border-warning/50 bg-popover p-4 shadow-2xl"
     >
-      <div className="w-[480px] max-w-[90%] rounded-lg border border-border bg-popover p-4">
-        <div className="mb-2 text-[15px] font-semibold text-warning">Permission required</div>
-        <div className="mb-1 font-mono text-primary">{tool}</div>
-        <p className="mb-1.5 leading-relaxed">{reason}</p>
-        <p className="mb-3">
-          <code className="rounded-sm bg-background px-1.5 py-0.5 font-mono text-[12px] text-muted-foreground">
-            {rule}
-          </code>
-        </p>
-        <p className="mb-3 text-[12px] text-muted-foreground">
-          Approvals are global — they apply to all sessions.
-        </p>
-        <div className="flex justify-end gap-2">
-          <Button onClick={() => onChoose("allowOnce")}>Allow once</Button>
-          <Button variant="outline" onClick={() => onChoose("alwaysAllow")}>
-            Always allow
-          </Button>
-          <Button variant="destructive" onClick={() => onChoose("deny")}>
-            Deny
-          </Button>
-        </div>
+      <div className="mb-2 flex items-center gap-1.5 text-[15px] font-semibold text-warning">
+        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-warning" />
+        Permission required
+      </div>
+      <div className="mb-1 font-mono text-primary [overflow-wrap:anywhere]">{tool}</div>
+      <p className="mb-1.5 leading-relaxed">{reason}</p>
+      <p className="mb-3">
+        <code className="rounded-sm bg-background px-1.5 py-0.5 font-mono text-[12px] text-muted-foreground [overflow-wrap:anywhere]">
+          {rule}
+        </code>
+      </p>
+      <p className="mb-3 text-[12px] text-muted-foreground">
+        Approvals are global — they apply to all sessions.
+      </p>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button onClick={() => onChoose("allowOnce")}>Allow once</Button>
+        <Button variant="outline" onClick={() => onChoose("alwaysAllow")}>
+          Always allow
+        </Button>
+        <Button variant="destructive" onClick={() => onChoose("deny")}>
+          Deny
+        </Button>
       </div>
     </div>
   );

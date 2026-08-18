@@ -55,7 +55,9 @@ const PANEL_TITLE: Record<RightPanelId, string> = {
   config: "Config",
 };
 
-/** 右栏：36px activity bar + 可切换面板。点已激活图标收起（uiStore.toggleRightPanel）。 */
+/** 右栏：36px activity bar + 可切换面板。点已激活图标收起（uiStore.toggleRightPanel）。
+ * 移动端（<md）面板为 fixed 覆盖抽屉（对齐 LeftSidebar 模式），不再内联
+ * 挤压聊天列 —— 375px 屏上 w-72 内联会把聊天区压到 ~40px。 */
 export function RightRail({ client }: { client: DaemonClient }) {
   const rightPanel = useUiStore((s) => s.rightPanel);
   const toggleRightPanel = useUiStore((s) => s.toggleRightPanel);
@@ -63,7 +65,13 @@ export function RightRail({ client }: { client: DaemonClient }) {
   return (
     <div className="flex shrink-0 border-l border-border">
       {rightPanel && (
-        <div data-testid="right-panel-host" className="flex w-72 flex-col bg-sidebar">
+        <div
+          data-testid="right-panel-host"
+          className={cn(
+            "flex w-72 flex-col bg-sidebar",
+            "max-md:fixed max-md:bottom-6 max-md:right-9 max-md:top-10 max-md:z-40 max-md:border-l max-md:border-border max-md:shadow-xl",
+          )}
+        >
           <div className="flex h-9 shrink-0 items-center border-b border-border px-3 text-[12px] font-semibold">
             {PANEL_TITLE[rightPanel]}
           </div>

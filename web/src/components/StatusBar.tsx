@@ -91,7 +91,9 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
         </span>
       )}
       {workRoot && (
-        <span className="shrink-0 font-mono" title={workRoot}>
+        // Full worktree paths overflow the narrow phone status bar (<md);
+        // desktop keeps the full path with a hover tooltip.
+        <span className="shrink-0 font-mono max-md:hidden" title={workRoot}>
           {workRoot}
         </span>
       )}

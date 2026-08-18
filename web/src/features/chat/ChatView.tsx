@@ -49,6 +49,11 @@ const MARKDOWN_CLASSES = cn(
   "[&_a]:text-primary [&_a]:no-underline [&_a:hover]:underline",
   "[&_blockquote]:my-2 [&_blockquote]:border-l-[3px] [&_blockquote]:border-border [&_blockquote]:py-0.5 [&_blockquote]:pl-3.5 [&_blockquote]:text-muted-foreground",
   "[&_code]:rounded-sm [&_code]:bg-background [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em]",
+  // 移动端防溢出：内联 code（长路径/命令）与链接必须可断行，否则撑出
+  // 页面级横向滚动条；表格改为块级 + 内部横滚（display:block 后内部仍按
+  // 匿名 table 盒渲染，列对齐保留），宽表不再撑破布局。
+  "[&_code]:[overflow-wrap:anywhere] [&_a]:break-all",
+  "[&_table]:block [&_table]:overflow-x-auto [&_table]:w-max [&_table]:max-w-full",
   "[&_pre]:my-2.5 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:border-border [&_pre]:bg-background! [&_pre]:px-3.5 [&_pre]:py-2.5",
   "[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-[0.82em] [&_pre_code]:leading-normal",
   "[&_table]:my-2.5 [&_table]:border-collapse [&_table]:text-[0.88em]",
