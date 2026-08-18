@@ -2,7 +2,15 @@
 # 多阶段构建：Wgenty Code Rust 容器镜像
 # ==========================================
 
-# 阶段 1: 构建阶段
+# 阶段 1: Web UI 构建（release 模式下 rust-embed 编译期嵌入 web/dist）
+FROM node:20-bookworm-slim AS web-builder
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
+# 阶段 2: Rust 构建阶段
 # Pin to the rolling stable bookworm image. Specific minors like 1.97 may not
 # exist on Docker Hub yet (or ever); `1-bookworm` tracks current stable Rust.
 FROM rust:1-bookworm AS builder
@@ -24,6 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制依赖文件
 COPY Cargo.toml Cargo.lock ./
 
+# build.rs（创建 web/dist 占位、声明 rerun-if-changed）
+COPY build.rs ./
+
+# Web UI 产物：必须在 cargo build 之前就位（编译期嵌入）
+COPY --from=web-builder /web/dist ./web/dist
+
 # 复制源代码
 COPY src ./src
 
@@ -37,7 +51,7 @@ COPY locales ./locales
 RUN cargo build --release --bin wgenty-code
 
 # ==========================================
-# 阶段 2: 运行时阶段（最小镜像）
+# 阶段 3: 运行时阶段（最小镜像）
 FROM debian:bookworm-slim
 
 LABEL maintainer="wgenty-code"
