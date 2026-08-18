@@ -32,5 +32,5 @@
 ## 6. 端到端验证
 
 - [ ] 6.1 手动 E2E：`npm --prefix web run build` → `cargo run --features daemon -- daemon` → 浏览器打开 daemon 地址完成流式对话、权限弹窗、会话列表
-- [ ] 6.2 降级启动：无 dist 时 daemon 正常、API 可用、日志提示未打包
+- [x] 6.2 降级启动：无 dist 时 daemon 正常、API 可用、日志提示未打包
 - [ ] 6.3 dev 回归：`npm run dev` 工作流不受影响
