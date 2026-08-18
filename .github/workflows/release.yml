@@ -92,6 +92,20 @@ jobs:
               f.write(content)
           print(f'Set Cargo.toml version to {version} (from tag {raw})')
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI (embedded into the binary at compile time)
+        # rust-embed embeds web/dist during `cargo build --release`; skipping
+        # this leaves only the .gitkeep placeholder and the shipped binary
+        # reports "Web UI not bundled" on startup.
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+
       - name: Build Release
         run: cargo build --release --target ${{ matrix.target }} ${{ matrix.bundled_sqlite }}
 
