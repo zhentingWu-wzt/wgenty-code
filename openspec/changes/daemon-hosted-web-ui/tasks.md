@@ -21,7 +21,7 @@
 ## 4. Web 客户端适配（TS）
 
 - [x] 4.1 `resolveDaemonDirect` 扩展（`web/src/api/client.ts`）：`/__daemon-info` 不可用时尝试同源 `GET /auth/bootstrap`，成功返回 `{ base: origin + "/api/v1", token }`；失败返回 null（dev/旧 daemon 行为不变）
-- [ ] 4.2 `DaemonClient` 受保护调用附加凭证：引入内部 authed-fetch 包装，token 可用时统一注入 `Authorization`（`this.base` 相对路径调用全量覆盖；`fetchStream`/wsChannel 经 4.1 自动获得）
+- [x] 4.2 `DaemonClient` 受保护调用附加凭证：引入内部 authed-fetch 包装，token 可用时统一注入 `Authorization`（`this.base` 相对路径调用全量覆盖；`fetchStream`/wsChannel 经 4.1 自动获得）
 - [ ] 4.3 vitest：bootstrap 解析回退链、authed 头注入、无 bootstrap 时零行为变化
 
 ## 5. 构建流水线与文档
