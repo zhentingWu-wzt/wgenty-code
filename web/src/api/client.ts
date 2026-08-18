@@ -110,8 +110,14 @@ export interface DaemonDirectInfo {
  * alone exceed the budget and every later fetch (send, stop, health) queues
  * forever, wedging the page. Direct streams get their own per-origin budget
  * on 127.0.0.1:<port>. Resolved fresh per call so a daemon restart (new
- * token/port) is picked up on reconnect. Returns null outside the vite dev
- * server (e.g. desktop shell) → callers fall back to the same-origin proxy.
+ * token/port) is picked up on reconnect.
+ *
+ * Resolution chain: vite dev exposes `/__daemon-info` (direct 127.0.0.1:<port>
+ * origin); when the daemon hosts the bundle itself there is no vite middleware,
+ * so the same-origin `GET /auth/bootstrap` endpoint supplies the token and the
+ * base is `location.origin + /api/v1`. Returns null when neither is available
+ * (old daemon, desktop shell, bootstrap failure) → callers fall back to the
+ * same-origin proxy.
  *
  * Also used by the WebSocket push channel (wsChannel) to derive the direct
  * `ws://` URL (token rides the `?token=` query — browser WebSocket APIs
@@ -120,12 +126,25 @@ export interface DaemonDirectInfo {
 export async function resolveDaemonDirect(): Promise<DaemonDirectInfo | null> {
   try {
     const res = await fetch("/__daemon-info");
-    if (!res.ok) return null;
-    const info = (await res.json()) as { port?: number; token?: string };
-    if (typeof info.port !== "number" || !info.token) return null;
-    return { base: `http://127.0.0.1:${info.port}/api/v1`, token: info.token };
+    if (res.ok) {
+      const info = (await res.json()) as { port?: number; token?: string };
+      if (typeof info.port === "number" && info.token) {
+        return { base: `http://127.0.0.1:${info.port}/api/v1`, token: info.token };
+      }
+    }
+  } catch { /* fall through */ }
+  // __daemon-info 不可用（hosted 模式无 vite 中间件）。dev 下不尝试：vite dev server
+  // 会对未知路径回退返回 index.html（appType: "spa"），徒增一次无效往返。
+  if (import.meta.env.DEV) return null;
+  try {
+    const res = await fetch("/auth/bootstrap");
+    if (!res.ok) return null;                       // 旧 daemon：404 → null → 现行为
+    const info = (await res.json()) as { token?: string };
+    if (!info.token) return null;
+    // 绝对地址保证 wsChannel 的 ws:// 推导成立（设计 §3）
+    return { base: location.origin + "/api/v1", token: info.token };
   } catch {
-    return null;
+    return null;                                    // 客户端 bootstrap 失败 → 回退现行为（错误处理表）
   }
 }
 
