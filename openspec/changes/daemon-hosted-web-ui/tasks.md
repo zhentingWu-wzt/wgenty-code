@@ -16,7 +16,7 @@
 ## 3. Daemon 测试与启动日志（Rust）
 
 - [x] 3.1 托管边界测试：index 可达、未知 `/api/v1/*` 返回 404 JSON 非 HTML、SPA 深链 fallback、缓存头正确、dist 为空时降级页
-- [ ] 3.2 启动日志：正常打印 `Web UI: http://127.0.0.1:<port>`；降级打印未打包提示
+- [x] 3.2 启动日志：正常打印 `Web UI: http://127.0.0.1:<port>`；降级打印未打包提示
 
 ## 4. Web 客户端适配（TS）
 
