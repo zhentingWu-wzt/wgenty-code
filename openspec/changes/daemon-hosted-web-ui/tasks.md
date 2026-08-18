@@ -27,7 +27,7 @@
 ## 5. 构建流水线与文档
 
 - [x] 5.1 发布脚本（如有）增加 `npm --prefix web run build` 预构建步骤；确认 `.gitignore` 对 `web/dist` 的处理
-- [ ] 5.2 更新 `web/README.md`（daemon-hosted 运行方式）与根 README（如涉及）
+- [x] 5.2 更新 `web/README.md`（daemon-hosted 运行方式）与根 README（如涉及）
 
 ## 6. 端到端验证
 
