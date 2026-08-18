@@ -2,10 +2,11 @@
 # Build the wgenty-code desktop app (Tauri) with the daemon bundled.
 #
 # Steps:
-#   1. Build the daemon CLI binary (release, host target).
-#   2. Stage it into desktop/src-tauri/binaries/ under the Tauri externalBin
+#   1. Build the web frontend (web/dist) — must run before the release build,
+#      since the daemon embeds web/dist at compile time via rust-embed.
+#   2. Build the daemon CLI binary (release, host target).
+#   3. Stage it into desktop/src-tauri/binaries/ under the Tauri externalBin
 #      naming convention: wgenty-code-<target-triple>[.exe].
-#   3. Build the web frontend (web/dist).
 #   4. cargo tauri build (uses externalBin from tauri.conf.json).
 #
 # Output: desktop/src-tauri/target/release/bundle/
@@ -20,15 +21,15 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) SUFFIX=".exe" ;;
 esac
 
-echo ">> [1/4] Building daemon (release, $TRIPLE)..."
+echo ">> [1/4] Building web frontend..."
+(cd web && npm run build)
+
+echo ">> [2/4] Building daemon (release, $TRIPLE)..."
 cargo build --release
 
-echo ">> [2/4] Staging daemon for Tauri externalBin..."
+echo ">> [3/4] Staging daemon for Tauri externalBin..."
 mkdir -p desktop/src-tauri/binaries
 cp "target/release/wgenty-code$SUFFIX" "desktop/src-tauri/binaries/wgenty-code-$TRIPLE$SUFFIX"
-
-echo ">> [3/4] Building web frontend..."
-(cd web && npm run build)
 
 echo ">> [4/4] Building Tauri app..."
 (cd desktop/src-tauri && cargo tauri build)
