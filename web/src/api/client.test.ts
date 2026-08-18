@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DaemonClient } from "./client";
+import { DaemonClient, resolveDaemonDirect } from "./client";
 
 function mockFetch(payload: unknown, status = 200) {
   const spy = vi.fn().mockResolvedValue(
@@ -107,5 +107,104 @@ describe("DaemonClient worktree binding + archive", () => {
     await client.setSessionArchived("s1", true);
     expect(spy.mock.calls[0][0]).toBe("/api/v1/sessions/s1/archive");
     expect(JSON.parse(spy.mock.calls[0][1].body as string)).toEqual({ archived: true });
+  });
+});
+
+function jsonResponse(payload: unknown, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** Route-based fetch stub: each URL maps to a handler; unmapped URLs throw. */
+function mockFetchRouter(handlers: Record<string, () => Response>) {
+  const spy = vi.fn(async (input: RequestInfo | URL) => {
+    const handler = handlers[String(input)];
+    if (!handler) throw new Error(`unexpected fetch: ${String(input)}`);
+    return handler();
+  });
+  vi.stubGlobal("fetch", spy);
+  return spy;
+}
+
+describe("resolveDaemonDirect fallback chain", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("falls back to same-origin /auth/bootstrap when /__daemon-info is unavailable", async () => {
+    vi.stubEnv("DEV", false);
+    mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({ error: "not found" }, 404),
+      "/auth/bootstrap": () => jsonResponse({ token: "tok-bootstrap" }),
+    });
+    const info = await resolveDaemonDirect();
+    expect(info).toEqual({ base: `${location.origin}/api/v1`, token: "tok-bootstrap" });
+  });
+
+  it("falls back to /auth/bootstrap when the /__daemon-info fetch throws", async () => {
+    vi.stubEnv("DEV", false);
+    mockFetchRouter({
+      "/__daemon-info": () => {
+        throw new Error("connection refused");
+      },
+      "/auth/bootstrap": () => jsonResponse({ token: "tok-bootstrap" }),
+    });
+    const info = await resolveDaemonDirect();
+    expect(info).toEqual({ base: `${location.origin}/api/v1`, token: "tok-bootstrap" });
+  });
+
+  it("returns null when bootstrap responds 404 (old daemon)", async () => {
+    vi.stubEnv("DEV", false);
+    mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({}, 404),
+      "/auth/bootstrap": () => jsonResponse({}, 404),
+    });
+    expect(await resolveDaemonDirect()).toBeNull();
+  });
+
+  it("returns null when the bootstrap fetch throws", async () => {
+    vi.stubEnv("DEV", false);
+    mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({}, 404),
+      "/auth/bootstrap": () => {
+        throw new Error("network down");
+      },
+    });
+    expect(await resolveDaemonDirect()).toBeNull();
+  });
+
+  it("returns null when the bootstrap payload has no token", async () => {
+    vi.stubEnv("DEV", false);
+    mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({}, 404),
+      "/auth/bootstrap": () => jsonResponse({}),
+    });
+    expect(await resolveDaemonDirect()).toBeNull();
+  });
+
+  it("does not attempt bootstrap in vite dev mode", async () => {
+    vi.stubEnv("DEV", true);
+    const spy = mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({}, 404),
+      "/auth/bootstrap": () => jsonResponse({ token: "tok-bootstrap" }),
+    });
+    expect(await resolveDaemonDirect()).toBeNull();
+    expect(spy.mock.calls.map((c) => c[0])).not.toContain("/auth/bootstrap");
+  });
+
+  it("still prefers /__daemon-info when it succeeds", async () => {
+    vi.stubEnv("DEV", false);
+    const spy = mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({ port: 8371, token: "tok-info" }),
+      "/auth/bootstrap": () => jsonResponse({ token: "tok-bootstrap" }),
+    });
+    expect(await resolveDaemonDirect()).toEqual({
+      base: "http://127.0.0.1:8371/api/v1",
+      token: "tok-info",
+    });
+    expect(spy.mock.calls.map((c) => c[0])).not.toContain("/auth/bootstrap");
   });
 });
