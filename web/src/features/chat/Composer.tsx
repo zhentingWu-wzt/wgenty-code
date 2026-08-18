@@ -41,7 +41,12 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
     // Exact slash command → open its modal, don't send.
     const cmd = matchSlashCommand(trimmed);
     if (cmd) {
-      onCommand(cmd);
+      if (cmd.send) {
+        // Skill commands (/skill-name) are agent-side — send as a message.
+        onSend(trimmed);
+      } else {
+        onCommand(cmd);
+      }
       setText("");
       return;
     }
@@ -50,7 +55,11 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
   };
 
   const pick = (cmd: SlashCommand) => {
-    onCommand(cmd);
+    if (cmd.send) {
+      onSend(cmd.name);
+    } else {
+      onCommand(cmd);
+    }
     setText("");
   };
 

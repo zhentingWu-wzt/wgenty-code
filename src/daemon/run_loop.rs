@@ -1323,6 +1323,30 @@ pub(crate) async fn post_run(
         return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
     }
 
+    // Workflow slash-command routing (mirrors the TUI input layer): a
+    // `/comet …` message becomes an explicit workflow-invocation prompt so
+    // the agent deterministically `load_skill`s it, instead of guessing from
+    // raw text. Unknown/built-in slash input passes through untouched (the
+    // model sees the literal message, same as before).
+    let message = if body.message.trim_start().starts_with('/') {
+        let router = tokio::task::block_in_place(|| state.workflow_router());
+        match router.route(body.message.trim_start()) {
+            crate::runtime::command::RouteResult::Workflow {
+                name,
+                command,
+                args,
+            } => crate::runtime::command::workflow_invocation_prompt(
+                &name,
+                &command,
+                &args,
+                body.message.trim_start(),
+            ),
+            _ => body.message.clone(),
+        }
+    } else {
+        body.message.clone()
+    };
+
     let run_id = Uuid::new_v4().to_string();
     let cancel = CancellationToken::new();
     let run = SessionRun {
@@ -1338,7 +1362,7 @@ pub(crate) async fn post_run(
             ));
         }
         let queued = state
-            .enqueue_message(&id, body.message, body.plan_mode)
+            .enqueue_message(&id, message, body.plan_mode)
             .await
             .map_err(|_| {
                 (
@@ -1368,7 +1392,7 @@ pub(crate) async fn post_run(
         Arc::clone(&state),
         id.clone(),
         run_id.clone(),
-        body.message,
+        message,
         body.plan_mode,
         cancel,
     );

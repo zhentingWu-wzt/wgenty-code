@@ -637,6 +637,11 @@ pub struct DaemonState {
     /// (`--host 0.0.0.0`), which widens the web-UI bootstrap same-origin
     /// allowlist to private-IP hosts.
     bind: std::sync::RwLock<Option<(u16, bool)>>,
+
+    /// Lazily-built slash-command router for workflow invocations
+    /// (`/comet …`) on the server-side run path. Populated on the first
+    /// `/`-prefixed run request; disk discovery runs once.
+    workflow_router: std::sync::OnceLock<std::sync::Arc<crate::runtime::command::CommandRouter>>,
     /// Broadcast hub for daemon-wide (cross-project) global events
     /// (`GlobalEvent` envelope). Independent from `session_event_hub` so
     /// high-frequency session deltas can't starve global events (design §3.1).
@@ -704,6 +709,28 @@ impl DaemonState {
     /// [`DaemonState::set_bind`]).
     pub fn current_bind(&self) -> Option<(u16, bool)> {
         *self.bind.read().expect("bind lock poisoned")
+    }
+
+    /// The workflow slash-command router (`/comet …`), built on first use
+    /// from the project root's workflow.yaml / external skill registry —
+    /// the same discovery the TUI performs at startup. Only the comet
+    /// workflow is registered; built-ins stay client-side (web/TUI intercept
+    /// them before the message reaches the daemon).
+    ///
+    /// Performs synchronous disk I/O on the first call — wrap in
+    /// `tokio::task::block_in_place` from async handlers.
+    pub fn workflow_router(&self) -> std::sync::Arc<crate::runtime::command::CommandRouter> {
+        self.workflow_router
+            .get_or_init(|| {
+                let root = self.app_state.settings.storage.working_dir.clone();
+                let mut router = crate::runtime::command::CommandRouter::new(Vec::new());
+                let entries = crate::runtime::command::discover_workflow_entry_commands(&root);
+                if !entries.is_empty() {
+                    router.register_workflow("comet", &entries);
+                }
+                std::sync::Arc::new(router)
+            })
+            .clone()
     }
 
     pub async fn new(app_state: AppState) -> Self {
@@ -1155,6 +1182,7 @@ impl DaemonState {
             session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             api_token: std::sync::RwLock::new(String::new()),
             bind: std::sync::RwLock::new(None),
+            workflow_router: std::sync::OnceLock::new(),
             active_clients: Arc::new(ActiveClientTracker::new()),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             http_client,
