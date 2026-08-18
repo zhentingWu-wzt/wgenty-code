@@ -261,6 +261,21 @@ describe("DaemonClient authedFetch Authorization injection", () => {
     expect(authHeaderFor(spy, "/api/v1/ui/viewers")).toBe("Bearer tok-hosted");
   });
 
+  it("hosted 模式：既有头（viewer token）与注入的 Authorization 合并共存，不丢头", async () => {
+    vi.stubEnv("DEV", false);
+    const url = "/api/v1/agents/self?session_id=s1";
+    const spy = hostedRouter("tok-hosted", {
+      "/api/v1/ui/viewers": () => jsonResponse({ viewer_token: "vt-1" }),
+      [url]: () => jsonResponse({}),
+    });
+    await new DaemonClient().getAgentSelf("s1");
+    const call = spy.mock.calls.find((c) => c[0] === url);
+    expect(call, `expected a fetch to ${url}`).toBeTruthy();
+    const headers = new Headers(call?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer tok-hosted");
+    expect(headers.get("x-wgenty-viewer-token")).toBe("vt-1");
+  });
+
   it("resolveDaemonDirect 为 null 时不注入 Authorization，也不抛错", async () => {
     // dev 模式：__daemon-info 404 → resolveDaemonDirect 直接返回 null。
     vi.stubEnv("DEV", true);
@@ -270,5 +285,39 @@ describe("DaemonClient authedFetch Authorization injection", () => {
     });
     await new DaemonClient().health();
     expect(authHeaderFor(spy, "/api/v1/health")).toBeNull();
+  });
+});
+
+describe("DaemonClient authedFetch 零行为变化", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("dev 形态（__daemon-info 200）：API 调用不再请求 bootstrap，头取自 daemon-info", async () => {
+    vi.stubEnv("DEV", true);
+    const spy = mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({ port: 8371, token: "tok-info" }),
+      "/api/v1/health": () => jsonResponse({ status: "ok" }),
+    });
+    await new DaemonClient().health();
+    const call = spy.mock.calls.find((c) => c[0] === "/api/v1/health");
+    expect(call, "expected a fetch to /api/v1/health").toBeTruthy();
+    expect(new Headers(call?.[1]?.headers).get("authorization")).toBe("Bearer tok-info");
+    expect(spy.mock.calls.map((c) => c[0])).not.toContain("/auth/bootstrap");
+  });
+
+  it("旧 daemon（两端点都 404）：API 调用不注入 Authorization，也不抛错", async () => {
+    vi.stubEnv("DEV", false);
+    const spy = mockFetchRouter({
+      "/__daemon-info": () => jsonResponse({ error: "not found" }, 404),
+      "/auth/bootstrap": () => jsonResponse({ error: "not found" }, 404),
+      "/api/v1/health": () => jsonResponse({ status: "ok" }),
+    });
+    const res = await new DaemonClient().health();
+    expect(res.status).toBe("ok");
+    const call = spy.mock.calls.find((c) => c[0] === "/api/v1/health");
+    expect(call, "expected a fetch to /api/v1/health").toBeTruthy();
+    expect(new Headers(call?.[1]?.headers).get("authorization")).toBeNull();
   });
 });
