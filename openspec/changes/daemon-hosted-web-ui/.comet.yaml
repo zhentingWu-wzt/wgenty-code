@@ -19,3 +19,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/daemon-hosted-web-ui/.comet/handoff/design-context.json
 handoff_hash: 7b7d043f600ce30c301c95853cc57e6483f6bff86c60a89fd37232ee62def57e
+bound_branch: comet/daemon-hosted-web-ui
+review_mode: standard
