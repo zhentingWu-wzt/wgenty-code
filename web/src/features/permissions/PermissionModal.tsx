@@ -78,37 +78,39 @@ function ModalShell({
   rule: string;
   onChoose: (d: PermissionDecision) => void;
 }) {
-  // 底部停靠卡片而非全屏遮罩弹窗：审批需要的上下文（正在执行的工具、
-  // 对话上文）保持可见可滚动，卡片停靠在输入框上方（bottom-8 避开 h-6
-  // 状态栏），超高内容在卡片内部滚动。
+  // 布局内嵌横幅（App.tsx 中置于聊天区与输入框之间，非 fixed 悬浮）：
+  // 出现时聊天区收缩让位而非被遮挡，底部消息保持可滚动可读。
+  // 超高内容（超长 reason/rule）在卡片内部滚动，max-h 上限防止过度压缩聊天。
   return (
     <div
       role="dialog"
       aria-label="Permission required"
-      className="fixed bottom-8 left-1/2 z-50 flex max-h-[60dvh] w-[480px] max-w-[calc(100%-16px)] -translate-x-1/2 flex-col overflow-y-auto rounded-lg border border-warning/50 bg-popover p-4 shadow-2xl"
+      className="flex max-h-[45dvh] shrink-0 flex-col overflow-y-auto border-t border-warning/40 bg-popover px-3 py-2.5"
     >
-      <div className="mb-2 flex items-center gap-1.5 text-[15px] font-semibold text-warning">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[13px] font-semibold text-warning">
         <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-warning" />
         Permission required
       </div>
       <div className="mb-1 font-mono text-primary [overflow-wrap:anywhere]">{tool}</div>
       <p className="mb-1.5 leading-relaxed">{reason}</p>
-      <p className="mb-3">
+      <p className="mb-2">
         <code className="rounded-sm bg-background px-1.5 py-0.5 font-mono text-[12px] text-muted-foreground [overflow-wrap:anywhere]">
           {rule}
         </code>
       </p>
-      <p className="mb-3 text-[12px] text-muted-foreground">
-        Approvals are global — they apply to all sessions.
-      </p>
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button onClick={() => onChoose("allowOnce")}>Allow once</Button>
-        <Button variant="outline" onClick={() => onChoose("alwaysAllow")}>
-          Always allow
-        </Button>
-        <Button variant="destructive" onClick={() => onChoose("deny")}>
-          Deny
-        </Button>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[11px] text-muted-foreground">
+          Approvals are global — they apply to all sessions.
+        </span>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => onChoose("allowOnce")}>Allow once</Button>
+          <Button variant="outline" onClick={() => onChoose("alwaysAllow")}>
+            Always allow
+          </Button>
+          <Button variant="destructive" onClick={() => onChoose("deny")}>
+            Deny
+          </Button>
+        </div>
       </div>
     </div>
   );

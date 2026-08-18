@@ -330,6 +330,11 @@ export function App() {
                   <ChatView />
                 )}
               </main>
+              {/* 权限/问答卡片内嵌在聊天区与输入框之间（非 fixed 悬浮）：
+                  出现时 flex 列让聊天区收缩让位，底部消息可滚动查看，
+                  不遮挡任何内容。仅活跃会话有待处理项时占位。 */}
+              <PermissionModal client={client} />
+              <QuestionModal client={client} />
               <Composer
                 onSend={(text) => {
                   if (!activeId || !activeStore) return;
@@ -349,8 +354,6 @@ export function App() {
                 onCommand={handleCommand}
               />
             </div>
-            <PermissionModal client={client} />
-            <QuestionModal client={client} />
           </SessionStoreContext.Provider>
           <RightRail client={client} />
         </div>

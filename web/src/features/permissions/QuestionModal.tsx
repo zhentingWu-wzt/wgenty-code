@@ -16,12 +16,15 @@ import { Button } from "../../components/ui/button";
  */
 export function QuestionModal({ client }: { client: DaemonClient }) {
   const question = useSessionStore((s) => s.pendingQuestion);
+  const pendingPermission = useSessionStore((s) => s.pendingPermission);
   const clearQuestion = useSessionStore((s) => s.clearQuestion);
   const [selected, setSelected] = useState<string | null>(null);
   const [otherText, setOtherText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  if (!question) return null;
+  // Permission prompts block tool execution and take precedence (见文件头
+  // 注释)：权限待处理时不渲染问题卡，两者不会同时堆叠挤压聊天区。
+  if (!question || pendingPermission) return null;
 
   const submit = async (answer: string) => {
     setSubmitting(true);
@@ -44,19 +47,19 @@ export function QuestionModal({ client }: { client: DaemonClient }) {
     if (otherText.trim()) submit(otherText.trim());
   };
 
-  // 底部停靠卡片而非全屏遮罩弹窗（与 PermissionModal 一致）：问题上下文
-  // 保持可见，选项过多时卡片内部滚动（max-h-[70dvh]）。
+  // 布局内嵌横幅（App.tsx 中置于聊天区与输入框之间）：不遮挡聊天内容，
+  // 选项过多时卡片内部滚动（max-h-[50dvh] 防止过度压缩聊天区）。
   return (
     <div
       role="dialog"
       aria-label="Question"
-      className="fixed bottom-8 left-1/2 z-50 flex max-h-[70dvh] w-[520px] max-w-[calc(100%-16px)] -translate-x-1/2 flex-col overflow-y-auto rounded-lg border border-primary/40 bg-popover p-4 shadow-2xl"
+      className="flex max-h-[50dvh] shrink-0 flex-col overflow-y-auto border-t border-primary/40 bg-popover px-3 py-2.5"
     >
-      <div className="mb-2 flex items-center gap-1.5 text-[15px] font-semibold">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[13px] font-semibold">
         <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary" />
         Question
       </div>
-      <p className="mb-3 text-[13px] leading-relaxed">{question.question}</p>
+      <p className="mb-2 leading-relaxed">{question.question}</p>
       <div className="mb-2 flex flex-col gap-1.5">
         {question.options.map((opt) => (
           <button
