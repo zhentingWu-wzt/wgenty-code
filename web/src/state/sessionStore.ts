@@ -31,9 +31,7 @@ export interface DisplayMessage {
   content: string;
   /** Optional reasoning/extraction trace shown above content. */
   reasoning?: string;
-  /** Tool executions attached to this assistant message (rendered as cards). */
-  toolExecs?: ToolExecution[];
-  /** Tool-role entries (timeline mode): the invoked tool + args while running. */
+  /** Tool-role entries: the invoked tool + args while running. */
   toolName?: string;
   toolArgs?: Record<string, unknown>;
   /** Tool-role entries: final execution result once tool_result arrives. */
@@ -136,11 +134,9 @@ export interface SessionState {
   beginAssistantRound: (round: number) => string;
   /** Append streamed content/reasoning to the assistant message with `id`. */
   appendAssistant: (id: string, ev: StreamEvent) => void;
-  /** Mark the streaming assistant message done and attach tool executions. */
-  attachToolExec: (assistantId: string, exec: ToolExecution) => void;
-  /** Timeline mode: insert a running tool placeholder at its stream position. */
+  /** Insert a running tool placeholder at its stream position. */
   pushToolStart: (name: string, args: Record<string, unknown>) => string;
-  /** Timeline mode: fill a tool placeholder with its execution result. */
+  /** Fill a tool placeholder with its execution result. */
   completeTool: (id: string, exec: ToolExecution) => void;
   finalizeAssistant: (id: string) => void;
   setError: (err: TurnError | null) => void;
@@ -233,13 +229,6 @@ export function createSessionStore() {
             return { ...m, reasoning: (m.reasoning ?? "") + ev.text };
           return m;
         }),
-      })),
-
-    attachToolExec: (assistantId, exec) =>
-      set((s) => ({
-        messages: s.messages.map((m) =>
-          m.id === assistantId ? { ...m, toolExecs: [...(m.toolExecs ?? []), exec] } : m,
-        ),
       })),
 
     pushToolStart: (name, args) => {

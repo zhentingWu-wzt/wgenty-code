@@ -187,21 +187,48 @@ pub async fn run(
 
     info!("daemon listening on http://{}", addr);
 
-    // Thin-client shutdown monitor. Two policies:
+    // Thin-client shutdown monitor. Three policies:
     //   • unowned (manual `wgenty-code daemon`): exit when no thin client is
     //     connected AND no authenticated API request has arrived for
     //     THIN_CLIENT_IDLE_TIMEOUT_SECS. The window starts at daemon boot, so
     //     a daemon that never serves any client also exits instead of
     //     lingering forever; any activity pushes the deadline out.
+    //     Exception: when the embedded web UI is bundled (`web/dist` present
+    //     at build time), the daemon IS the web server — browser tabs close
+    //     and reopen freely, so any idle window would kill the page's backend
+    //     out from under it (including the boot window before the first tab
+    //     opens). Idle auto-exit is disabled entirely; the daemon stops only
+    //     via Ctrl-C or `wgenty-code daemon stop`.
     //   • client-bound (`--spawned-by web|tui|desktop`): exit once the last
     //     client has been gone for CLIENT_BOUND_GRACE_SECS — the daemon
-    //     follows its owner down instead of idling out from under it.
+    //     follows its owner down instead of idling out from under it. A
+    //     hosted-web tab keeps such a daemon alive via its WS while open.
     let active_clients = daemon_state.active_clients.clone();
     let shutdown_notify = daemon_state.shutdown_notify.clone();
     let spawn_owner = spawned_by.clone();
+    // Server mode: unowned daemon with the hosted web UI bundled.
+    let hosted_web = spawn_owner.is_none() && web_ui::has_index();
     let shutdown_signal = async move {
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
+        if hosted_web {
+            info!(
+                "hosting the web UI; idle auto-exit disabled — stop with Ctrl-C \
+                 or `wgenty-code daemon stop`"
+            );
+            tokio::select! {
+                _ = &mut ctrl_c => {
+                    tracing::info!("received SIGINT; initiating graceful shutdown");
+                    active_clients.initiate_shutdown();
+                }
+                // POST /api/v1/shutdown (`wgenty-code daemon stop`).
+                () = shutdown_notify.notified() => {
+                    tracing::info!("shutdown requested via API; initiating graceful shutdown");
+                    active_clients.initiate_shutdown();
+                }
+            }
+            return;
+        }
         let idle_timeout = if spawn_owner.is_some() {
             std::time::Duration::from_secs(crate::daemon::state::CLIENT_BOUND_GRACE_SECS)
         } else {

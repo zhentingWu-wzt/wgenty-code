@@ -42,6 +42,10 @@ export interface CreateSessionOptions {
   daemonId?: string;
   worktree?: WorktreeBinding;
   projectPath?: string | null;
+  /** Set false to create without activating (e.g. bootstrap history restore,
+   * where every restored session would otherwise become the active one — and
+   * thus open a tab via uiSync). Default true. */
+  activate?: boolean;
 }
 
 interface SessionManagerState {
@@ -114,7 +118,7 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
     set((s) => ({
       entries: { ...s.entries, [id]: entry },
       order: [...s.order, id],
-      activeId: id,
+      ...(opts?.activate === false ? {} : { activeId: id }),
     }));
     return id;
   },

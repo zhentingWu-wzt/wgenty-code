@@ -16,7 +16,6 @@ import type { DaemonClient } from "../api/client";
 import { wsChannel } from "../api/wsChannel";
 import { toast } from "sonner";
 import { sessionTitleFromMessage, useSessionManager } from "../state/sessionManager";
-import { useDisplayPrefs, type DisplayMode } from "../state/displayPrefs";
 import type { SessionStore } from "../state/sessionStore";
 import type { SessionEvent, SessionEventKind } from "../api/types";
 import type { ToolExecution } from "./types";
@@ -25,13 +24,12 @@ import type { ToolExecution } from "./types";
 interface PendingTool {
   name: string;
   args: Record<string, unknown>;
-  /** Timeline mode: the store message id of the running placeholder. */
+  /** Store message id of the running placeholder (pushed at tool_start). */
   msgId?: string;
 }
 
 /** Mutable per-turn render state shared with handleEvent. */
 interface RenderCtx {
-  mode: DisplayMode;
   /** id of the current assistant bubble (null until the first text arrives). */
   assistantId: string | null;
   /** Current LLM round number (1-based). */
@@ -237,10 +235,8 @@ export async function runSessionTurn(
   const abort = new AbortController();
   store.getState().registerAbort(abort);
 
-  // Render state for this turn. `mode` is snapshotted at send time so a
-  // mid-turn toggle doesn't scramble an in-flight turn's layout.
+  // Render state for this turn.
   const ctx: RenderCtx = {
-    mode: useDisplayPrefs.getState().mode,
     assistantId: null,
     round: 1,
     boundary: false,
@@ -369,7 +365,6 @@ export async function observeDaemonRun(
   store.getState().registerAbort(abort);
 
   const ctx: RenderCtx = {
-    mode: useDisplayPrefs.getState().mode,
     assistantId: null,
     round: 1,
     boundary: false,
@@ -410,12 +405,12 @@ export async function observeDaemonRun(
 }
 
 /**
- * Ensure a text target bubble exists, splitting LLM rounds in rounds/timeline
- * mode: after a turn_done(tool_calls) boundary, the first text of the next
- * round closes the previous bubble and opens a new one with round+1.
+ * Ensure a text target bubble exists, splitting LLM rounds: after a
+ * turn_done(tool_calls) boundary, the first text of the next round closes the
+ * previous bubble and opens a new one with round+1.
  */
 function openBubbleForText(ctx: RenderCtx, store: SessionStore): void {
-  if (ctx.mode !== "single" && ctx.boundary) {
+  if (ctx.boundary) {
     ctx.boundary = false;
     ctx.round += 1;
     if (ctx.assistantId) store.getState().finalizeAssistant(ctx.assistantId);
@@ -450,14 +445,10 @@ function handleEvent(
     case "tool_start": {
       const name = String(ev.data.name ?? "unknown");
       const args = (ev.data.args as Record<string, unknown>) ?? {};
-      if (ctx.mode === "timeline") {
-        // Timeline mode: the placeholder appears at its stream position so the
-        // user sees the call start (running card) before the result arrives.
-        const msgId = store.getState().pushToolStart(name, args);
-        ctx.pendingTools.push({ name, args, msgId });
-      } else {
-        ctx.pendingTools.push({ name, args });
-      }
+      // The placeholder appears at its stream position so the user sees the
+      // call start (running card) before the result arrives.
+      const msgId = store.getState().pushToolStart(name, args);
+      ctx.pendingTools.push({ name, args, msgId });
       break;
     }
     case "tool_result": {
@@ -476,12 +467,7 @@ function handleEvent(
         },
         response: { success: !content.toLowerCase().startsWith("error"), content },
       };
-      if (ctx.mode === "timeline") {
-        if (pending?.msgId) store.getState().completeTool(pending.msgId, exec);
-      } else {
-        if (!ctx.assistantId) ctx.assistantId = store.getState().beginAssistantRound(ctx.round);
-        store.getState().attachToolExec(ctx.assistantId, exec);
-      }
+      if (pending?.msgId) store.getState().completeTool(pending.msgId, exec);
       break;
     }
     case "turn_done":
