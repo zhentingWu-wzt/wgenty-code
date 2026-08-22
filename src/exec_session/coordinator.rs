@@ -1225,6 +1225,7 @@ mod tests {
                 attempt: 1,
                 kind: crate::org_graph::GraphAuditKind::ProfileResolved,
                 anchor: None,
+                adapted: None,
                 commands: Vec::new(),
                 route: None,
                 profile: Some(crate::org_graph::GraphAuditProfile::Rust),

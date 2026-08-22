@@ -161,8 +161,19 @@ pub struct GraphAuditEvent {
     /// Present on `profile_resolved`; absent from historical events.
     #[serde(default)]
     pub resolved_commands: Option<GraphAuditCommands>,
+    /// Present on `adapted` events; absent from historical events.
+    #[serde(default)]
+    pub adapted: Option<GraphAuditAdaptation>,
     pub budget: Option<Budget>,
     pub timestamp: String,
+}
+
+/// Payload of an anchor-driven plan adaptation audit event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphAuditAdaptation {
+    pub reason: crate::org_graph::AdaptationReason,
+    pub revision_from: u32,
+    pub revision_to: u32,
 }
 
 /// 工作图审计事件类别。
@@ -172,6 +183,7 @@ pub enum GraphAuditKind {
     ProfileResolved,
     AnchorCompleted,
     RouteSelected,
+    Adapted,
 }
 
 /// 已执行的外部锚点类别。
@@ -387,16 +399,6 @@ impl WorkState {
     /// Persist a bounded Work-Graph selected by the trusted coordinator.
     pub(crate) fn set_selected_work_graph(&mut self, plan: WorkGraphPlan) {
         self.selected_work_graph = Some(plan);
-    }
-
-    /// Coordinator-owned plan revision bump (anchor-driven adaptation only).
-    // Wired into node_runtime by the P2 runtime-adaptation task; the pure
-    // rule functions and this setter land separately.
-    #[allow(dead_code)]
-    pub(crate) fn set_selected_work_graph_revision(&mut self, revision: u32) {
-        if let Some(plan) = self.selected_work_graph.as_mut() {
-            plan.revision = revision;
-        }
     }
 
     /// Read all persisted specialist reports when the caller's contract allows
@@ -807,23 +809,6 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    #[test]
-    fn selected_work_graph_revision_updates_persisted_plan() {
-        let mut state = WorkState::default();
-        state.set_selected_work_graph_revision(3);
-        assert!(
-            state.selected_work_graph().is_none(),
-            "revision bump without a plan is a no-op"
-        );
-
-        let plan =
-            crate::org_graph::compose_work_graph(&crate::org_graph::WorkGraphRequest::default())
-                .expect("compose plan");
-        state.set_selected_work_graph(plan);
-        state.set_selected_work_graph_revision(2);
-        assert_eq!(state.selected_work_graph().expect("plan").revision, 2);
-    }
-
     fn exploration_report() -> SpecialistReport {
         SpecialistReport {
             producer: NodeType::Explore,
@@ -909,6 +894,7 @@ mod tests {
             attempt,
             kind,
             anchor: Some(GraphAuditAnchor::Compile),
+            adapted: None,
             commands: vec![AuditCommandRun {
                 command: "cargo check".into(),
                 exit_code: Some(0),
