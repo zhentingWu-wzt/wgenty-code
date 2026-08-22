@@ -28,6 +28,8 @@ pub struct WorkGraphAuditSummary {
     pub escalated_routes: usize,
     /// Number of anchor-driven bounded plan revisions.
     pub plan_adaptations: usize,
+    /// Number of accepted decomposition units (one `decomposed` event each).
+    pub decompositions: usize,
 }
 
 impl WorkGraphAuditSummary {
@@ -62,6 +64,7 @@ impl WorkGraphAuditSummary {
                     _ => {}
                 },
                 GraphAuditKind::Adapted => summary.plan_adaptations += 1,
+                GraphAuditKind::Decomposed => summary.decompositions += 1,
             }
         }
         summary
@@ -135,6 +138,7 @@ mod tests {
                 Some(GraphAuditRoute::Complete),
                 None,
             ),
+            event(GraphAuditKind::Decomposed, None, None, None),
         ];
 
         assert_eq!(
@@ -150,6 +154,7 @@ mod tests {
                 completed_routes: 1,
                 escalated_routes: 0,
                 plan_adaptations: 0,
+                decompositions: 1,
             }
         );
     }

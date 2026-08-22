@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use super::contract::NodeType;
-use super::work_graph_plan::WorkGraphPlan;
+use super::work_graph_plan::{WorkGraphPlan, WorkGraphRequest};
 use crate::agent::coordinator::CoordinatorError;
 use crate::org_graph::contract::ContractDimension;
 
@@ -49,6 +49,15 @@ pub struct WorkState {
     /// replace it.
     #[serde(default)]
     selected_work_graph: Option<WorkGraphPlan>,
+    /// Depth of this Work-Graph instance inside the recursive decomposition
+    /// tree. The root graph is depth 0; only the trusted runtime may raise it
+    /// when launching a child graph (Task 9).
+    #[serde(default)]
+    graph_depth: u32,
+    /// Decomposed child units accepted by the atomic `decompose_node`
+    /// proposal validation. Empty until a proposal passes every check.
+    #[serde(default)]
+    decomposed_units: Vec<DecomposedUnit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,6 +113,32 @@ pub struct ChildGraphRef {
     pub session_id: String,
     /// Root node id of the child Work-Graph instance.
     pub root_node_id: String,
+}
+
+/// One accepted decomposition unit persisted with the parent's WorkState.
+/// Everything here is code-derived from closed-set proposal fields; the
+/// bounded child plan is composed and role-bound before persistence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DecomposedUnit {
+    /// Sequential unit identity inside the parent node (`unit-0`, `unit-1`, …).
+    pub unit_id: String,
+    /// The unit's bounded goal as proposed (≤ `decompose` schema cap).
+    pub goal: String,
+    /// Closed-set composition facts the child plan was composed from.
+    pub request: WorkGraphRequest,
+    /// The code-composed, role-bound child Work-Graph for this unit.
+    pub plan: WorkGraphPlan,
+    /// The child's iteration allocation (split from the parent budget).
+    pub allocation: Budget,
+    /// Closed-set verification facts accepted with the proposal. They are
+    /// executed only by the trusted child-graph launcher (Task 9) — never by
+    /// the proposing agent. `#[serde(default)]` keeps legacy checkpoints
+    /// readable.
+    #[serde(default)]
+    pub verify_commands: Vec<String>,
+    /// Files the child unit is expected to change; empty = no boundary check.
+    #[serde(default)]
+    pub expected_files: Vec<String>,
 }
 
 /// A specialist role's typed report category.
@@ -203,6 +238,8 @@ pub enum GraphAuditKind {
     AnchorCompleted,
     RouteSelected,
     Adapted,
+    /// The node's graph was decomposed into child units (one event per unit).
+    Decomposed,
 }
 
 /// 已执行的外部锚点类别。
@@ -405,6 +442,30 @@ impl WorkState {
     /// Return the code-selected Work-Graph persisted for the active node.
     pub fn selected_work_graph(&self) -> Option<&WorkGraphPlan> {
         self.selected_work_graph.as_ref()
+    }
+
+    /// Depth of this Work-Graph instance in the recursive decomposition tree.
+    /// Root graphs default to 0; legacy checkpoints deserialize to 0.
+    pub fn graph_depth(&self) -> u32 {
+        self.graph_depth
+    }
+
+    /// Trusted runtime setter for the session's graph depth (used when a
+    /// child graph instance is launched).
+    #[allow(dead_code)] // production launch site arrives with Task 9 child execution
+    pub(crate) fn set_graph_depth(&mut self, depth: u32) {
+        self.graph_depth = depth;
+    }
+
+    /// Decomposed child units accepted for the active node's graph.
+    pub fn decomposed_units(&self) -> &[DecomposedUnit] {
+        &self.decomposed_units
+    }
+
+    /// Trusted runtime setter replacing the node's accepted decomposition
+    /// units. Called only after the full atomic proposal validation passed.
+    pub(crate) fn set_decomposed_units(&mut self, units: Vec<DecomposedUnit>) {
+        self.decomposed_units = units;
     }
 
     pub fn graph_child_bindings(&self) -> &[GraphChildBinding] {
@@ -730,6 +791,7 @@ impl WorkState {
         self.human_review = None;
         self.specialist_reports.clear();
         self.selected_work_graph = None;
+        self.decomposed_units.clear();
     }
 
     /// Invalidate every result derived from a prior work-graph pass before a
@@ -760,6 +822,8 @@ impl WorkState {
             specialist_reports: self.specialist_reports.clone(),
             graph_child_bindings: self.graph_child_bindings.clone(),
             selected_work_graph: self.selected_work_graph.clone(),
+            graph_depth: self.graph_depth,
+            decomposed_units: self.decomposed_units.clone(),
         }
     }
 }
@@ -954,6 +1018,14 @@ mod tests {
             "\"profile_resolved\""
         );
         assert_eq!(
+            serde_json::to_string(&GraphAuditKind::AnchorCompleted).unwrap(),
+            "\"anchor_completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GraphAuditKind::Decomposed).unwrap(),
+            "\"decomposed\""
+        );
+        assert_eq!(
             serde_json::to_string(&GraphAuditAnchor::Compile).unwrap(),
             "\"compile\""
         );
@@ -1100,6 +1172,8 @@ mod tests {
             specialist_reports: Vec::new(),
             graph_child_bindings: Vec::new(),
             selected_work_graph: None,
+            graph_depth: 0,
+            decomposed_units: Vec::new(),
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
@@ -1517,6 +1591,8 @@ mod tests {
             specialist_reports: Vec::new(),
             graph_child_bindings: Vec::new(),
             selected_work_graph: None,
+            graph_depth: 0,
+            decomposed_units: Vec::new(),
         };
         let next = state.inherit_for_new_turn();
         assert_eq!(next.requirement.as_deref(), Some("跨 turn"));

@@ -74,6 +74,14 @@ pub struct NodeRuntime {
     hooks: Arc<dyn SessionHooks>,
 }
 
+impl NodeRuntime {
+    /// Shared coordinator handle for trusted same-crate graph extensions
+    /// (e.g. the atomic `decompose_node` validation in `exec_session::decompose`).
+    pub(crate) fn coordinator(&self) -> &Arc<RwLock<SessionCoordinator>> {
+        &self.coordinator
+    }
+}
+
 /// exec_session::VerifyFailure → org_graph::VerifyFailureKind 投影。
 /// 投影规则：CommandFailed 保留 exit_code + stderr（丢 command 字符串，retry
 /// 决策只需 exit_code 语义）；BoundaryViolation 保留 unexpected_files。
