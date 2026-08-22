@@ -28,7 +28,8 @@ use super::work_graph::{next_step, WorkGraphStep};
 use crate::org_graph::{
     adapt_work_graph, AdaptationOutcome, AuditCommandRun, Budget, CompileResult, GeneratedDiff,
     GraphAuditAdaptation, GraphAuditAnchor, GraphAuditCommands, GraphAuditEvent, GraphAuditKind,
-    GraphAuditProfile, GraphAuditRoute, HumanReview, NodeRegistry, NodeType, TestResult,
+    GraphAuditProfile, GraphAuditRoute, HumanReview, NodeRegistry, NodeType, SpecialistEvidence,
+    SpecialistReport, SpecialistReportKind, TestResult, UnitOutcome,
 };
 use crate::org_graph::{compose_work_graph, WorkGraphRequest};
 
@@ -48,6 +49,24 @@ pub struct NodeVerifyResult {
 pub struct NodeRollbackResult {
     pub rolled_back_to: NodeId,
     pub removed_nodes: Vec<NodeId>,
+}
+
+/// One unit's terminal state after the child-graph launcher finished.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnitRunOutcome {
+    pub unit_id: String,
+    pub passed: bool,
+    pub attempts_used: u32,
+}
+
+/// Aggregate result of executing every decomposed unit of the current node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DecomposedUnitsRunResult {
+    pub outcomes: Vec<UnitRunOutcome>,
+    /// The code-owned parent route after all units reached a terminal state.
+    /// The parent's own anchors remain the final arbiter: unit success never
+    /// completes the parent directly.
+    pub parent_route: WorkGraphStep,
 }
 
 /// Result produced by a complete fixed work-graph pass.
@@ -465,6 +484,160 @@ impl NodeRuntime {
             _ => {}
         }
         Ok(WorkGraphRunResult { next_step })
+    }
+
+    /// Execute every decomposed unit of the current node serially. Each unit
+    /// is a bounded child Work-Graph instance whose anchors run through the
+    /// trusted verification gate; routing never consumes model output. A
+    /// passed unit appends a `(GeneralPurpose, Implementation)` report to the
+    /// coordinator-owned unit-report store; a failed unit only exhausts its
+    /// own allocation and never aborts sibling units. The parent's own
+    /// anchors remain the final arbiter — this method never completes the
+    /// parent node.
+    pub async fn run_decomposed_units(&self) -> Result<DecomposedUnitsRunResult> {
+        let _pass_guard = self.work_graph_gate.lock().await;
+        let (node_id, units) = {
+            let coord = self
+                .coordinator
+                .read()
+                .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+            let node = coord
+                .current_node()
+                .context("run_decomposed_units requires a persisted current node")?;
+            let units = coord.work_state().decomposed_units().to_vec();
+            if units.is_empty() {
+                anyhow::bail!("no decomposed units pending on the current node");
+            }
+            (node.id.clone(), units)
+        };
+
+        let mut outcomes: Vec<UnitRunOutcome> = Vec::with_capacity(units.len());
+        for unit in &units {
+            let mut attempts_used = 0u32;
+            let mut passed = false;
+            let mut last_stderr = String::new();
+            while attempts_used < unit.allocation.max_iter {
+                attempts_used += 1;
+                let expected_paths = unit
+                    .expected_files
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>();
+                let result = self
+                    .verify_gate
+                    .verify_for_work_graph(unit.verify_commands.clone(), expected_paths)
+                    .await
+                    .context("run unit verification anchors")?;
+                let audit_runs: Vec<AuditCommandRun> = result
+                    .commands_run
+                    .iter()
+                    .map(|run| AuditCommandRun {
+                        command: run.cmd.clone(),
+                        exit_code: run.exit_code,
+                        stderr: truncate_audit_stderr(&run.stderr),
+                    })
+                    .collect();
+                if !result.success {
+                    last_stderr = collect_stderr(&result.commands_run);
+                }
+                {
+                    let mut coord = self
+                        .coordinator
+                        .write()
+                        .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+                    let mut event = base_audit_event(
+                        &WorkGraphAuditContext {
+                            node_id: node_id.clone(),
+                            attempt: attempts_used,
+                        },
+                        GraphAuditKind::Decomposed,
+                    );
+                    event.commands = audit_runs;
+                    event.parent_node_id = Some(node_id.clone());
+                    coord.work_state_mut().append_graph_audit(event);
+                }
+                if result.success {
+                    passed = true;
+                    break;
+                }
+            }
+
+            let summary = if passed {
+                format!(
+                    "unit {} passed its anchors ({} attempt{})",
+                    unit.unit_id,
+                    attempts_used,
+                    if attempts_used == 1 { "" } else { "s" }
+                )
+            } else {
+                format!(
+                    "unit {} failed after {attempts_used} attempts: {}",
+                    unit.unit_id,
+                    truncate_audit_stderr(&last_stderr)
+                )
+            };
+            let outcome = UnitOutcome {
+                passed,
+                attempts_used,
+                summary: summary.clone(),
+            };
+            let mut allocation = unit.allocation.clone();
+            allocation.iter_used = attempts_used.min(allocation.max_iter);
+            {
+                let mut coord = self
+                    .coordinator
+                    .write()
+                    .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+                coord
+                    .work_state_mut()
+                    .record_unit_outcome(&unit.unit_id, outcome, allocation)
+                    .context("record unit outcome")?;
+                if passed {
+                    let report = SpecialistReport {
+                        producer: NodeType::GeneralPurpose,
+                        kind: SpecialistReportKind::Implementation,
+                        summary,
+                        evidence: unit
+                            .expected_files
+                            .iter()
+                            .map(|path| SpecialistEvidence {
+                                path: path.clone(),
+                                detail: "expected by the accepted unit contract".into(),
+                            })
+                            .collect(),
+                        suspected_files: Vec::new(),
+                        recommended_actions: Vec::new(),
+                    };
+                    coord.work_state_mut().push_unit_report(report);
+                }
+                coord
+                    .capture_current_work_state()
+                    .context("persist unit outcome")?;
+            }
+            outcomes.push(UnitRunOutcome {
+                unit_id: unit.unit_id.clone(),
+                passed,
+                attempts_used,
+            });
+        }
+
+        let parent_route = {
+            let mut coord = self
+                .coordinator
+                .write()
+                .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+            if !outcomes.iter().any(|outcome| outcome.passed) {
+                // Every unit failed: charge the parent one iteration and let
+                // the existing code-owned router decide (retry or escalate).
+                consume_iteration_budget(&mut coord)?;
+            }
+            next_step(coord.work_state()).context("route parent after units")?
+        };
+
+        Ok(DecomposedUnitsRunResult {
+            outcomes,
+            parent_route,
+        })
     }
 
     /// Synchronizes an out-of-band static-route failure with the durable node
@@ -1859,6 +2032,233 @@ mod tests {
         let payload = adapted.adapted.as_ref().expect("adaptation payload");
         assert_eq!(payload.revision_from, 1);
         assert_eq!(payload.revision_to, 2);
+    }
+
+    #[tokio::test]
+    async fn child_units_pass_and_append_reports_without_completing_parent() {
+        // Two units whose anchors all succeed: both pass, two unit reports
+        // land, and the parent still routes to its own compile anchor —
+        // the parent anchors remain the sole final arbiter.
+        let setup = ScriptedSetup::new([0, 0]);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("parent with units".into(), vec!["true".into()], vec![])
+            .await
+            .expect("begin parent node");
+        {
+            let mut coord = setup.coord.write().expect("coordinator");
+            coord
+                .work_state_mut()
+                .set_budget(
+                    NodeType::GeneralPurpose,
+                    Budget {
+                        max_iter: 8,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                )
+                .expect("init budget");
+            let plan = crate::org_graph::compose_work_graph(&Default::default())
+                .expect("compose child plan")
+                .bind_registry(&NodeRegistry::builtin(&Default::default()))
+                .expect("bind child plan");
+            coord.work_state_mut().set_decomposed_units(vec![
+                crate::org_graph::DecomposedUnit {
+                    unit_id: "unit-0".into(),
+                    goal: "first unit".into(),
+                    request: Default::default(),
+                    plan: plan.clone(),
+                    allocation: Budget {
+                        max_iter: 2,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                    verify_commands: vec!["true".into()],
+                    expected_files: vec![],
+                    outcome: None,
+                },
+                crate::org_graph::DecomposedUnit {
+                    unit_id: "unit-1".into(),
+                    goal: "second unit".into(),
+                    request: Default::default(),
+                    plan,
+                    allocation: Budget {
+                        max_iter: 2,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                    verify_commands: vec!["true".into()],
+                    expected_files: vec![],
+                    outcome: None,
+                },
+            ]);
+        }
+
+        let result = setup
+            .runtime
+            .run_decomposed_units()
+            .await
+            .expect("run units");
+
+        assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+        assert_eq!(result.parent_route, WorkGraphStep::CompileAnchor);
+        let coord = setup.coord.read().expect("coordinator");
+        let reports = coord.work_state().unit_specialist_reports();
+        assert_eq!(reports.len(), 2);
+        assert!(reports
+            .iter()
+            .all(|report| report.kind == SpecialistReportKind::Implementation));
+    }
+
+    #[tokio::test]
+    async fn failing_unit_does_not_abort_siblings() {
+        // Unit-0 always fails (exhausts its 2-attempt allocation), unit-1
+        // succeeds: both reach terminal states, only unit-1 reports, and the
+        // parent is not charged an iteration (one unit passed).
+        let setup = ScriptedSetup::new([1, 1, 0]);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("parent mixed units".into(), vec!["true".into()], vec![])
+            .await
+            .expect("begin parent node");
+        {
+            let mut coord = setup.coord.write().expect("coordinator");
+            coord
+                .work_state_mut()
+                .set_budget(
+                    NodeType::GeneralPurpose,
+                    Budget {
+                        max_iter: 8,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                )
+                .expect("init budget");
+            let plan = crate::org_graph::compose_work_graph(&Default::default())
+                .expect("compose")
+                .bind_registry(&NodeRegistry::builtin(&Default::default()))
+                .expect("bind");
+            coord.work_state_mut().set_decomposed_units(vec![
+                crate::org_graph::DecomposedUnit {
+                    unit_id: "unit-0".into(),
+                    goal: "doomed unit".into(),
+                    request: Default::default(),
+                    plan: plan.clone(),
+                    allocation: Budget {
+                        max_iter: 2,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                    verify_commands: vec!["false".into()],
+                    expected_files: vec![],
+                    outcome: None,
+                },
+                crate::org_graph::DecomposedUnit {
+                    unit_id: "unit-1".into(),
+                    goal: "healthy unit".into(),
+                    request: Default::default(),
+                    plan,
+                    allocation: Budget {
+                        max_iter: 2,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                    verify_commands: vec!["true".into()],
+                    expected_files: vec![],
+                    outcome: None,
+                },
+            ]);
+        }
+
+        let result = setup
+            .runtime
+            .run_decomposed_units()
+            .await
+            .expect("run units");
+
+        assert!(!result.outcomes[0].passed);
+        assert_eq!(result.outcomes[0].attempts_used, 2);
+        assert!(result.outcomes[1].passed);
+        let coord = setup.coord.read().expect("coordinator");
+        let reports = coord.work_state().unit_specialist_reports();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].summary.contains("unit-1"));
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .expect("budget read")
+            .cloned()
+            .expect("budget set");
+        assert_eq!(
+            budget.iter_used, 0,
+            "a passed unit must not charge the parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn all_units_failing_charges_parent_and_routes_by_budget() {
+        // Both units exhaust their allocations: the parent is charged one
+        // iteration and the code-owned router decides retry vs escalate.
+        let setup = ScriptedSetup::new([1, 1, 1, 1]);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("parent doomed units".into(), vec!["true".into()], vec![])
+            .await
+            .expect("begin parent node");
+        {
+            let mut coord = setup.coord.write().expect("coordinator");
+            coord
+                .work_state_mut()
+                .set_budget(
+                    NodeType::GeneralPurpose,
+                    Budget {
+                        max_iter: 8,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                )
+                .expect("init budget");
+            let plan = crate::org_graph::compose_work_graph(&Default::default())
+                .expect("compose")
+                .bind_registry(&NodeRegistry::builtin(&Default::default()))
+                .expect("bind");
+            let unit = |unit_id: &str| crate::org_graph::DecomposedUnit {
+                unit_id: unit_id.into(),
+                goal: "doomed".into(),
+                request: Default::default(),
+                plan: plan.clone(),
+                allocation: Budget {
+                    max_iter: 2,
+                    iter_used: 0,
+                    token_used: 0,
+                },
+                verify_commands: vec!["false".into()],
+                expected_files: vec![],
+                outcome: None,
+            };
+            coord
+                .work_state_mut()
+                .set_decomposed_units(vec![unit("unit-0"), unit("unit-1")]);
+        }
+
+        let result = setup
+            .runtime
+            .run_decomposed_units()
+            .await
+            .expect("run units");
+
+        assert!(result.outcomes.iter().all(|outcome| !outcome.passed));
+        let coord = setup.coord.read().expect("coordinator");
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .expect("budget read")
+            .cloned()
+            .expect("budget set");
+        assert_eq!(budget.iter_used, 1, "total unit failure charges the parent");
     }
 
     #[tokio::test]
