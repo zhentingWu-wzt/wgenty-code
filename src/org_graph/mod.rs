@@ -14,8 +14,9 @@ pub use contract::{
 };
 pub use registry::NodeRegistry;
 pub use work_graph_plan::{
-    select_work_graph, GraphTemplate, GraphTemplateRegistry, TemplateStage, WorkGraphPlan,
-    WorkGraphPlanEdge, WorkGraphPlanNode, WorkGraphRequest, WorkGraphTaskKind,
+    compose_work_graph, select_work_graph, validate_composition, GraphTemplate,
+    GraphTemplateRegistry, Risk, TemplateStage, WorkGraphPhase, WorkGraphPlan, WorkGraphPlanEdge,
+    WorkGraphPlanNode, WorkGraphRequest, WorkGraphTaskKind, MAX_WORK_GRAPH_NODES,
 };
 pub use work_state::{
     AuditCommandRun, Budget, CompileResult, FieldPerms, GeneratedDiff, GraphAuditAnchor,

@@ -150,6 +150,7 @@ impl BeginNodeTool {
                 WorkGraphRequest {
                     task_kind,
                     requires_human_review,
+                    ..Default::default()
                 },
             )
             .await
