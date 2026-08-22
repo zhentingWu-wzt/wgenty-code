@@ -69,6 +69,90 @@ pub struct WorkGraphRoleBinding {
     pub can_exec: bool,
 }
 
+/// One named node role declared by a static graph template.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateStage {
+    pub id: &'static str,
+    pub role: NodeType,
+}
+
+/// A code-owned static template from which bounded plan instances are built.
+///
+/// Templates are the only source of graph structure; the composer and the
+/// selector consume them, the model never does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphTemplate {
+    pub id: &'static str,
+    pub stages: &'static [TemplateStage],
+    pub edges: &'static [(&'static str, &'static str)],
+}
+
+/// The immutable set of registered static graph templates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphTemplateRegistry {
+    pub templates: &'static [GraphTemplate],
+}
+
+impl GraphTemplateRegistry {
+    /// The builtin, code-owned template set covering every closed-set request
+    /// combination (`task_kind` × `requires_human_review`).
+    pub fn builtin() -> Self {
+        Self {
+            templates: BUILTIN_GRAPH_TEMPLATES,
+        }
+    }
+
+    /// Find the template registered for a closed-set request combination.
+    pub fn find(
+        &self,
+        task_kind: WorkGraphTaskKind,
+        requires_human_review: bool,
+    ) -> Option<&'static GraphTemplate> {
+        let base_id = match task_kind {
+            WorkGraphTaskKind::Implementation => "implementation-v1",
+            // The first failing external anchor activates the already-present
+            // diagnostic edge. A diagnosis request does not let an LLM claim a
+            // root cause before that anchor exists.
+            WorkGraphTaskKind::Diagnosis => "diagnosis-v1",
+        };
+        let expected_id = if requires_human_review {
+            format!("{base_id}-human-review")
+        } else {
+            base_id.to_string()
+        };
+        self.templates
+            .iter()
+            .find(|template| template.id == expected_id)
+    }
+}
+
+impl GraphTemplate {
+    /// Instantiate a bounded plan from this template. Bindings stay empty
+    /// until `WorkGraphPlan::bind_registry` resolves role contracts.
+    fn instantiate(&self) -> WorkGraphPlan {
+        WorkGraphPlan {
+            template_id: self.id.to_string(),
+            nodes: self
+                .stages
+                .iter()
+                .map(|stage| WorkGraphPlanNode {
+                    id: stage.id.to_string(),
+                    role: stage.role.clone(),
+                })
+                .collect(),
+            edges: self
+                .edges
+                .iter()
+                .map(|(from, to)| WorkGraphPlanEdge {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                })
+                .collect(),
+            bindings: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum WorkGraphPlanError {
     #[error("Work-Graph role {role:?} for node '{node_id}' is not registered in Org-Graph")]
@@ -121,65 +205,83 @@ impl WorkGraphPlan {
     }
 }
 
+static CORE_STAGES: &[TemplateStage] = &[
+    TemplateStage {
+        id: "implement",
+        role: NodeType::GeneralPurpose,
+    },
+    TemplateStage {
+        id: "verify",
+        role: NodeType::Verification,
+    },
+    TemplateStage {
+        id: "diagnose",
+        role: NodeType::RootCause,
+    },
+];
+
+static CORE_EDGES: &[(&str, &str)] = &[
+    ("implement", "verify"),
+    ("verify", "diagnose"),
+    ("diagnose", "implement"),
+];
+
+static REVIEW_STAGES: &[TemplateStage] = &[
+    TemplateStage {
+        id: "implement",
+        role: NodeType::GeneralPurpose,
+    },
+    TemplateStage {
+        id: "verify",
+        role: NodeType::Verification,
+    },
+    TemplateStage {
+        id: "diagnose",
+        role: NodeType::RootCause,
+    },
+    TemplateStage {
+        id: "human-review",
+        role: NodeType::HumanReview,
+    },
+];
+
+static REVIEW_EDGES: &[(&str, &str)] = &[
+    ("implement", "verify"),
+    ("verify", "diagnose"),
+    ("diagnose", "implement"),
+    ("verify", "human-review"),
+];
+
+static BUILTIN_GRAPH_TEMPLATES: &[GraphTemplate] = &[
+    GraphTemplate {
+        id: "implementation-v1",
+        stages: CORE_STAGES,
+        edges: CORE_EDGES,
+    },
+    GraphTemplate {
+        id: "implementation-v1-human-review",
+        stages: REVIEW_STAGES,
+        edges: REVIEW_EDGES,
+    },
+    GraphTemplate {
+        id: "diagnosis-v1",
+        stages: CORE_STAGES,
+        edges: CORE_EDGES,
+    },
+    GraphTemplate {
+        id: "diagnosis-v1-human-review",
+        stages: REVIEW_STAGES,
+        edges: REVIEW_EDGES,
+    },
+];
+
 /// Selects a registered graph template from structured task facts.
 pub fn select_work_graph(request: &WorkGraphRequest) -> WorkGraphPlan {
-    let mut nodes = vec![
-        WorkGraphPlanNode {
-            id: "implement".into(),
-            role: NodeType::GeneralPurpose,
-        },
-        WorkGraphPlanNode {
-            id: "verify".into(),
-            role: NodeType::Verification,
-        },
-        WorkGraphPlanNode {
-            id: "diagnose".into(),
-            role: NodeType::RootCause,
-        },
-    ];
-    let mut edges = vec![
-        WorkGraphPlanEdge {
-            from: "implement".into(),
-            to: "verify".into(),
-        },
-        WorkGraphPlanEdge {
-            from: "verify".into(),
-            to: "diagnose".into(),
-        },
-        WorkGraphPlanEdge {
-            from: "diagnose".into(),
-            to: "implement".into(),
-        },
-    ];
-    let template_id = match request.task_kind {
-        WorkGraphTaskKind::Implementation => "implementation-v1",
-        WorkGraphTaskKind::Diagnosis => {
-            // The first failing external anchor activates the already-present
-            // diagnostic edge. A diagnosis request does not let an LLM claim
-            // a root cause before that anchor exists.
-            "diagnosis-v1"
-        }
-    };
-    if request.requires_human_review {
-        nodes.push(WorkGraphPlanNode {
-            id: "human-review".into(),
-            role: NodeType::HumanReview,
-        });
-        edges.push(WorkGraphPlanEdge {
-            from: "verify".into(),
-            to: "human-review".into(),
-        });
-    }
-    WorkGraphPlan {
-        template_id: if request.requires_human_review {
-            format!("{template_id}-human-review")
-        } else {
-            template_id.into()
-        },
-        nodes,
-        edges,
-        bindings: Vec::new(),
-    }
+    let registry = GraphTemplateRegistry::builtin();
+    registry
+        .find(request.task_kind, request.requires_human_review)
+        .expect("the builtin registry covers every closed-set request combination")
+        .instantiate()
 }
 
 #[cfg(test)]
@@ -235,5 +337,74 @@ mod tests {
             .bindings
             .iter()
             .any(|binding| binding.role == NodeType::RootCause && !binding.can_mutate_fs));
+    }
+
+    #[test]
+    fn builtin_registry_covers_every_closed_set_variant() {
+        let registry = GraphTemplateRegistry::builtin();
+        let ids: Vec<&str> = registry.templates.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&"implementation-v1"));
+        assert!(ids.contains(&"implementation-v1-human-review"));
+        assert!(ids.contains(&"diagnosis-v1"));
+        assert!(ids.contains(&"diagnosis-v1-human-review"));
+        assert_eq!(ids.len(), 4, "no undeclared variants may exist");
+    }
+
+    #[test]
+    fn human_review_variants_declare_the_terminal_review_gate() {
+        for template_id in [
+            "implementation-v1-human-review",
+            "diagnosis-v1-human-review",
+        ] {
+            let registry = GraphTemplateRegistry::builtin();
+            let template = registry
+                .templates
+                .iter()
+                .find(|template| template.id == template_id)
+                .expect("human-review variant registered");
+            assert!(
+                template
+                    .stages
+                    .iter()
+                    .any(|stage| stage.id == "human-review" && stage.role == NodeType::HumanReview),
+                "{template_id} must declare the human-review stage"
+            );
+            assert!(
+                template
+                    .edges
+                    .iter()
+                    .any(|(from, to)| *from == "verify" && *to == "human-review"),
+                "{template_id} must declare the verify→human-review terminal edge"
+            );
+            let plan = select_work_graph(&WorkGraphRequest {
+                task_kind: if template_id.starts_with("diagnosis") {
+                    WorkGraphTaskKind::Diagnosis
+                } else {
+                    WorkGraphTaskKind::Implementation
+                },
+                requires_human_review: true,
+            });
+            assert_eq!(plan.template_id, template_id);
+            assert!(plan.permits_role_edge(NodeType::Verification, NodeType::HumanReview));
+        }
+    }
+
+    #[test]
+    fn template_edges_reference_declared_stages() {
+        let registry = GraphTemplateRegistry::builtin();
+        for template in registry.templates {
+            for (from, to) in template.edges {
+                assert!(
+                    template.stages.iter().any(|stage| stage.id == *from),
+                    "{} references undeclared stage '{from}'",
+                    template.id
+                );
+                assert!(
+                    template.stages.iter().any(|stage| stage.id == *to),
+                    "{} references undeclared stage '{to}'",
+                    template.id
+                );
+            }
+        }
     }
 }
