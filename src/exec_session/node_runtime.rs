@@ -1411,6 +1411,7 @@ mod tests {
                 WorkGraphRequest {
                     task_kind: crate::org_graph::WorkGraphTaskKind::Implementation,
                     requires_human_review: true,
+                    ..Default::default()
                 },
             )
             .await
