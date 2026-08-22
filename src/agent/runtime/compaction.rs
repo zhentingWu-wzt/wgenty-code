@@ -218,6 +218,139 @@ pub fn micro_compact_messages(history: &[ChatMessage]) -> Vec<ChatMessage> {
         .collect()
 }
 
+/// Truncate to at most `max` chars on a char boundary, appending `…`.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Sniff a tool-result payload for a failure the model may still need to
+/// reason about. Covers the executor's JSON envelope (both object and string
+/// `error` forms) and the hook-blocked plain-text form:
+///
+/// - `{"success":false,"error":{"message":…,"code":…}}` → `message`
+/// - `{"success":false,"error":"…"}` → the string
+/// - `Tool 'x' blocked by hook: …` → first line
+///
+/// Anything else (success payloads, non-JSON content) → `None`.
+pub fn sniff_tool_error(content: &str) -> Option<String> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
+        if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+            if let Some(err) = v.get("error") {
+                if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
+                    return Some(msg.to_string());
+                }
+                if let Some(msg) = err.as_str() {
+                    return Some(msg.to_string());
+                }
+            }
+        }
+    }
+    let trimmed = content.trim_start();
+    if trimmed.starts_with("Tool '") && trimmed.contains(" blocked by hook: ") {
+        return trimmed.lines().next().map(str::to_string);
+    }
+    None
+}
+
+/// Build the compaction marker for a tool result, preserving an error digest
+/// when the payload was a failure. Success payloads keep the bare
+/// `[Previous: used X]` marker (format-compatible with the eager path).
+pub fn error_head_marker(tool_name: Option<&str>, content: &str) -> String {
+    let name = tool_name.unwrap_or("unknown tool");
+    match sniff_tool_error(content) {
+        Some(err) => format!(
+            "[Previous: used {}; error: {}]",
+            name,
+            truncate_chars(&err, 200)
+        ),
+        None => format!("[Previous: used {}]", name),
+    }
+}
+
+/// Smallest index such that the latest `keep` tool messages (and everything
+/// after them) stay verbatim; everything before it may be compacted. Returns
+/// `0` when there are `keep` or fewer tool messages (nothing to compact).
+pub fn advance_frontier(messages: &[ChatMessage], keep: usize) -> usize {
+    let tool_positions: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == "tool")
+        .map(|(i, _)| i)
+        .collect();
+    if tool_positions.len() <= keep {
+        return 0;
+    }
+    tool_positions[tool_positions.len() - keep]
+}
+
+/// Compact every tool result in a frontier segment (no keep-window — the
+/// frontier itself guarantees the kept ones are outside the segment).
+/// `file_read`/`read_file` stay verbatim; failures keep an error digest.
+fn compact_frontier_segment(segment: &[ChatMessage]) -> Vec<ChatMessage> {
+    let mut id_to_name: HashMap<String, String> = HashMap::new();
+    for msg in segment.iter() {
+        if msg.role == "assistant" {
+            if let Some(ref tcs) = msg.tool_calls {
+                for tc in tcs {
+                    id_to_name.insert(tc.id.clone(), tc.function.name.clone());
+                }
+            }
+        }
+    }
+
+    segment
+        .iter()
+        .map(|msg| {
+            if msg.role != "tool" {
+                return msg.clone();
+            }
+            let tool_name = msg
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| id_to_name.get(id))
+                .map(String::as_str);
+            if tool_name == Some("file_read") || tool_name == Some("read_file") {
+                return msg.clone();
+            }
+            let content = msg.content.as_deref().unwrap_or("");
+            ChatMessage {
+                role: "tool".to_string(),
+                content: Some(error_head_marker(tool_name, content)),
+                tool_call_id: msg.tool_call_id.clone(),
+                reasoning_content: None,
+                tool_calls: None,
+            }
+        })
+        .collect()
+}
+
+/// Build the request-view tail under the lazy frontier policy:
+/// `compact(raw[boundary..frontier]) ++ raw[frontier..]`.
+///
+/// Below the watermark the caller passes `frontier == boundary`, yielding the
+/// verbatim tail (stable prefix, cache-friendly). Once the frontier advances
+/// past `boundary` the pre-frontier segment is compacted; `raw[frontier..]`
+/// stays verbatim and append-only between triggers.
+pub fn build_request_tail(
+    raw: &[ChatMessage],
+    boundary: usize,
+    frontier: usize,
+) -> Vec<ChatMessage> {
+    let boundary = boundary.min(raw.len());
+    let frontier = frontier.max(boundary).min(raw.len());
+    if frontier == boundary {
+        return raw[boundary..].to_vec();
+    }
+    let mut out = compact_frontier_segment(&raw[boundary..frontier]);
+    out.extend_from_slice(&raw[frontier..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +659,247 @@ mod tests {
         assert_eq!(compacted[3].content.as_deref(), Some("recent 1"));
         assert_eq!(compacted[4].content.as_deref(), Some("recent 2"));
         assert_eq!(compacted[5].content.as_deref(), Some("recent 3"));
+    }
+
+    // ── lazy frontier policy (sniff_tool_error / error_head_marker /
+    //    advance_frontier / build_request_tail) ──
+
+    /// history skeleton: assistant tool_calls for (id, name) pairs, then tool
+    /// results for each id in order.
+    fn history_with_tools(calls: &[(&str, &str)], results: &[(&str, &str)]) -> Vec<ChatMessage> {
+        let mut h = vec![ChatMessage::user("do the work")];
+        h.push(ChatMessage::assistant_with_tools(
+            calls
+                .iter()
+                .map(|(id, name)| ToolCall {
+                    id: id.to_string(),
+                    r#type: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: name.to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                })
+                .collect(),
+        ));
+        for (id, content) in results {
+            h.push(ChatMessage::tool(*id, *content));
+        }
+        h
+    }
+
+    #[test]
+    fn sniff_detects_object_error_envelope() {
+        let content = r#"{"success":false,"error":{"message":"Patch context not found in src/a.rs","code":"context_not_found"}}"#;
+        assert_eq!(
+            sniff_tool_error(content).as_deref(),
+            Some("Patch context not found in src/a.rs")
+        );
+    }
+
+    #[test]
+    fn sniff_detects_string_error_envelope() {
+        let content =
+            r#"{"success":false,"error":"task tool call arguments are invalid JSON (truncated)"}"#;
+        assert_eq!(
+            sniff_tool_error(content).as_deref(),
+            Some("task tool call arguments are invalid JSON (truncated)")
+        );
+    }
+
+    #[test]
+    fn sniff_detects_hook_blocked_plain_text() {
+        let content = "Tool 'file_write' blocked by hook: state mismatch\nsecond line";
+        assert_eq!(
+            sniff_tool_error(content).as_deref(),
+            Some("Tool 'file_write' blocked by hook: state mismatch")
+        );
+    }
+
+    #[test]
+    fn sniff_ignores_success_and_non_json() {
+        assert_eq!(sniff_tool_error(r#"{"success":true,"content":"ok"}"#), None);
+        assert_eq!(sniff_tool_error(r#"{"success":false}"#), None); // no error field
+        assert_eq!(sniff_tool_error("plain text result"), None);
+        assert_eq!(sniff_tool_error(""), None);
+    }
+
+    #[test]
+    fn marker_keeps_error_digest_and_truncates() {
+        let failing = r#"{"success":false,"error":{"message":"boom"}}"#;
+        assert_eq!(
+            error_head_marker(Some("apply_patch"), failing),
+            "[Previous: used apply_patch; error: boom]"
+        );
+        let ok = r#"{"success":true,"content":"applied"}"#;
+        assert_eq!(error_head_marker(Some("task"), ok), "[Previous: used task]");
+        assert_eq!(error_head_marker(None, ok), "[Previous: used unknown tool]");
+        // 300-char message truncates to 199 chars + ellipsis
+        let long = format!(
+            r#"{{"success":false,"error":{{"message":"{}"}}}}"#,
+            "x".to_string() + &"y".repeat(300)
+        );
+        let marker = error_head_marker(Some("t"), &long);
+        let digest = marker
+            .strip_prefix("[Previous: used t; error: ")
+            .and_then(|s| s.strip_suffix(']'))
+            .expect("marker format");
+        assert_eq!(digest.chars().count(), 200);
+        assert!(digest.ends_with('…'));
+        // char-boundary safety: the ellipsis replaced a partial char, not a byte cut
+        assert!(digest.chars().all(|c| c != '\u{fffd}'));
+    }
+
+    #[test]
+    fn advance_frontier_covers_latest_keep_tools() {
+        // 5 tool results, keep 3 → frontier at index of result #2 (0-based idx 3:
+        // [user, assistant, tool1, tool2, tool3, tool4, tool5] → positions 2..6;
+        // len-keep = 2nd index → tool_positions[2] = 4? tool_positions=[2,3,4,5,6],
+        // [len-keep]=positions[2]=4 → result #3 (idx 4). Latest 3 = idx 4,5,6. ✓
+        let h = history_with_tools(
+            &[
+                ("c1", "grep"),
+                ("c2", "grep"),
+                ("c3", "grep"),
+                ("c4", "grep"),
+                ("c5", "grep"),
+            ],
+            &[
+                ("c1", "r1"),
+                ("c2", "r2"),
+                ("c3", "r3"),
+                ("c4", "r4"),
+                ("c5", "r5"),
+            ],
+        );
+        assert_eq!(advance_frontier(&h, 3), 4);
+        // keep window covers everything → nothing to compact
+        assert_eq!(advance_frontier(&h, 5), 0);
+        assert_eq!(advance_frontier(&h, 10), 0);
+        // no tool messages at all
+        let empty = vec![ChatMessage::user("hi"), ChatMessage::assistant("ok")];
+        assert_eq!(advance_frontier(&empty, 3), 0);
+    }
+
+    #[test]
+    fn build_request_tail_verbatim_when_frontier_equals_boundary() {
+        let h = history_with_tools(&[("c1", "grep")], &[("c1", "result text")]);
+        let tail = build_request_tail(&h, 0, 0);
+        assert_eq!(tail.len(), h.len());
+        assert_eq!(tail[2].content.as_deref(), Some("result text"));
+    }
+
+    #[test]
+    fn build_request_tail_compacts_prefix_keeps_suffix_verbatim() {
+        let h = history_with_tools(
+            &[
+                ("c1", "grep"),
+                ("c2", "apply_patch"),
+                ("c3", "grep"),
+                ("c4", "grep"),
+                ("c5", "grep"),
+            ],
+            &[
+                ("c1", r#"{"success":true,"content":"matches"}"#),
+                (
+                    "c2",
+                    r#"{"success":false,"error":{"message":"context mismatch","code":"context_not_found"}}"#,
+                ),
+                ("c3", "kept 1"),
+                ("c4", "kept 2"),
+                ("c5", "kept 3"),
+            ],
+        );
+        let frontier = advance_frontier(&h, 3);
+        assert_eq!(frontier, 4); // c3 (idx 4) and later stay verbatim
+        let tail = build_request_tail(&h, 0, frontier);
+        // success tool in the segment → bare marker
+        assert_eq!(tail[2].content.as_deref(), Some("[Previous: used grep]"));
+        // failed tool in the segment → error digest preserved
+        assert_eq!(
+            tail[3].content.as_deref(),
+            Some("[Previous: used apply_patch; error: context mismatch]")
+        );
+        // suffix verbatim
+        assert_eq!(tail[4].content.as_deref(), Some("kept 1"));
+        assert_eq!(tail[5].content.as_deref(), Some("kept 2"));
+        assert_eq!(tail[6].content.as_deref(), Some("kept 3"));
+    }
+
+    #[test]
+    fn build_request_tail_exempts_file_read_inside_segment() {
+        let h = history_with_tools(
+            &[
+                ("c1", "file_read"),
+                ("c2", "grep"),
+                ("c3", "grep"),
+                ("c4", "grep"),
+                ("c5", "grep"),
+            ],
+            &[
+                ("c1", "file contents preserved"),
+                ("c2", "old"),
+                ("c3", "k1"),
+                ("c4", "k2"),
+                ("c5", "k3"),
+            ],
+        );
+        let frontier = advance_frontier(&h, 3);
+        let tail = build_request_tail(&h, 0, frontier);
+        assert_eq!(
+            tail[2].content.as_deref(),
+            Some("file contents preserved"),
+            "file_read inside the compacted segment stays verbatim"
+        );
+        assert_eq!(tail[3].content.as_deref(), Some("[Previous: used grep]"));
+    }
+
+    #[test]
+    fn build_request_tail_clamps_out_of_range_inputs() {
+        let h = history_with_tools(&[("c1", "grep")], &[("c1", "r")]);
+        // frontier < boundary → clamped to boundary (verbatim)
+        let t1 = build_request_tail(&h, 2, 0);
+        assert_eq!(t1.len(), h.len() - 2);
+        // frontier > len → clamped to len (full compact, no panic)
+        let t2 = build_request_tail(&h, 0, 999);
+        assert_eq!(t2.len(), h.len());
+        // boundary > len → empty tail
+        let t3 = build_request_tail(&h, 999, 999);
+        assert!(t3.is_empty());
+    }
+
+    #[test]
+    fn build_request_tail_is_deterministic_and_append_only() {
+        // Deterministic: same inputs → byte-identical output.
+        let h = history_with_tools(
+            &[
+                ("c1", "grep"),
+                ("c2", "grep"),
+                ("c3", "grep"),
+                ("c4", "grep"),
+            ],
+            &[("c1", "r1"), ("c2", "r2"), ("c3", "r3"), ("c4", "r4")],
+        );
+        let frontier = advance_frontier(&h, 3);
+        let a = build_request_tail(&h, 0, frontier);
+        let b = build_request_tail(&h, 0, frontier);
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.content, y.content);
+        }
+
+        // Append-only: with frontier fixed, appending messages extends the view
+        // without flipping anything already in it.
+        let mut grown = h.clone();
+        grown.push(ChatMessage::assistant("more work"));
+        grown.push(ChatMessage::tool("c5", "r5"));
+        let t_old = build_request_tail(&h, 0, frontier);
+        let t_new = build_request_tail(&grown, 0, frontier);
+        assert!(t_new.len() > t_old.len());
+        for (x, y) in t_old.iter().zip(t_new.iter()) {
+            assert_eq!(
+                x.content, y.content,
+                "existing view rows must not change when messages are appended"
+            );
+        }
     }
 }
