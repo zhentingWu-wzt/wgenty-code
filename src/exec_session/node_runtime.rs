@@ -199,6 +199,7 @@ fn base_audit_event(context: &WorkGraphAuditContext, kind: GraphAuditKind) -> Gr
         profile: None,
         resolved_commands: None,
         adapted: None,
+        parent_node_id: None,
         budget: None,
         timestamp: chrono::Utc::now().to_rfc3339(),
     }
