@@ -24,17 +24,17 @@
 
 **Files:**
 - Modify: `src/org_graph/work_graph_plan.rs`
-- Test: `src/org_graph/work_graph_plan.rs`
+- Modify: `src/org_graph/mod.rs`
 
 **Interfaces:**
-- 新增 `GraphTemplate { id: &'static str, stages: Vec<TemplateStage>, edges: Vec<(&'static str, &'static str)> }` 与 `GraphTemplateRegistry::builtin() -> Self`。
+- 新增 `GraphTemplate { id, stages, edges }` 与 `GraphTemplateRegistry::builtin() -> Self`。
 - `select_work_graph(request)` 改为从注册表按 `task_kind` + `requires_human_review` 查模板实例化;对外签名与返回值不变。
 
-- [ ] 确认现有 3 个测试(`diagnosis_request_includes_anchored_root_cause_retry_cycle` / `human_review_is_an_explicit_terminal_gate_in_selected_plan` / `bind_registry_captures_registered_contracts`)在纯重构后原样通过。
-- [ ] 新增测试:注册表含 `implementation-v1`、`diagnosis-v1` 及两个 `-human-review` 变体;human-review 变体的 verify→human-review 边存在。
-- [ ] 实现 `GraphTemplateRegistry` 与模板数据结构,`select_work_graph` 改为查表。
-- [ ] 跑 `cargo test org_graph::work_graph_plan`,全量 fmt/clippy/test。
-- [ ] Commit: `refactor(graph): extract graph template registry`。
+- [x] 确认现有 3 个测试在纯重构后原样通过。
+- [x] 新增测试:注册表含 `implementation-v1`、`diagnosis-v1` 及两个 `-human-review` 变体;human-review 变体的 verify→human-review 边存在。
+- [x] 实现 `GraphTemplateRegistry` 与模板数据结构,`select_work_graph` 改为查表。
+- [x] 跑 `cargo test org_graph::work_graph_plan`,全量 fmt/clippy/test。
+- [x] Commit: `refactor(graph): extract graph template registry`。(1fcdd7b0)
 
 ---
 
@@ -44,34 +44,32 @@
 
 **Files:**
 - Modify: `src/org_graph/work_graph_plan.rs`
-- Test: `src/org_graph/work_graph_plan.rs`
+- Modify: `src/org_graph/mod.rs`
 
 **Interfaces:**
 - `WorkGraphRequest` 新增:`risk: Risk`(`Low|Medium|High`,默认 `Medium`)、`has_test_infra: bool`(默认 `true`)、`max_specialists: u8`(0..=3,默认 1),全部封闭集合,`#[serde(default)]`。
-- 新增 `compose_work_graph(request) -> Result<WorkGraphPlan, WorkGraphPlanError>`:按事实挑阶段片段拼接;`template_id` 为组合签名(如 `impl+no-test+review+risk-high`)。
-- 组合规则:`has_test_infra=false` → 移除 TestAnchor 阶段;`risk=High` → 强制 splice 审查门边(verify→human-review);`risk=Low` → 移除预置 diagnose 节点;`max_specialists` 控制诊断通道容量。
-- `select_work_graph(request)` 保留为兼容别名:以默认事实调 `compose_work_graph`,校验失败 panic(静态模板不可能失败,测试断言之)。
+- 新增 `compose_work_graph(request) -> Result<WorkGraphPlan, WorkGraphPlanError>`;`WorkGraphPlan` 增加 `phases: Vec<WorkGraphPhase>`(serde 默认全三锚点)。
+- 组合规则:`has_test_infra=false` → 移除 TestAnchor 阶段;`risk=High` → 强制 splice 审查门;`risk=Low` 或 `max_specialists=0` → 移除 diagnose 节点;偏离组合生成签名式 template_id,默认组合保持规范 id。
+- `select_work_graph(request)` 为兼容别名(闭集组合必成功,矩阵测试断言)。
 
-- [ ] 写组合矩阵测试:枚举 `task_kind × risk × has_test_infra × requires_human_review` 全组合(≤24 个),断言合法性与关键边存在/缺席。
-- [ ] 写拒绝测试:节点数超上限 8 的组合 → `WorkGraphPlanError`,不降级。
-- [ ] 跑测试观察失败,实现组合器与校验(无环除声明 retry 环、边白名单 `permits_role_edge`、`bind_registry` 成功)。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `feat(graph): structured fact composer for work graphs`。
+- [x] 写组合矩阵测试(24 组合)与签名/拒绝/serde 兼容测试。
+- [x] 实现组合器与 `validate_composition`(节点上限 8、边白名单、声明检查、registry 绑定校验)。
+- [x] 全量 fmt/clippy/test(1829+218 通过)。
+- [x] Commit: `feat(graph): structured fact composer for work graphs`。(3bf499b1)
 
 ### Task 3: begin_node 运行时接入组合器
 
 **Files:**
 - Modify: `src/exec_session/node_runtime.rs`
 - Modify: `src/exec_session/node_tools.rs`
-- Test: `src/exec_session/node_tools.rs`
 
 **Interfaces:**
-- `begin_node_with_work_graph` 内部改调 `compose_work_graph`;`BeginNodeTool` input schema 增加 `risk` / `has_test_infra` / `max_specialists` 三个封闭字段,校验模式对齐现有 `task_kind`(非法值 → 结构化错误,列合法集合)。
+- `begin_node_with_work_graph` 内部改调 fallible `compose_work_graph`;`BeginNodeTool` input schema 增加 `risk` / `has_test_infra` / `max_specialists` 三个封闭字段,校验模式对齐 `task_kind`。
 
-- [ ] 写工具 schema 测试:非法 `risk`(如 `"extreme"`)、`max_specialists: 4` → 结构化错误;合法请求经组合器得到带组合签名的 plan。
-- [ ] 实现工具字段解析与转发;确认旧调用(缺新字段)走 serde default 行为不变。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `feat(graph): expose closed-set graph facts in begin_node`。
+- [x] 工具 schema 测试:非法 `risk`、`max_specialists: 4` / `-1`、非布尔 `has_test_infra` → 结构化错误且零持久化;合法偏离事实 → 签名式 template_id。
+- [x] 实现工具字段解析与转发;运行时切换到 fallible 组合(拒绝传播为节点创建错误而非 panic)。
+- [x] 全量 fmt/clippy/test(1831+218 通过)。
+- [x] Commit: `feat(graph): expose closed-set graph facts in begin_node`。(82184271)
 
 ---
 
@@ -99,20 +97,16 @@
 ### Task 5: 适配接入运行时与审计
 
 **Files:**
-- Modify: `src/org_graph/audit.rs`(`GraphAuditKind` 增加 `Adapted`,reason 字段)
-- Modify: `src/org_graph/work_state.rs`(`set_selected_work_graph` 记 revision)
-- Modify: `src/exec_session/node_runtime.rs`(`record_test_result` 失败路径调用适配;每次适配追加审计 + `capture_current_work_state`)
-- Test: `src/exec_session/node_runtime.rs`
+- Modify: `src/org_graph/work_state.rs`(`GraphAuditKind` 增加 `Adapted`;`GraphAuditEvent` 增加 `#[serde(default)] adapted: Option<GraphAuditAdaptation>`)
+- Modify: `src/org_graph/work_graph_plan.rs`(`WorkGraphPlan::apply_adaptation`)
+- Modify: `src/org_graph/audit.rs`(汇总计数 `plan_adaptations`)
+- Modify: `src/exec_session/work_graph.rs`(`retry_or_escalate` 按 plan 边路由)
+- Modify: `src/exec_session/node_runtime.rs`(`record_test_result` 失败路径评估适配、持久化、审计)
 
-**Interfaces:**
-- `GraphAuditEvent` 的 kind 增加 `Adapted{reason}`;audit 数据含 revision 前后值。
-- `next_step()` 不改签名:适配只改 plan 节点集,`require_plan_edge` 既有校验自动生效。
-
-- [ ] 写集成测试:模拟两次 TestAnchor 失败 → 审计流出现 `Adapted` 事件、plan 含 diagnose 节点、下一次路由允许 RootCause→GeneralPurpose 边。
-- [ ] 写重放测试:checkpoint 恢复后 `next_step` 与适配计数一致。
-- [ ] 实现接线。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `feat(graph): wire plan adaptation into runtime with audit`。
+- [x] 集成测试:两次 TestAnchor 失败 → `Adapted` 审计事件、plan 含 diagnose 节点、revision=2、路由 RootCause;剥离图首次失败 → 直接 Implement 重试。
+- [x] 实现接线;`next_step` 签名不变;旧 checkpoint 经 serde default 兼容。
+- [x] 全量 fmt/clippy/test(1842+218 通过)。
+- [x] Commit: `feat(graph): wire plan adaptation into runtime with audit`。(5446e2fb)
 
 ---
 
@@ -121,14 +115,12 @@
 ### Task 6: 文档与渲染更新
 
 **Files:**
-- Modify: `src/prompts/base.md`(begin_node 工具新字段说明)
-- Modify: `src/org_graph/render.rs`(显示组合签名 template_id 与 revision)
-- Test: `src/org_graph/render.rs`
+- Modify: `src/org_graph/render.rs`(新增 `render_plan`:组合签名 template_id + revision + 节点/边列表)
+- `src/prompts/base.md` 无需改动:begin_node 工具经 input schema 自文档,封闭字段说明已在 Task 3 随 schema 落地。
 
-- [ ] render 测试:plan 显示 `template_id` 组合签名与 `rev2` 标记。
-- [ ] 更新 prompts 与渲染实现。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `docs(graph): closed-set facts in prompts + revision rendering`。
+- [x] render 测试:剥离组合显示 `impl+no-test+risk-low+spec-0 (rev 1)`,splice 后显示 `(rev 2)` 与新增节点/边。
+- [x] 全量 fmt/clippy/test(1843+218 通过)。
+- [x] Commit: `feat(graph): plan rendering with composition signature and revision`。(8a21aef8)
 
 ---
 
