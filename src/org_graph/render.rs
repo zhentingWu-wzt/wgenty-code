@@ -23,6 +23,25 @@ pub fn render(registry: &NodeRegistry, format: Format) -> String {
     }
 }
 
+/// 渲染一份已选中的 Work-Graph 计划：组合签名 template_id + revision,
+/// 及节点/边列表。用于人工核对组合与适配历史。
+pub fn render_plan(plan: &crate::org_graph::WorkGraphPlan) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "PLAN: {} (rev {})\n",
+        plan.template_id, plan.revision
+    ));
+    out.push_str("NODES:\n");
+    for node in &plan.nodes {
+        out.push_str(&format!("  {} [{:?}]\n", node.id, node.role));
+    }
+    out.push_str("EDGES:\n");
+    for edge in &plan.edges {
+        out.push_str(&format!("  {} -> {}\n", edge.from, edge.to));
+    }
+    out
+}
+
 /// JSON 全保真（含 system_prompt）。序列化 5 契约数组。
 fn render_json(registry: &NodeRegistry) -> String {
     let contracts = registry.iter();
@@ -257,6 +276,47 @@ mod tests {
         }
         // 1 表头 + 1 分隔线 + 7 数据行 = 9 行
         assert_eq!(out.lines().count(), 9);
+    }
+
+    #[test]
+    fn render_plan_shows_signature_template_and_revision() {
+        // Stripped composition (low risk, no test infra, zero specialists) so
+        // the adaptation splice genuinely adds the diagnose stage.
+        let mut plan = crate::org_graph::compose_work_graph(&crate::org_graph::WorkGraphRequest {
+            risk: crate::org_graph::Risk::Low,
+            has_test_infra: false,
+            max_specialists: 0,
+            ..Default::default()
+        })
+        .expect("compose deviating plan");
+        let out = render_plan(&plan);
+        assert!(
+            out.contains("PLAN: impl+no-test+risk-low+spec-0 (rev 1)"),
+            "header carries the composition signature and revision: {out}"
+        );
+
+        let adaptation = crate::org_graph::Adaptation {
+            spliced_node: crate::org_graph::WorkGraphPlanNode {
+                id: "diagnose".into(),
+                role: crate::org_graph::NodeType::RootCause,
+            },
+            reason: crate::org_graph::AdaptationReason::RepeatedTestAnchorFailure {
+                consecutive_failures: 2,
+            },
+            next_revision: 2,
+        };
+        plan.apply_adaptation(&adaptation)
+            .expect("apply adaptation");
+        let out = render_plan(&plan);
+        assert!(out.contains("(rev 2)"), "revision bump is visible: {out}");
+        assert!(
+            out.contains("diagnose [RootCause]"),
+            "spliced stage listed: {out}"
+        );
+        assert!(
+            out.contains("verify -> diagnose"),
+            "spliced edge listed: {out}"
+        );
     }
 
     #[test]
