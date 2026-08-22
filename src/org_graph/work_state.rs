@@ -89,6 +89,21 @@ pub struct GraphChildBinding {
     pub role: NodeType,
     pub child_agent_id: String,
     pub timestamp: String,
+    /// Reference to the child Work-Graph instance that fulfils this binding.
+    /// Populated only by the trusted runtime once the child graph is launched;
+    /// legacy checkpoints deserialize to `None`.
+    #[serde(default)]
+    pub child_graph: Option<ChildGraphRef>,
+}
+
+/// Durable reference from a parent-graph binding to the child Work-Graph
+/// instance (its own session + root node) that executes the decomposed unit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChildGraphRef {
+    /// Session id of the child Work-Graph instance.
+    pub session_id: String,
+    /// Root node id of the child Work-Graph instance.
+    pub root_node_id: String,
 }
 
 /// A specialist role's typed report category.
@@ -164,6 +179,10 @@ pub struct GraphAuditEvent {
     /// Present on `adapted` events; absent from historical events.
     #[serde(default)]
     pub adapted: Option<GraphAuditAdaptation>,
+    /// Present on `decomposed` events: the id of the parent node whose graph
+    /// spawned the child unit; absent from historical events.
+    #[serde(default)]
+    pub parent_node_id: Option<String>,
     pub budget: Option<Budget>,
     pub timestamp: String,
 }
@@ -895,6 +914,7 @@ mod tests {
             kind,
             anchor: Some(GraphAuditAnchor::Compile),
             adapted: None,
+            parent_node_id: None,
             commands: vec![AuditCommandRun {
                 command: "cargo check".into(),
                 exit_code: Some(0),
@@ -963,6 +983,66 @@ mod tests {
 
         let event: GraphAuditEvent = serde_json::from_str(json).expect("deserialize old event");
         assert_eq!(event.resolved_commands, None);
+    }
+
+    #[test]
+    fn historical_graph_audit_event_defaults_missing_parent_node_id() {
+        // Task 7: 旧 GraphAuditEvent JSON(无 parent_node_id 字段)反序列化默认 None。
+        let json = r#"{
+            "node_id":"n1",
+            "attempt":1,
+            "kind":"route_selected",
+            "anchor":null,
+            "commands":[],
+            "route":"implement",
+            "profile":null,
+            "budget":null,
+            "timestamp":"2026-08-12T00:00:00Z"
+        }"#;
+
+        let event: GraphAuditEvent = serde_json::from_str(json).expect("deserialize old event");
+        assert_eq!(event.parent_node_id, None);
+
+        // 携带 parent_node_id 的新事件 round-trip 保留该值。
+        let mut populated = event.clone();
+        populated.parent_node_id = Some("node-1".into());
+        let round: GraphAuditEvent =
+            serde_json::from_str(&serde_json::to_string(&populated).unwrap()).unwrap();
+        assert_eq!(round, populated);
+        assert_eq!(round.parent_node_id.as_deref(), Some("node-1"));
+    }
+
+    #[test]
+    fn historical_graph_child_binding_defaults_missing_child_graph() {
+        // Task 7: 旧 GraphChildBinding JSON(无 child_graph 字段)反序列化默认 None。
+        let json = r#"{
+            "node_id":"node-1",
+            "attempt":1,
+            "role":"RootCause",
+            "child_agent_id":"child-a",
+            "timestamp":"2026-08-12T00:00:00Z"
+        }"#;
+
+        let binding: GraphChildBinding =
+            serde_json::from_str(json).expect("deserialize old binding");
+        assert_eq!(binding.child_graph, None);
+
+        // 绑定子图实例后 round-trip 保留 ChildGraphRef。
+        let mut populated = binding.clone();
+        populated.child_graph = Some(ChildGraphRef {
+            session_id: "child-session".into(),
+            root_node_id: "node-2".into(),
+        });
+        let round: GraphChildBinding =
+            serde_json::from_str(&serde_json::to_string(&populated).unwrap()).unwrap();
+        assert_eq!(round, populated);
+        assert_eq!(
+            round.child_graph,
+            Some(ChildGraphRef {
+                session_id: "child-session".into(),
+                root_node_id: "node-2".into()
+            })
+        );
     }
 
     #[test]

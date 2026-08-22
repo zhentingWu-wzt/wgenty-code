@@ -951,6 +951,7 @@ mod tests {
             kind: GraphAuditKind::AnchorCompleted,
             anchor: Some(GraphAuditAnchor::Test),
             adapted: None,
+            parent_node_id: None,
             commands: vec![AuditCommandRun {
                 command: "cargo test".into(),
                 exit_code: Some(exit_code),

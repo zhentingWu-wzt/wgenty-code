@@ -97,6 +97,7 @@ mod tests {
             profile: Some(GraphAuditProfile::Rust),
             resolved_commands: None,
             adapted: None,
+            parent_node_id: None,
             budget: Some(Budget {
                 max_iter: 2,
                 iter_used: 1,

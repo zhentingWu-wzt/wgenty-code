@@ -209,6 +209,7 @@ impl ExecutionSessionRuntimeStore {
                 profile: None,
                 resolved_commands: None,
                 adapted: None,
+                parent_node_id: None,
                 budget,
                 timestamp: chrono::Utc::now().to_rfc3339(),
             });
@@ -310,6 +311,7 @@ impl ExecutionSessionRuntimeStore {
                 role: NodeType::RootCause,
                 child_agent_id: child_id_for_audit,
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                child_graph: None,
             });
         coordinator
             .capture_current_work_state()
@@ -354,6 +356,7 @@ impl ExecutionSessionRuntimeStore {
                 role: NodeType::RootCause,
                 child_agent_id: child_id_for_audit,
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                child_graph: None,
             });
         coordinator
             .capture_current_work_state()
@@ -416,6 +419,7 @@ impl ExecutionSessionRuntimeStore {
                 profile: None,
                 resolved_commands: None,
                 adapted: None,
+                parent_node_id: None,
                 budget,
                 timestamp: chrono::Utc::now().to_rfc3339(),
             });
@@ -624,6 +628,7 @@ impl ExecutionSessionRuntimeStore {
                 commands: Vec::new(),
                 route: Some(GraphAuditRoute::RootCause),
                 adapted: None,
+                parent_node_id: None,
                 profile: None,
                 resolved_commands: None,
                 budget: Some(Budget {
