@@ -213,6 +213,9 @@ impl ToolRegistry {
             crate::exec_session::BeginNodeTool::with_runtime_store(Arc::clone(&runtime_store)),
         ));
         self.register(Box::new(
+            crate::exec_session::DecomposeNodeTool::with_runtime_store(Arc::clone(&runtime_store)),
+        ));
+        self.register(Box::new(
             crate::exec_session::VerifyNodeTool::with_runtime_store(Arc::clone(&runtime_store)),
         ));
         self.register(Box::new(

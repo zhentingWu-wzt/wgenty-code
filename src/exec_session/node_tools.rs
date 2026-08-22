@@ -36,13 +36,13 @@ pub trait RootCauseDispatcher: Send + Sync {
     ) -> Result<RootCauseDispatch, ToolError>;
 }
 
-enum RuntimeBinding {
+pub(crate) enum RuntimeBinding {
     Fixed(Arc<NodeRuntime>),
     Store(Arc<ExecutionSessionRuntimeStore>),
 }
 
 impl RuntimeBinding {
-    fn resolve(
+    pub(crate) fn resolve(
         &self,
         context: Option<&ToolContext<'_>>,
         ensure_turn: bool,
@@ -65,7 +65,7 @@ impl RuntimeBinding {
     }
 }
 
-fn missing_tool_context() -> ToolError {
+pub(crate) fn missing_tool_context() -> ToolError {
     ToolError {
         message: "work-graph tools require a trusted tool context".into(),
         code: Some("missing_tool_context".into()),
