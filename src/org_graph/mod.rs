@@ -21,8 +21,9 @@ pub use work_graph_plan::{
     MAX_WORK_GRAPH_NODES,
 };
 pub use work_state::{
-    AuditCommandRun, Budget, CompileResult, FieldPerms, GeneratedDiff, GraphAuditAnchor,
-    GraphAuditCommands, GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute,
-    GraphChildBinding, HumanReview, SpecialistEvidence, SpecialistReport, SpecialistReportKind,
-    StepAction, StepRecord, TestResult, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
+    AuditCommandRun, Budget, CompileResult, FieldPerms, GeneratedDiff, GraphAuditAdaptation,
+    GraphAuditAnchor, GraphAuditCommands, GraphAuditEvent, GraphAuditKind, GraphAuditProfile,
+    GraphAuditRoute, GraphChildBinding, HumanReview, SpecialistEvidence, SpecialistReport,
+    SpecialistReportKind, StepAction, StepRecord, TestResult, VerifyFailureKind, VerifyOutcome,
+    WorkField, WorkState,
 };

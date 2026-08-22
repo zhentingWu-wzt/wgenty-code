@@ -208,6 +208,7 @@ impl ExecutionSessionRuntimeStore {
                 route: Some(GraphAuditRoute::Implement),
                 profile: None,
                 resolved_commands: None,
+                adapted: None,
                 budget,
                 timestamp: chrono::Utc::now().to_rfc3339(),
             });
@@ -414,6 +415,7 @@ impl ExecutionSessionRuntimeStore {
                 route: Some(GraphAuditRoute::Escalate),
                 profile: None,
                 resolved_commands: None,
+                adapted: None,
                 budget,
                 timestamp: chrono::Utc::now().to_rfc3339(),
             });
@@ -621,6 +623,7 @@ impl ExecutionSessionRuntimeStore {
                 anchor: None,
                 commands: Vec::new(),
                 route: Some(GraphAuditRoute::RootCause),
+                adapted: None,
                 profile: None,
                 resolved_commands: None,
                 budget: Some(Budget {

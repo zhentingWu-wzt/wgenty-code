@@ -234,7 +234,8 @@ fn revision_one() -> u32 {
 }
 
 /// Why the code-owned adapter revised (or wants to escalate) a plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum AdaptationReason {
     /// The same test anchor failed consecutively without a diagnose channel.
     RepeatedTestAnchorFailure { consecutive_failures: u32 },
@@ -260,6 +261,31 @@ pub enum AdaptationOutcome {
 }
 
 impl WorkGraphPlan {
+    /// Apply one bounded adaptation in place: splice the adapted stage, wire
+    /// its canonical edges, bump the revision, and re-validate the shape.
+    /// Idempotent for an already-present stage id.
+    pub fn apply_adaptation(&mut self, adaptation: &Adaptation) -> Result<(), WorkGraphPlanError> {
+        if self
+            .nodes
+            .iter()
+            .any(|node| node.id == adaptation.spliced_node.id)
+        {
+            return Ok(());
+        }
+        let spliced_id = adaptation.spliced_node.id.clone();
+        self.nodes.push(adaptation.spliced_node.clone());
+        self.edges.push(WorkGraphPlanEdge {
+            from: "verify".into(),
+            to: spliced_id.clone(),
+        });
+        self.edges.push(WorkGraphPlanEdge {
+            from: spliced_id,
+            to: "implement".into(),
+        });
+        self.revision = adaptation.next_revision;
+        validate_composition(self)
+    }
+
     /// Resolve every selected role against the immutable Org-Graph registry.
     pub fn bind_registry(&self, registry: &NodeRegistry) -> Result<Self, WorkGraphPlanError> {
         let mut bound = self.clone();
@@ -924,6 +950,7 @@ mod tests {
             attempt: 1,
             kind: GraphAuditKind::AnchorCompleted,
             anchor: Some(GraphAuditAnchor::Test),
+            adapted: None,
             commands: vec![AuditCommandRun {
                 command: "cargo test".into(),
                 exit_code: Some(exit_code),

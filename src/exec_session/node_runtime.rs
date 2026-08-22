@@ -25,12 +25,12 @@ use super::session::SessionStatus;
 use super::verification_profile::VerificationProfile;
 use super::verify_gate::{VerifyGate, VerifyResult};
 use super::work_graph::{next_step, WorkGraphStep};
-use crate::org_graph::{compose_work_graph, WorkGraphRequest};
 use crate::org_graph::{
-    AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditCommands,
-    GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, HumanReview, NodeRegistry,
-    NodeType, TestResult,
+    adapt_work_graph, AdaptationOutcome, AuditCommandRun, Budget, CompileResult, GeneratedDiff,
+    GraphAuditAdaptation, GraphAuditAnchor, GraphAuditCommands, GraphAuditEvent, GraphAuditKind,
+    GraphAuditProfile, GraphAuditRoute, HumanReview, NodeRegistry, NodeType, TestResult,
 };
+use crate::org_graph::{compose_work_graph, WorkGraphRequest};
 
 const AUDIT_STDERR_LIMIT_BYTES: usize = 8_192;
 const AUDIT_STDERR_TRUNCATION_MARKER: &str = "\n...[stderr truncated]";
@@ -198,6 +198,7 @@ fn base_audit_event(context: &WorkGraphAuditContext, kind: GraphAuditKind) -> Gr
         route: None,
         profile: None,
         resolved_commands: None,
+        adapted: None,
         budget: None,
         timestamp: chrono::Utc::now().to_rfc3339(),
     }
@@ -223,6 +224,41 @@ fn route_audit_event(
     event.route = Some(project_audit_route(route));
     event.budget = budget;
     event
+}
+
+/// Evaluate the pure anchor-driven adaptation rules after a failed test
+/// anchor and persist any splice as an `Adapted` audit event with the revised
+/// plan. Returns a routing override for adapter-initiated escalation.
+fn apply_anchor_adaptation(
+    coord: &mut SessionCoordinator,
+    audit_context: &WorkGraphAuditContext,
+) -> Result<Option<WorkGraphStep>> {
+    let Some(mut plan) = coord.work_state().selected_work_graph().cloned() else {
+        return Ok(None);
+    };
+    let outcome = adapt_work_graph(coord.work_state(), &plan, &audit_context.node_id)
+        .context("evaluate anchor-driven plan adaptation")?;
+    match outcome {
+        AdaptationOutcome::Unchanged => Ok(None),
+        AdaptationOutcome::Escalate { .. } => Ok(Some(WorkGraphStep::Escalate)),
+        AdaptationOutcome::Splice(adaptation) => {
+            let payload = GraphAuditAdaptation {
+                reason: adaptation.reason,
+                revision_from: plan.revision,
+                revision_to: adaptation.next_revision,
+            };
+            plan.apply_adaptation(&adaptation)
+                .context("apply anchor-driven plan adaptation")?;
+            coord.work_state_mut().set_selected_work_graph(plan);
+            let mut event = base_audit_event(audit_context, GraphAuditKind::Adapted);
+            event.adapted = Some(payload);
+            coord.work_state_mut().append_graph_audit(event);
+            coord
+                .capture_current_work_state()
+                .context("persist adapted work graph")?;
+            Ok(None)
+        }
+    }
 }
 
 fn profile_audit_event(
@@ -583,7 +619,17 @@ impl NodeRuntime {
         coord
             .capture_current_work_state()
             .context("persist test anchor audit event")?;
-        let next_step = next_step(coord.work_state()).context("route test anchor result")?;
+        // A failed test anchor is the only adaptation trigger; evaluate the
+        // pure rules before routing so the revised plan shapes this route.
+        let adaptation_override = if failed {
+            apply_anchor_adaptation(&mut coord, audit_context)?
+        } else {
+            None
+        };
+        let next_step = match adaptation_override {
+            Some(step) => step,
+            None => next_step(coord.work_state()).context("route test anchor result")?,
+        };
         let budget = coord
             .work_state()
             .budget(NodeType::GeneralPurpose)
@@ -1245,6 +1291,41 @@ mod tests {
             Self::with_results_and_gate_hooks(results, Arc::new(NoHooks))
         }
 
+        fn with_results_and_retry_budget(
+            results: impl IntoIterator<Item = ScriptedCommandResult>,
+            auto_retry_max: u32,
+        ) -> Self {
+            let dir = TempDir::new().expect("temporary project");
+            let store = Arc::new(CheckpointStore::new(dir.path()));
+            let coord = SessionCoordinator::new(
+                "es-scripted".into(),
+                SessionSource::AgentSelf,
+                dir.path(),
+                Arc::clone(&store),
+            )
+            .expect("create coordinator");
+            let coord = Arc::new(RwLock::new(coord));
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let executor = Arc::new(ScriptedExecutor {
+                results: Mutex::new(results.into_iter().collect()),
+                calls: Arc::clone(&calls),
+            });
+            let gate = Arc::new(VerifyGate::new(
+                Arc::clone(&coord),
+                executor,
+                Arc::new(NoHooks),
+            ));
+            let runtime =
+                NodeRuntime::new_with_default_hooks(Arc::clone(&coord), gate, auto_retry_max);
+            Self {
+                runtime,
+                coord,
+                calls,
+                store,
+                _dir: dir,
+            }
+        }
+
         fn with_results_and_gate_hooks(
             results: impl IntoIterator<Item = ScriptedCommandResult>,
             hooks: Arc<dyn SessionHooks>,
@@ -1656,6 +1737,119 @@ mod tests {
             .compile_result(NodeType::Verification)
             .expect("verification may read compile result")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn first_test_failure_on_stripped_plan_retries_without_diagnosis() {
+        let setup = ScriptedSetup::new([0, 1]);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node_with_work_graph(
+                "low risk goal".into(),
+                vec!["echo compile".into()],
+                vec!["echo test".into()],
+                vec!["echo verify".into()],
+                vec![],
+                crate::org_graph::WorkGraphRequest {
+                    task_kind: crate::org_graph::WorkGraphTaskKind::Implementation,
+                    risk: crate::org_graph::Risk::Low,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("begin low-risk node");
+
+        let result = setup
+            .runtime
+            .run_work_graph(
+                vec!["echo compile".into()],
+                vec!["echo test".into()],
+                vec!["echo verify".into()],
+                vec![],
+            )
+            .await
+            .expect("run first pass");
+
+        assert_eq!(result.next_step, WorkGraphStep::Implement);
+    }
+
+    #[tokio::test]
+    async fn second_consecutive_test_failure_splices_diagnose_with_audit() {
+        // auto_retry_max=3: the budget must still hold room after the second
+        // failed test anchor for the splice (and a RootCause pass) to matter.
+        let setup = ScriptedSetup::with_results_and_retry_budget(
+            [
+                ScriptedCommandResult::success(),
+                ScriptedCommandResult::failure(1, "command failed"),
+                ScriptedCommandResult::success(),
+                ScriptedCommandResult::failure(1, "command failed"),
+            ]
+            .into_iter(),
+            3,
+        );
+        setup.begin_turn();
+        let request = crate::org_graph::WorkGraphRequest {
+            task_kind: crate::org_graph::WorkGraphTaskKind::Implementation,
+            risk: crate::org_graph::Risk::Low,
+            ..Default::default()
+        };
+        setup
+            .runtime
+            .begin_node_with_work_graph(
+                "repeated low-risk failure".into(),
+                vec!["echo compile".into()],
+                vec!["echo test".into()],
+                vec!["echo verify".into()],
+                vec![],
+                request,
+            )
+            .await
+            .expect("begin low-risk node");
+
+        let first = setup
+            .runtime
+            .run_work_graph(
+                vec!["echo compile".into()],
+                vec!["echo test".into()],
+                vec!["echo verify".into()],
+                vec![],
+            )
+            .await
+            .expect("run first pass");
+        assert_eq!(first.next_step, WorkGraphStep::Implement);
+
+        let second = setup
+            .runtime
+            .run_work_graph(
+                vec!["echo compile".into()],
+                vec!["echo test".into()],
+                vec!["echo verify".into()],
+                vec![],
+            )
+            .await
+            .expect("run second pass");
+        assert_eq!(second.next_step, WorkGraphStep::RootCause);
+
+        let coord = setup.coord.read().expect("coordinator read lock");
+        let plan = coord
+            .work_state()
+            .selected_work_graph()
+            .expect("selected plan");
+        assert!(plan
+            .nodes
+            .iter()
+            .any(|node| node.role == NodeType::RootCause));
+        assert_eq!(plan.revision, 2);
+        let adapted = coord
+            .work_state()
+            .graph_audit()
+            .iter()
+            .find(|event| event.kind == GraphAuditKind::Adapted)
+            .expect("adaptation audit event");
+        let payload = adapted.adapted.as_ref().expect("adaptation payload");
+        assert_eq!(payload.revision_from, 1);
+        assert_eq!(payload.revision_to, 2);
     }
 
     #[tokio::test]
