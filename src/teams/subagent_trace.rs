@@ -1511,6 +1511,7 @@ mod tests {
             summary: None,
             failure_diagnostics: Some(diag),
             project_path: None,
+            node_type: None,
             events: vec![],
         };
         store.save(&t, None).unwrap();
@@ -1562,6 +1563,7 @@ mod tests {
             summary: None,
             failure_diagnostics: Some(diag),
             project_path: None,
+            node_type: None,
             events: vec![],
         };
         store.save(&t, None).unwrap();

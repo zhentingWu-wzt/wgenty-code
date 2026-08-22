@@ -70,6 +70,36 @@ fn parse_root_cause(opt_json: Option<String>) -> FailureRootCause {
         .unwrap_or_default()
 }
 
+/// Serialize a `NodeType` for the `node_type` column: the bare serde variant
+/// name (e.g. `Explore`). `None` stays NULL (legacy / no dispatch data).
+fn node_type_to_db(node_type: &Option<crate::org_graph::NodeType>) -> Option<String> {
+    node_type.as_ref().and_then(|nt| {
+        serde_json::to_value(nt)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+    })
+}
+
+/// Parse the `node_type` column into a `NodeType`. NULL / empty / unknown
+/// variant strings degrade to `None` with a warning rather than failing the
+/// read (forward compat: future `NodeType` variants or dirty data).
+fn parse_node_type_col(opt: Option<String>) -> Option<crate::org_graph::NodeType> {
+    opt.and_then(|s| {
+        if s.is_empty() {
+            return None;
+        }
+        match serde_json::from_value::<crate::org_graph::NodeType>(serde_json::Value::String(
+            s.clone(),
+        )) {
+            Ok(nt) => Some(nt),
+            Err(e) => {
+                tracing::warn!(value = %s, error = %e, "failed to deserialize node_type");
+                None
+            }
+        }
+    })
+}
+
 impl SubagentTranscriptStore {
     /// Open or create the database. Auto-creates tables and indexes.
     pub fn open(path: &Path) -> Result<Self, TranscriptError> {
@@ -136,6 +166,7 @@ impl SubagentTranscriptStore {
             ("root_cause", "TEXT"),
             ("retry_history", "TEXT"),
             ("project_path", "TEXT"),
+            ("node_type", "TEXT"),
         ] {
             if !column_exists(&db, "subagent_transcripts", col)? {
                 db.execute_batch(&format!(
@@ -189,9 +220,9 @@ impl SubagentTranscriptStore {
              (id, session_id, parent_id, label, status, system_prompt, user_prompt,
               started_at, finished_at, total_tokens, max_rounds, actual_rounds,
               token_budget_k, error_message, summary,
-              failure_diagnostics, root_cause, retry_history, project_path)
+              failure_diagnostics, root_cause, retry_history, project_path, node_type)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     ?16, ?17, ?18, ?19)",
+                     ?16, ?17, ?18, ?19, ?20)",
             params![
                 transcript.id,
                 transcript.session_id,
@@ -212,6 +243,7 @@ impl SubagentTranscriptStore {
                 root_cause_json,
                 retry_history_json,
                 transcript.project_path,
+                node_type_to_db(&transcript.node_type),
             ],
         )?;
 
@@ -304,7 +336,7 @@ impl SubagentTranscriptStore {
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
                     total_tokens, actual_rounds, error_message, summary,
-                    root_cause, project_path
+                    root_cause, project_path, node_type
              FROM subagent_transcripts
              WHERE session_id = ?1
              ORDER BY started_at DESC",
@@ -324,6 +356,7 @@ impl SubagentTranscriptStore {
                 summary: row.get(10)?,
                 root_cause: parse_root_cause(row.get(11)?),
                 project_path: row.get(12)?,
+                node_type: parse_node_type_col(row.get(13)?),
             })
         })?;
         let mut result = Vec::new();
@@ -346,7 +379,7 @@ impl SubagentTranscriptStore {
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
                     total_tokens, actual_rounds, error_message, summary,
-                    root_cause, project_path
+                    root_cause, project_path, node_type
              FROM subagent_transcripts
              WHERE project_path = ?1
              ORDER BY started_at DESC
@@ -367,6 +400,7 @@ impl SubagentTranscriptStore {
                 summary: row.get(10)?,
                 root_cause: parse_root_cause(row.get(11)?),
                 project_path: row.get(12)?,
+                node_type: parse_node_type_col(row.get(13)?),
             })
         })?;
         let mut result = Vec::new();
@@ -383,7 +417,7 @@ impl SubagentTranscriptStore {
             "SELECT id, session_id, parent_id, label, status, system_prompt, user_prompt,
                     started_at, finished_at, total_tokens, max_rounds, actual_rounds,
                     token_budget_k, error_message, summary,
-                    failure_diagnostics, project_path
+                    failure_diagnostics, project_path, node_type
              FROM subagent_transcripts WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -411,6 +445,7 @@ impl SubagentTranscriptStore {
                 summary: row.get(14)?,
                 failure_diagnostics: parse_failure_diagnostics(row.get(15)?),
                 project_path: row.get(16)?,
+                node_type: parse_node_type_col(row.get(17)?),
                 events: Vec::new(),
             })
         })?;
@@ -460,7 +495,7 @@ impl SubagentTranscriptStore {
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
                     total_tokens, actual_rounds, error_message, summary,
-                    root_cause, project_path
+                    root_cause, project_path, node_type
              FROM subagent_transcripts
              WHERE label LIKE ?1
              ORDER BY started_at DESC
@@ -481,6 +516,7 @@ impl SubagentTranscriptStore {
                 summary: row.get(10)?,
                 root_cause: parse_root_cause(row.get(11)?),
                 project_path: row.get(12)?,
+                node_type: parse_node_type_col(row.get(13)?),
             })
         })?;
         let mut result = Vec::new();
@@ -535,6 +571,7 @@ mod tests {
             summary: Some("done".to_string()),
             failure_diagnostics: None,
             project_path: None,
+            node_type: None,
             events: vec![
                 SubagentEventRecord {
                     round: 0,
@@ -569,6 +606,110 @@ mod tests {
         assert_eq!(loaded.session_id, "session-1");
         assert_eq!(loaded.events.len(), 2);
         assert_eq!(loaded.events[0].event_type, "thought");
+    }
+
+    // ── node_type persistence & migration ──
+
+    #[test]
+    fn test_node_type_roundtrip() {
+        let (store, _dir) = setup_store();
+        let mut t = sample_transcript("nt-1", "sess-nt");
+        t.node_type = Some(crate::org_graph::NodeType::Explore);
+        store.save(&t, None).unwrap();
+
+        let loaded = store.get_by_id("nt-1").unwrap().unwrap();
+        assert_eq!(loaded.node_type, Some(crate::org_graph::NodeType::Explore));
+
+        let headers = store.list_by_session("sess-nt").unwrap();
+        assert_eq!(
+            headers[0].node_type,
+            Some(crate::org_graph::NodeType::Explore)
+        );
+    }
+
+    /// Create a legacy DB whose `subagent_transcripts` table predates the
+    /// node_type column (the pre-migration schema), with one stored row.
+    fn legacy_db(path: &std::path::Path) {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE subagent_transcripts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                parent_id TEXT,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                system_prompt TEXT,
+                user_prompt TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                total_tokens INTEGER DEFAULT 0,
+                max_rounds INTEGER,
+                actual_rounds INTEGER DEFAULT 0,
+                token_budget_k INTEGER,
+                error_message TEXT,
+                summary TEXT,
+                created_at INTEGER DEFAULT (unixepoch('now'))
+            );
+            INSERT INTO subagent_transcripts
+                (id, session_id, parent_id, label, status, user_prompt, started_at)
+            VALUES
+                ('legacy-1', 'sess-old', NULL, 'task: old run', 'completed', 'do old things', 1000);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_legacy_db_migration_adds_node_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("legacy.db");
+        legacy_db(&path);
+
+        // Opening runs the idempotent migration: node_type is added and the
+        // pre-existing legacy row reads back as None (never panics).
+        let store = SubagentTranscriptStore::open(&path).unwrap();
+        let loaded = store.get_by_id("legacy-1").unwrap().unwrap();
+        assert_eq!(loaded.node_type, None);
+        let headers = store.list_by_session("sess-old").unwrap();
+        assert_eq!(headers[0].node_type, None);
+    }
+
+    #[test]
+    fn test_migration_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("legacy.db");
+        legacy_db(&path);
+        // First open migrates; a second open must not error (no duplicate ALTER).
+        let _ = SubagentTranscriptStore::open(&path).unwrap();
+        let _ = SubagentTranscriptStore::open(&path).unwrap();
+        let db = Connection::open(&path).unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('subagent_transcripts')
+                 WHERE name = 'node_type'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "node_type column added exactly once");
+    }
+
+    #[test]
+    fn test_unknown_node_type_string_degrades_to_none() {
+        let (store, _dir) = setup_store();
+        store
+            .save(&sample_transcript("dirty-1", "sess-dirty"), None)
+            .unwrap();
+        // Simulate a future NodeType variant written by a newer build.
+        {
+            let db = store.db.lock().expect("lock poisoned: transcript db");
+            db.execute(
+                "UPDATE subagent_transcripts SET node_type = 'FutureVariant' WHERE id = 'dirty-1'",
+                [],
+            )
+            .unwrap();
+        }
+        let loaded = store.get_by_id("dirty-1").unwrap().unwrap();
+        assert_eq!(loaded.node_type, None);
     }
 
     #[test]

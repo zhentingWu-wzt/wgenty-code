@@ -22,6 +22,7 @@ pub(super) fn build_transcript(
     events: Vec<SubagentEventRecord>,
     failure_diagnostics: Option<ErrorInfo>,
     project_path: Option<String>,
+    node_type: Option<crate::org_graph::NodeType>,
 ) -> SubagentTranscript {
     SubagentTranscript {
         id,
@@ -41,6 +42,7 @@ pub(super) fn build_transcript(
         summary,
         failure_diagnostics,
         project_path,
+        node_type,
         events,
     }
 }
@@ -67,6 +69,7 @@ pub(crate) fn save_minimal_transcript(
     context_char_limit: usize,
     retention_days: Option<u32>,
     project_path: Option<String>,
+    node_type: Option<crate::org_graph::NodeType>,
 ) {
     let (status, error_message, summary, failure_diagnostics) = match result {
         Ok(text) => (
@@ -115,6 +118,7 @@ pub(crate) fn save_minimal_transcript(
         Vec::new(),
         failure_diagnostics,
         project_path,
+        node_type,
     );
     let _ = store.save(&transcript, retention_days);
 }
@@ -122,4 +126,67 @@ pub(crate) fn save_minimal_transcript(
 /// Generate a UUID string for a new transcript id.
 pub(crate) fn new_transcript_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_minimal_transcript_persists_each_node_type() {
+        for node_type in [
+            crate::org_graph::NodeType::Explore,
+            crate::org_graph::NodeType::Plan,
+            crate::org_graph::NodeType::GeneralPurpose,
+            crate::org_graph::NodeType::Verification,
+            crate::org_graph::NodeType::WgentyCodeGuide,
+        ] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let store = SubagentTranscriptStore::open(&dir.path().join("t.db")).unwrap();
+            let id = format!("nt-{:?}", node_type);
+            save_minimal_transcript(
+                &store,
+                &id,
+                "sess-nt",
+                "node type passthrough",
+                None,
+                "prompt".to_string(),
+                1000,
+                &Ok("done".to_string()),
+                1000,
+                None,
+                None,
+                Some(node_type.clone()),
+            );
+            let loaded = store.get_by_id(&id).unwrap().unwrap();
+            assert_eq!(
+                loaded.node_type,
+                Some(node_type),
+                "node_type must persist for {:?}",
+                loaded.node_type
+            );
+        }
+    }
+
+    #[test]
+    fn save_minimal_transcript_none_stays_legacy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = SubagentTranscriptStore::open(&dir.path().join("t.db")).unwrap();
+        save_minimal_transcript(
+            &store,
+            "nt-legacy",
+            "sess-nt",
+            "no node type",
+            None,
+            "prompt".to_string(),
+            1000,
+            &Ok("done".to_string()),
+            1000,
+            None,
+            None,
+            None,
+        );
+        let loaded = store.get_by_id("nt-legacy").unwrap().unwrap();
+        assert_eq!(loaded.node_type, None);
+    }
 }

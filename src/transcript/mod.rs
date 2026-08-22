@@ -37,6 +37,10 @@ pub struct SubagentTranscript {
     /// future project-scoped CLI filtering since the transcript DB is global).
     #[serde(default)]
     pub project_path: Option<String>,
+    /// Trusted `NodeType` this run was dispatched as (resolved by the
+    /// org-graph contract layer); `None` for legacy rows predating this column.
+    #[serde(default)]
+    pub node_type: Option<crate::org_graph::NodeType>,
     pub events: Vec<SubagentEventRecord>,
 }
 
@@ -92,6 +96,9 @@ pub struct SubagentTranscriptHeader {
     /// Project root the subagent ran in.
     #[serde(default)]
     pub project_path: Option<String>,
+    /// Trusted `NodeType` this run was dispatched as; `None` for legacy rows.
+    #[serde(default)]
+    pub node_type: Option<crate::org_graph::NodeType>,
 }
 
 #[derive(Debug, Clone)]

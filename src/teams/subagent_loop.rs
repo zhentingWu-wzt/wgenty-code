@@ -714,6 +714,9 @@ impl SubagentSynthesis {
                 self.settings.agent.subagent.trace.context_char_limit,
                 retention,
                 workdir.as_ref().map(|p| p.to_string_lossy().to_string()),
+                // The re-dispatch is the same logical run: recover its trusted
+                // node type from the failed child's persisted transcript.
+                transcript.node_type.clone(),
             );
         }
 
