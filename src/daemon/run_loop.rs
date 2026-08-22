@@ -280,6 +280,22 @@ impl EventSink for DaemonEventSink {
                     );
                     return;
                 }
+                // An empty finish_reason means the provider stream terminated
+                // abnormally (mid-stream server error, truncated response).
+                // Publishing TurnDone here silently truncates the turn and
+                // leaves clients waiting on work that never arrives; surface
+                // TurnError so the turn ends with a visible failure instead.
+                if finish_reason.is_empty() {
+                    tracing::warn!("StreamDone with empty finish_reason; publishing TurnError");
+                    self.turn_done_published.swap(true, Ordering::Relaxed);
+                    self.publish(
+                        SessionEventKind::TurnError,
+                        serde_json::json!({
+                            "message": "Stream ended without a finish reason — the provider likely truncated the response. Please retry."
+                        }),
+                    );
+                    return;
+                }
                 // The loop re-emits StreamDone at turn completion (loop_.rs), so a
                 // terminal reason is seen twice; publish TurnDone exactly once per run.
                 if self.turn_done_published.swap(true, Ordering::Relaxed) {
@@ -2539,6 +2555,35 @@ mod tests {
             .try_recv()
             .is_ok_and(|e| e.kind == SessionEventKind::TurnError));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn empty_finish_reason_publishes_turn_error() {
+        // A stream that dies mid-generation reaches StreamDone with an empty
+        // finish_reason (loop emits the terminal event even when the provider
+        // never sent one). That must end the turn as a visible error, not a
+        // silent TurnDone that truncates the response.
+        let (hub, mut rx) = tokio::sync::broadcast::channel(16);
+        let sink = DaemonEventSink::new(
+            "s1".into(),
+            "r1".into(),
+            hub,
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
+        );
+        sink.emit(RuntimeEvent::StreamDone {
+            finish_reason: String::new(),
+        });
+        let event = rx.try_recv().expect("TurnError must be published");
+        assert_eq!(event.kind, SessionEventKind::TurnError);
+        assert!(event.data["message"]
+            .as_str()
+            .unwrap()
+            .contains("finish reason"));
+        assert!(
+            rx.try_recv().is_err(),
+            "no TurnDone may follow the TurnError"
+        );
     }
 
     #[test]
