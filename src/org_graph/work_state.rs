@@ -58,6 +58,11 @@ pub struct WorkState {
     /// proposal validation. Empty until a proposal passes every check.
     #[serde(default)]
     decomposed_units: Vec<DecomposedUnit>,
+    /// Coordinator-persisted implementation reports from passed child units.
+    /// Kept separate from `specialist_reports` (whose `(producer, kind)`
+    /// dedup would collapse the bounded ≤4 units into one entry).
+    #[serde(default)]
+    unit_specialist_reports: Vec<SpecialistReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +144,18 @@ pub struct DecomposedUnit {
     /// Files the child unit is expected to change; empty = no boundary check.
     #[serde(default)]
     pub expected_files: Vec<String>,
+    /// Terminal outcome of this unit, set once the child-graph launcher has
+    /// finished its anchored attempts. `None` = not yet executed.
+    #[serde(default)]
+    pub outcome: Option<UnitOutcome>,
+}
+
+/// Terminal state of one executed decomposition unit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnitOutcome {
+    pub passed: bool,
+    pub attempts_used: u32,
+    pub summary: String,
 }
 
 /// A specialist role's typed report category.
@@ -151,6 +168,8 @@ pub enum SpecialistReportKind {
     RootCause,
     /// An actionable implementation plan.
     ImplementationPlan,
+    /// A completed child-graph implementation unit (recursive work graphs).
+    Implementation,
 }
 
 /// One evidence item cited by a specialist report.
@@ -289,6 +308,7 @@ pub enum VerifyFailureKind {
         exit_code: Option<i32>,
         stderr: String,
     },
+
     BoundaryViolation {
         unexpected_files: Vec<String>,
     },
@@ -462,8 +482,41 @@ impl WorkState {
         &self.decomposed_units
     }
 
-    /// Trusted runtime setter replacing the node's accepted decomposition
-    /// units. Called only after the full atomic proposal validation passed.
+    /// Coordinator-owned update of one unit's terminal outcome and allocation
+    /// after the child-graph launcher finishes its anchored attempts. The
+    /// unit id must exist; unknown ids are a contract violation.
+    pub(crate) fn record_unit_outcome(
+        &mut self,
+        unit_id: &str,
+        outcome: UnitOutcome,
+        allocation: Budget,
+    ) -> Result<(), CoordinatorError> {
+        let unit = self
+            .decomposed_units
+            .iter_mut()
+            .find(|unit| unit.unit_id == unit_id)
+            .ok_or_else(|| CoordinatorError::ContractViolation {
+                node_type: NodeType::GeneralPurpose,
+                dimension: ContractDimension::State,
+                reason: format!("record_unit_outcome: unknown unit '{unit_id}'"),
+            })?;
+        unit.outcome = Some(outcome);
+        unit.allocation = allocation;
+        Ok(())
+    }
+
+    /// Read the coordinator-persisted child-unit implementation reports.
+    /// Stored separately from `specialist_reports` because units share the
+    /// (GeneralPurpose, Implementation) key and are bounded at 4 per node.
+    pub fn unit_specialist_reports(&self) -> &[SpecialistReport] {
+        &self.unit_specialist_reports
+    }
+
+    /// Coordinator-owned append of one passed unit's implementation report.
+    pub(crate) fn push_unit_report(&mut self, report: SpecialistReport) {
+        self.unit_specialist_reports.push(report);
+    }
+
     pub(crate) fn set_decomposed_units(&mut self, units: Vec<DecomposedUnit>) {
         self.decomposed_units = units;
     }
@@ -792,6 +845,7 @@ impl WorkState {
         self.specialist_reports.clear();
         self.selected_work_graph = None;
         self.decomposed_units.clear();
+        self.unit_specialist_reports.clear();
     }
 
     /// Invalidate every result derived from a prior work-graph pass before a
@@ -824,6 +878,7 @@ impl WorkState {
             selected_work_graph: self.selected_work_graph.clone(),
             graph_depth: self.graph_depth,
             decomposed_units: self.decomposed_units.clone(),
+            unit_specialist_reports: self.unit_specialist_reports.clone(),
         }
     }
 }
@@ -1174,6 +1229,7 @@ mod tests {
             selected_work_graph: None,
             graph_depth: 0,
             decomposed_units: Vec::new(),
+            unit_specialist_reports: Vec::new(),
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
@@ -1593,6 +1649,7 @@ mod tests {
             selected_work_graph: None,
             graph_depth: 0,
             decomposed_units: Vec::new(),
+            unit_specialist_reports: Vec::new(),
         };
         let next = state.inherit_for_new_turn();
         assert_eq!(next.requirement.as_deref(), Some("跨 turn"));

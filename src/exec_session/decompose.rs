@@ -295,6 +295,7 @@ fn decompose_for_runtime(
             },
             verify_commands: unit.verify_commands.clone(),
             expected_files: unit.expected_files.clone(),
+            outcome: None,
         })
         .collect::<Vec<_>>();
 
@@ -884,6 +885,7 @@ mod tests {
             },
             verify_commands: vec!["cargo test --all".into()],
             expected_files: Vec::new(),
+            outcome: None,
         }
     }
 

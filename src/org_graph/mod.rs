@@ -25,5 +25,5 @@ pub use work_state::{
     GeneratedDiff, GraphAuditAdaptation, GraphAuditAnchor, GraphAuditCommands, GraphAuditEvent,
     GraphAuditKind, GraphAuditProfile, GraphAuditRoute, GraphChildBinding, HumanReview,
     SpecialistEvidence, SpecialistReport, SpecialistReportKind, StepAction, StepRecord, TestResult,
-    VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
+    UnitOutcome, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
 };
