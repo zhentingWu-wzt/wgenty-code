@@ -275,6 +275,7 @@ impl TaskTool {
         full_prompt: &str,
         system_prompt: &str,
         fallback_key: &str,
+        node_type: &crate::org_graph::NodeType,
     ) -> Result<ToolOutput, ToolError> {
         use crate::agent::fallback::{prepare_structural_fallback, FallbackBlocked, FallbackKind};
 
@@ -378,6 +379,7 @@ impl TaskTool {
                 self.settings.agent.subagent.trace.context_char_limit,
                 retention,
                 context.workdir.map(|p| p.to_string_lossy().to_string()),
+                Some(node_type.clone()),
             );
         }
 
@@ -704,6 +706,7 @@ impl Tool for TaskTool {
                             &full_prompt,
                             &system_prompt,
                             &fallback_key,
+                            &node_type,
                         )
                         .await;
                 }
@@ -799,6 +802,7 @@ impl Tool for TaskTool {
         let desc_bg = description.to_string();
         let sys_prompt_bg = system_prompt.clone();
         let prompt_bg = full_prompt.clone();
+        let node_type_bg = node_type.clone();
         let transcript_store_bg = self.transcript_store.clone();
         let retention_days = self.settings.storage.transcript.max_age_days;
         let started_at_bg = chrono::Utc::now().timestamp_millis();
@@ -1115,6 +1119,7 @@ impl Tool for TaskTool {
                     events,
                     failure_diagnostics,
                     project_path,
+                    Some(node_type_bg),
                 );
                 let _ = store.save(&transcript, retention);
             }

@@ -396,6 +396,7 @@ pub async fn run_rlm_pipeline(
                                         .to_string_lossy()
                                         .to_string(),
                                 ),
+                                Some(crate::org_graph::NodeType::GeneralPurpose),
                             );
                         }
                         // Ghost is not registered in coordinator scopes; skip
@@ -475,6 +476,7 @@ pub async fn run_rlm_pipeline(
                                 .to_string_lossy()
                                 .to_string(),
                         ),
+                        Some(crate::org_graph::NodeType::GeneralPurpose),
                     );
                 }
                 // Persist the child's terminal through the coordinator so its
@@ -754,6 +756,7 @@ pub async fn run_rlm_pipeline(
                                     .to_string_lossy()
                                     .to_string(),
                             ),
+                            Some(crate::org_graph::NodeType::GeneralPurpose),
                         );
                     }
                     let terminal = match &result {

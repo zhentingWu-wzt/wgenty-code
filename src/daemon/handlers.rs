@@ -3422,6 +3422,7 @@ mod tests {
                 summary: None,
                 failure_diagnostics: None,
                 project_path: None,
+                node_type: None,
                 events: vec![],
             };
 
@@ -3569,6 +3570,7 @@ mod tests {
                 summary: None,
                 failure_diagnostics: None,
                 project_path: None,
+                node_type: None,
                 events: vec![],
             };
             store.save(&t, None).unwrap();

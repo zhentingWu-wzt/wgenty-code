@@ -206,6 +206,7 @@ impl Tool for RunScriptTool {
                                     settings.agent.subagent.trace.context_char_limit,
                                     retention,
                                     Some(settings.storage.working_dir.to_string_lossy().to_string()),
+                                    Some(crate::org_graph::NodeType::GeneralPurpose),
                                 );
                             }
                             return match result {
@@ -250,6 +251,7 @@ impl Tool for RunScriptTool {
                             settings.agent.subagent.trace.context_char_limit,
                             retention,
                             Some(settings.storage.working_dir.to_string_lossy().to_string()),
+                            Some(crate::org_graph::NodeType::GeneralPurpose),
                         );
                     }
                     let (terminal, content) = match result {
