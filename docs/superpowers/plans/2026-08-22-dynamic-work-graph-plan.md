@@ -136,10 +136,10 @@
 - `ChildGraphRef { session_id: String, root_node_id: String }`。
 - 现有 RootCause 绑定路径构造 `ChildGraphRef::none()` 兼容值(或 Option 内层),旧 checkpoint 反序列化得到默认值。
 
-- [ ] 序列化测试:旧 `GraphChildBinding`/`GraphAuditEvent` JSON(无新字段)反序列化成功且默认值正确。
-- [ ] 实现字段扩展。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `feat(graph): parent-aware child bindings and audit events`。
+- [x] 序列化测试:旧 `GraphChildBinding`/`GraphAuditEvent` JSON(无新字段)反序列化成功且默认值正确。
+- [x] 实现字段扩展。
+- [x] 全量 fmt/clippy/test。
+- [x] Commit: `feat(graph): parent-aware child bindings and audit events`。(2fd3c50f)
 
 ### Task 8: decompose_node 工具与提案校验
 
@@ -153,11 +153,16 @@
 - 校验:父节点处于 Implement 步、预算保留量 ≥ 1、深度 < 2、每单元 `compose_work_graph` 成功;任何失败 → 结构化错误,零持久化(预留-绑定两段式,对齐 `try_bind_root_cause_child` 模式)。
 - 提案通过即消耗一次父级迭代预算。
 
-- [ ] 写校验矩阵测试:空 units、5 个 units、超深、父预算不足、非法 task_kind、超长 goal → 各自结构化拒绝且 `WorkState` 无变更。
-- [ ] 写通过测试:合法提案 → 每单元得到绑定子图 plan、审计记录、预算分账(保留量 + Σ child_allocation;`child_allocation = max(2, parent剩余/units)`)。
-- [ ] 实现工具。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `feat(graph): decompose_node tool with atomic validation`。
+- [x] 写校验矩阵测试:空 units、5 个 units、超深、父预算不足、非法 task_kind、超长 goal → 各自结构化拒绝且 `WorkState` 无变更。
+- [x] 写通过测试:合法提案 → 每单元得到绑定子图 plan、审计记录、预算分账(保留量 + Σ child_allocation;`child_allocation = max(2, parent剩余/units)`)。
+- [x] 实现工具。
+- [x] 全量 fmt/clippy/test(1853+218 通过,新增 8 个 decompose 测试)。
+- [x] Commit: `feat(graph): decompose_node tool with atomic validation`。(49b35479)
+
+**偏差记录**:
+- 「父节点处于 Implement 步」前置条件实现为「已选中 Work-Graph + 已持久化当前节点 + 预算已初始化」(`prepare_work_graph_pass` 起跑即初始化预算,故分解只可能发生在 Implement pass 内),未新增独立步骤机状态;语义等价、拒绝路径闭合。
+- 深度语义按 Task 规格实现为 `child_depth = parent_depth + 1`,`>= MAX_DECOMPOSE_DEPTH(2)` 拒绝,即根(0)→ 子(1) 两层封顶(设计文档「父→子→孙」按此口径收紧)。
+- 预算分账编码:父 `iter_used += 1` 且 `max_iter = iter_used + 保留量`,分账后父剩余 == 保留量(满足 Task 9 集成测试 C 不变量);审查发现原 wip 实现把 `verify_commands`/`expected_files` 校验后丢弃,已修——`DecomposedUnit` 增补这两个 `#[serde(default)]` 字段并持久化,供 Task 9 子图启动器执行。
 
 ### Task 9: 子图执行与证据回流
 
