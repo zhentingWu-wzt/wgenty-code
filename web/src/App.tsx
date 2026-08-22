@@ -115,10 +115,14 @@ export function App() {
             if (Object.values(state.entries).some((e) => e.daemonId === info.id)) {
               continue; // already open (e.g. opened via the Sessions panel)
             }
+            // activate: false — restoring N sessions must not make each one
+            // active in turn (activeId churn → uiSync opens a tab per session);
+            // the newest one is activated once below.
             const localId = state.createLocalSession(info.name ?? "Session", {
               id: info.id,
               daemonId: info.id,
               projectPath: info.project_path ?? null,
+              activate: false,
               ...(info.worktree ? { worktree: info.worktree } : {}),
             });
             const store = useSessionManager.getState().entries[localId].store;

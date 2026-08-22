@@ -206,13 +206,6 @@ export function ChatView() {
                     )}
                   </div>
                 )}
-                {m.toolExecs && m.toolExecs.length > 0 && (
-                  <div className="mt-2 flex w-full flex-col gap-1.5">
-                    {m.toolExecs.map((exec, i) => (
-                      <ToolCallCard key={i} exec={exec} />
-                    ))}
-                  </div>
-                )}
               </>
             )}
           </div>

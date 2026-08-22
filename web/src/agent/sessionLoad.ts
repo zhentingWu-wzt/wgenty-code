@@ -6,7 +6,6 @@
 import type { ExecuteToolResponse, SessionMessage } from "../api/types";
 import type { ToolExecution } from "./types";
 import type { DisplayMessage } from "../state/sessionStore";
-import { useDisplayPrefs } from "../state/displayPrefs";
 
 // Module-level counter for loaded-history message ids (same pattern as
 // sessionStore's genId; avoids impure Math.random in component scope).
@@ -50,10 +49,6 @@ function parseToolResponse(raw: unknown): ExecuteToolResponse {
  */
 export function sessionMessagesToDisplay(messages: SessionMessage[]): DisplayMessage[] {
   const out: DisplayMessage[] = [];
-  // Timeline mode renders tool results as standalone entries interleaved in
-  // wire order (matching the live runner); single/rounds fold them into the
-  // assistant bubble's toolExecs cards.
-  const timeline = useDisplayPrefs.getState().mode === "timeline";
   // Tool calls of the most recent assistant message, awaiting their results.
   let pending: ToolExecution[] = [];
 
@@ -71,7 +66,6 @@ export function sessionMessagesToDisplay(messages: SessionMessage[]): DisplayMes
         id: loadedId(),
         role: "assistant",
         content: typeof msg.content === "string" ? msg.content : "",
-        ...(!timeline && pending.length > 0 ? { toolExecs: pending } : {}),
       });
     } else if (msg.role === "tool") {
       const response = parseToolResponse(msg.content);
@@ -81,17 +75,15 @@ export function sessionMessagesToDisplay(messages: SessionMessage[]): DisplayMes
         ) ?? pending.find((e) => e.response.error === MISSING_RESULT);
       if (exec) {
         exec.response = response;
-        if (timeline) {
-          // Standalone entry at the wire position — the assistant message is
-          // already in the list above, so the card lands right after its text.
-          out.push({
-            id: loadedId(),
-            role: "tool",
-            content: "",
-            toolCallId: msg.tool_call_id,
-            toolExec: exec,
-          });
-        }
+        // Standalone entry at the wire position — the assistant message is
+        // already in the list above, so the card lands right after its text.
+        out.push({
+          id: loadedId(),
+          role: "tool",
+          content: "",
+          toolCallId: msg.tool_call_id,
+          toolExec: exec,
+        });
       } else {
         // No assistant tool_call to fold into — keep it as a tool message
         // rather than an empty assistant bubble.

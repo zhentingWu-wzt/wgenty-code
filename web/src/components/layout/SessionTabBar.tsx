@@ -3,7 +3,6 @@ import { FileMinus, FileText, Network, X } from "lucide-react";
 import { useSessionManager, type SessionStatus } from "../../state/sessionManager";
 import { useUiStore } from "../../state/uiStore";
 import { cn } from "../../lib/utils";
-import { DisplayModeToggle } from "./DisplayModeToggle";
 
 const STATUS_DOT: Record<SessionStatus, string> = {
   running: "bg-primary",
@@ -148,7 +147,6 @@ export function SessionTabBar() {
           );
         })}
       </div>
-      <DisplayModeToggle />
     </div>
   );
 }
