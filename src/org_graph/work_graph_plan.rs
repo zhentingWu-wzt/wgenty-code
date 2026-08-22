@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::agent::coordinator::CoordinatorError;
+
 use super::{NodeRegistry, NodeType};
 
 /// Structured category supplied by a trusted caller at node creation.
@@ -106,6 +108,10 @@ pub struct WorkGraphPlan {
     /// full compile → test → verify sequence.
     #[serde(default = "default_phases")]
     pub phases: Vec<WorkGraphPhase>,
+    /// Plan revision; `1` is the composed baseline. Each anchor-driven
+    /// adaptation increments it (bounded by [`MAX_PLAN_ADAPTATIONS`]).
+    #[serde(default = "revision_one")]
+    pub revision: u32,
     #[serde(default)]
     pub bindings: Vec<WorkGraphRoleBinding>,
 }
@@ -200,6 +206,7 @@ impl GraphTemplate {
                 })
                 .collect(),
             phases: default_phases(),
+            revision: revision_one(),
             bindings: Vec::new(),
         }
     }
@@ -217,6 +224,39 @@ pub enum WorkGraphPlanError {
     EdgeNotAllowed { from: String, to: String },
     #[error("Work-Graph specialist capacity {value} exceeds the closed range 0..=3")]
     InvalidSpecialistCapacity { value: u8 },
+}
+
+/// Hard cap on anchor-driven plan revisions per node.
+pub const MAX_PLAN_ADAPTATIONS: u32 = 2;
+
+fn revision_one() -> u32 {
+    1
+}
+
+/// Why the code-owned adapter revised (or wants to escalate) a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdaptationReason {
+    /// The same test anchor failed consecutively without a diagnose channel.
+    RepeatedTestAnchorFailure { consecutive_failures: u32 },
+}
+
+/// One bounded, code-owned plan revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adaptation {
+    pub spliced_node: WorkGraphPlanNode,
+    pub reason: AdaptationReason,
+    pub next_revision: u32,
+}
+
+/// The adapter's verdict for the current anchored state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdaptationOutcome {
+    /// No rule matched; keep the persisted plan as-is.
+    Unchanged,
+    /// Splice the diagnose stage before the next implement pass.
+    Splice(Adaptation),
+    /// The adaptation budget is exhausted; escalate instead of retrying.
+    Escalate { reason: AdaptationReason },
 }
 
 impl WorkGraphPlan {
@@ -452,9 +492,93 @@ pub fn select_work_graph(request: &WorkGraphRequest) -> WorkGraphPlan {
     compose_work_graph(request).expect("closed-set facts always compose a valid plan")
 }
 
+/// Count consecutive failed test anchors for one node from durable audit
+/// events. A passing test anchor (or events from other nodes) resets or never
+/// contributes to the streak.
+pub fn consecutive_test_anchor_failures(events: &[super::GraphAuditEvent], node_id: &str) -> u32 {
+    let mut streak = 0;
+    for event in events {
+        if event.node_id != node_id {
+            continue;
+        }
+        if event.kind == super::GraphAuditKind::AnchorCompleted
+            && event.anchor == Some(super::GraphAuditAnchor::Test)
+        {
+            if event
+                .commands
+                .iter()
+                .all(|command| command.exit_code == Some(0))
+            {
+                streak = 0;
+            } else {
+                streak += 1;
+            }
+        }
+    }
+    streak
+}
+
+/// Anchor-driven, bounded plan adaptation. Pure: consumes only persisted
+/// work-state fields and the selected plan; never model output.
+///
+/// Rules (first match wins):
+/// - The latest test anchor failed, iteration budget remains, the plan has no
+///   diagnose channel, and the same node failed the test anchor twice in a
+///   row → splice the diagnose stage (revision + 1).
+/// - The same trigger with the revision budget exhausted → escalate.
+/// - Anything else (no failure, no budget, diagnose already present, first
+///   failure) → unchanged; the existing routing handles plain retries.
+pub fn adapt_work_graph(
+    state: &super::WorkState,
+    plan: &WorkGraphPlan,
+    node_id: &str,
+) -> Result<AdaptationOutcome, CoordinatorError> {
+    let test_failed = state
+        .test_result(super::NodeType::Verification)?
+        .is_some_and(|test| !test.pass);
+    if !test_failed {
+        return Ok(AdaptationOutcome::Unchanged);
+    }
+    let budget_remains = state
+        .budget(super::NodeType::GeneralPurpose)?
+        .is_some_and(|budget| budget.iter_used < budget.max_iter);
+    if !budget_remains {
+        return Ok(AdaptationOutcome::Unchanged);
+    }
+    if plan
+        .nodes
+        .iter()
+        .any(|node| node.role == super::NodeType::RootCause)
+    {
+        return Ok(AdaptationOutcome::Unchanged);
+    }
+    let consecutive_failures = consecutive_test_anchor_failures(state.graph_audit(), node_id);
+    if consecutive_failures < 2 {
+        return Ok(AdaptationOutcome::Unchanged);
+    }
+    let reason = AdaptationReason::RepeatedTestAnchorFailure {
+        consecutive_failures,
+    };
+    if plan.revision.saturating_sub(1) >= MAX_PLAN_ADAPTATIONS {
+        return Ok(AdaptationOutcome::Escalate { reason });
+    }
+    Ok(AdaptationOutcome::Splice(Adaptation {
+        spliced_node: WorkGraphPlanNode {
+            id: "diagnose".into(),
+            role: super::NodeType::RootCause,
+        },
+        reason,
+        next_revision: plan.revision + 1,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::org_graph::{
+        AuditCommandRun, Budget, GraphAuditAnchor, GraphAuditEvent, GraphAuditKind, TestResult,
+        WorkState,
+    };
 
     #[test]
     fn diagnosis_request_includes_anchored_root_cause_retry_cycle() {
@@ -783,6 +907,7 @@ mod tests {
         let plan: WorkGraphPlan =
             serde_json::from_str(r#"{"template_id":"implementation-v1","nodes":[],"edges":[]}"#)
                 .expect("legacy plan json");
+        assert_eq!(plan.revision, 1);
         assert_eq!(
             plan.phases,
             vec![
@@ -790,6 +915,172 @@ mod tests {
                 WorkGraphPhase::TestAnchor,
                 WorkGraphPhase::VerifyGate
             ]
+        );
+    }
+
+    fn failed_test_anchor_event(node_id: &str, exit_code: i32) -> GraphAuditEvent {
+        GraphAuditEvent {
+            node_id: node_id.into(),
+            attempt: 1,
+            kind: GraphAuditKind::AnchorCompleted,
+            anchor: Some(GraphAuditAnchor::Test),
+            commands: vec![AuditCommandRun {
+                command: "cargo test".into(),
+                exit_code: Some(exit_code),
+                stderr: String::new(),
+            }],
+            route: None,
+            profile: None,
+            resolved_commands: None,
+            budget: None,
+            timestamp: "2026-08-22T00:00:00Z".into(),
+        }
+    }
+
+    fn adapted_state(failed_test: bool, iter_used: u32, max_iter: u32) -> WorkState {
+        let mut state = WorkState::default();
+        state
+            .set_test_result(
+                NodeType::Verification,
+                TestResult {
+                    pass: !failed_test,
+                    failed_cases: if failed_test {
+                        vec!["cargo test".into()]
+                    } else {
+                        Vec::new()
+                    },
+                },
+            )
+            .expect("record test result");
+        state
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter,
+                    iter_used,
+                    token_used: 0,
+                },
+            )
+            .expect("record budget");
+        state
+    }
+
+    fn low_risk_plan() -> WorkGraphPlan {
+        compose_work_graph(&request(
+            WorkGraphTaskKind::Implementation,
+            Risk::Low,
+            true,
+            1,
+            false,
+        ))
+        .expect("compose low risk")
+    }
+
+    #[test]
+    fn revision_defaults_to_one_and_instantiates_at_one() {
+        let plan = compose_work_graph(&WorkGraphRequest::default()).expect("compose");
+        assert_eq!(plan.revision, 1);
+        let template = GraphTemplateRegistry::builtin()
+            .find(WorkGraphTaskKind::Implementation, false)
+            .expect("template");
+        assert_eq!(template.instantiate().revision, 1);
+    }
+
+    #[test]
+    fn first_test_failure_keeps_the_plan_unchanged() {
+        let mut state = adapted_state(true, 1, 3);
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        let plan = low_risk_plan();
+        assert_eq!(
+            adapt_work_graph(&state, &plan, "node-1").expect("adapt"),
+            AdaptationOutcome::Unchanged
+        );
+    }
+
+    #[test]
+    fn second_consecutive_test_failure_splices_diagnose() {
+        let mut state = adapted_state(true, 2, 3);
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        let plan = low_risk_plan();
+        assert_eq!(
+            adapt_work_graph(&state, &plan, "node-1").expect("adapt"),
+            AdaptationOutcome::Splice(Adaptation {
+                spliced_node: WorkGraphPlanNode {
+                    id: "diagnose".into(),
+                    role: NodeType::RootCause,
+                },
+                reason: AdaptationReason::RepeatedTestAnchorFailure {
+                    consecutive_failures: 2,
+                },
+                next_revision: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn adaptation_budget_exhaustion_escalates_instead_of_splicing() {
+        let mut state = adapted_state(true, 2, 5);
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        let mut plan = low_risk_plan();
+        plan.revision = 1 + MAX_PLAN_ADAPTATIONS;
+        assert_eq!(
+            adapt_work_graph(&state, &plan, "node-1").expect("adapt"),
+            AdaptationOutcome::Escalate {
+                reason: AdaptationReason::RepeatedTestAnchorFailure {
+                    consecutive_failures: 2,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn exhausted_iteration_budget_does_not_adapt() {
+        let mut state = adapted_state(true, 3, 3);
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        let plan = low_risk_plan();
+        assert_eq!(
+            adapt_work_graph(&state, &plan, "node-1").expect("adapt"),
+            AdaptationOutcome::Unchanged
+        );
+    }
+
+    #[test]
+    fn plans_with_a_diagnose_channel_never_splice() {
+        let mut state = adapted_state(true, 2, 3);
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        let plan = compose_work_graph(&WorkGraphRequest::default()).expect("compose default");
+        assert_eq!(
+            adapt_work_graph(&state, &plan, "node-1").expect("adapt"),
+            AdaptationOutcome::Unchanged
+        );
+    }
+
+    #[test]
+    fn stale_failures_from_other_nodes_do_not_count() {
+        let mut state = adapted_state(true, 2, 3);
+        state.append_graph_audit(failed_test_anchor_event("node-0", 1));
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        let plan = low_risk_plan();
+        assert_eq!(
+            adapt_work_graph(&state, &plan, "node-1").expect("adapt"),
+            AdaptationOutcome::Unchanged
+        );
+    }
+
+    #[test]
+    fn successful_test_anchor_resets_the_consecutive_count() {
+        let mut state = adapted_state(true, 3, 5);
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        state.append_graph_audit(failed_test_anchor_event("node-1", 0));
+        state.append_graph_audit(failed_test_anchor_event("node-1", 1));
+        let plan = low_risk_plan();
+        assert_eq!(
+            adapt_work_graph(&state, &plan, "node-1").expect("adapt"),
+            AdaptationOutcome::Unchanged
         );
     }
 }
