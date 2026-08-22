@@ -69,13 +69,15 @@ impl StreamProcessor {
 
     /// Process a single SSE text line, returning an event if one was produced.
     fn process_line(&mut self, line: &str) -> Option<StreamEvent> {
-        // Detect daemon error events before SSE chunk parsing.
-        // Daemon errors come as: data: {"error":"message"}
+        // Detect provider/daemon error payloads before SSE chunk parsing.
+        // Two shapes in the wild: {"error":"message"} and OpenAI-style
+        // {"error":{"message":..,"type":..,"code":..}}. The object form is
+        // what mid-stream server errors (e.g. "unexpected EOF") arrive as.
         let payload = line.strip_prefix("data: ").unwrap_or(line);
         if payload != "[DONE]" {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload) {
-                if let Some(error_msg) = parsed.get("error").and_then(|v| v.as_str()) {
-                    return Some(StreamEvent::StreamError(error_msg.to_string()));
+                if let Some(error_msg) = extract_error_message(&parsed) {
+                    return Some(StreamEvent::StreamError(error_msg));
                 }
             }
         }
@@ -241,6 +243,23 @@ impl StreamProcessor {
     }
 }
 
+/// Extract a human-readable message from an SSE error payload, accepting both
+/// `"error": "message"` and `"error": {"message": .., "type": ..}` shapes.
+/// Returns None when the payload carries no `error` field.
+fn extract_error_message(payload: &serde_json::Value) -> Option<String> {
+    match payload.get("error")? {
+        serde_json::Value::String(message) => Some(message.clone()),
+        serde_json::Value::Object(object) => {
+            let message = object.get("message").and_then(|value| value.as_str())?;
+            match object.get("type").and_then(|value| value.as_str()) {
+                Some(error_type) => Some(format!("{message} ({error_type})")),
+                None => Some(message.to_string()),
+            }
+        }
+        _ => None,
+    }
+}
+
 impl Default for StreamProcessor {
     fn default() -> Self {
         Self::new()
@@ -323,5 +342,37 @@ mod tests {
         let mut sp = StreamProcessor::new();
         let events = sp.feed_bytes(b"data: [DONE]\n");
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_error_object_payload_emits_stream_error() {
+        // Mid-stream server errors arrive as OpenAI-style error objects; the
+        // response is truncated and must surface as StreamError, not be
+        // silently dropped by chunk parsing.
+        let mut sp = StreamProcessor::new();
+        let sse = "data: {\"error\":{\"message\":\"unexpected EOF\",\"type\":\"server_error\",\"code\":\"internal_server_error\"}}\n";
+        let events = sp.feed_bytes(sse.as_bytes());
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::StreamError(message) => {
+                assert!(message.contains("unexpected EOF"));
+                assert!(message.contains("server_error"));
+            }
+            _ => panic!("expected StreamError"),
+        }
+    }
+
+    #[test]
+    fn test_error_string_payload_still_emits_stream_error() {
+        let mut sp = StreamProcessor::new();
+        let sse = "data: {\"error\":\"daemon rejected the request\"}\n";
+        let events = sp.feed_bytes(sse.as_bytes());
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::StreamError(message) => {
+                assert_eq!(message, "daemon rejected the request");
+            }
+            _ => panic!("expected StreamError"),
+        }
     }
 }

@@ -100,6 +100,7 @@ pub async fn stream_response(
     preparing_tools_fired: &mut bool,
 ) -> Result<StreamResult, RuntimeError> {
     let mut processor = StreamProcessor::new();
+    let mut stream_error: Option<String> = None;
 
     loop {
         let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, byte_stream.next()).await {
@@ -114,12 +115,26 @@ pub async fn stream_response(
         };
         let bytes = chunk?;
         for event in processor.feed_bytes(&bytes) {
+            if let StreamEvent::StreamError(message) = &event {
+                stream_error = Some(message.clone());
+            }
             dispatch_event(event, events, preparing_tools_fired);
         }
     }
 
     for event in processor.flush() {
+        if let StreamEvent::StreamError(message) = &event {
+            stream_error = Some(message.clone());
+        }
         dispatch_event(event, events, preparing_tools_fired);
+    }
+
+    // A provider error payload mid-stream means the response is truncated
+    // (typically no finish_reason chunk follows). Fail the round so
+    // `stream_with_retry` retries it, instead of returning partial content
+    // that downstream code would treat as a normally completed turn.
+    if let Some(message) = stream_error {
+        return Err(RuntimeError::Stream(message));
     }
 
     Ok(processor.finish())
@@ -190,5 +205,30 @@ mod tests {
         assert!(matches!(err, RuntimeError::StreamTimeout(_)));
         let err = RuntimeError::from_stream_failure("connection reset");
         assert!(matches!(err, RuntimeError::Stream(_)));
+    }
+
+    #[tokio::test]
+    async fn stream_response_fails_round_on_provider_error_payload() {
+        // A mid-stream error payload truncates the response (no finish_reason
+        // follows); the round must fail so stream_with_retry can retry it.
+        let body = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":0,",
+            "\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},",
+            "\"finish_reason\":null}]}\n",
+            "data: {\"error\":{\"message\":\"unexpected EOF\",\"type\":\"server_error\",\"code\":\"internal_server_error\"}}\n",
+            "data: [DONE]\n",
+        );
+        let stream = futures::stream::iter(vec![Ok(bytes::Bytes::from(body))]);
+        let sink = VecSink {
+            events: Mutex::new(Vec::new()),
+        };
+        let mut preparing = false;
+        let err = match stream_response(stream, &sink, &mut preparing).await {
+            Err(err) => err,
+            Ok(_) => panic!("provider error payload must fail the round"),
+        };
+        assert!(
+            matches!(err, RuntimeError::Stream(ref message) if message.contains("unexpected EOF"))
+        );
     }
 }
