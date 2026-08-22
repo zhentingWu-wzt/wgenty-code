@@ -60,6 +60,7 @@ impl AgentLoop {
             rounds_since_plan: self.rounds_since_plan,
             compacted_summary: self.compacted_summary.clone(),
             compaction_boundary: self.compaction_boundary,
+            micro_compact_frontier: 0,
             consecutive_parse_errors: 0,
             rounds_since_task_mgmt: 0,
             last_measured_prompt_tokens: None,

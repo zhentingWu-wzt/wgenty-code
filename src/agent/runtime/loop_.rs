@@ -1,8 +1,9 @@
 //! Shared multi-round agent loop (stream → tools → compact → repeat).
 
 use super::compaction::{
-    estimate_prompt_tokens, micro_compact_messages, needs_compaction, request_size_chars,
-    split_for_compaction, Calibration,
+    advance_frontier, build_request_tail, estimate_prompt_tokens,
+    estimate_prompt_tokens_calibrated, needs_compaction, request_size_chars, split_for_compaction,
+    Calibration, MICRO_COMPACT_KEEP_TOOL_RESULTS,
 };
 use super::compactor::{fallback_micro_compact, is_payload_too_large_error};
 use super::config::RuntimeConfig;
@@ -92,6 +93,13 @@ pub struct LoopTurnState {
     /// view but remain in the stored history (and the saved session). `0` means
     /// no compaction has occurred.
     pub compaction_boundary: usize,
+    /// Sticky micro-compaction frontier (absolute index into the raw history).
+    /// Tool results before it are compacted to markers in the API view; `[frontier..]`
+    /// stays verbatim. Only advances when the calibrated estimate crosses the
+    /// micro-compaction watermark — between triggers the view is append-only so
+    /// the request prefix remains prompt-cache stable. Runtime-only: not
+    /// persisted; restored sessions start verbatim (0).
+    pub micro_compact_frontier: usize,
     /// Consecutive tool rounds with irrecoverable JSON arg failures.
     pub consecutive_parse_errors: usize,
     /// Rounds since the model last called `task_management`; drives ready-task nudges.
@@ -224,21 +232,53 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         // never stored in history; only the raw tail is persisted to the saved
         // session. This keeps sessions compact while the live request always
         // carries the current system instructions.
+        //
+        // Lazy micro-compaction (cache-stable view): below the watermark the
+        // tail is verbatim, so the request prefix is byte-stable across rounds
+        // and provider prompt caches stay warm. Crossing the watermark advances
+        // a sticky frontier once — everything before it compacts to markers
+        // (failures keep an error digest, file_read stays verbatim) — and the
+        // view is append-only again until the next trigger. Replaces the old
+        // every-round micro_compact_messages call whose sliding keep-window
+        // flipped the most recent tool results to markers every round.
         let raw = history.get().await;
         let boundary = state.compaction_boundary.min(raw.len());
-        let tail_msgs = micro_compact_messages(&raw[boundary..]);
-        let mut messages = if state.compacted_summary.is_empty() {
-            let mut m = Vec::with_capacity(system_messages.len() + tail_msgs.len());
-            m.extend_from_slice(system_messages);
-            m.extend(tail_msgs);
-            m
-        } else {
-            super::compaction::assemble_post_compaction_history(
-                system_messages,
-                &state.compacted_summary,
-                &tail_msgs,
-            )
+        let fixed_overhead_chars = fixed_tool_def_chars(tools, stream_style, config);
+        let calibration = build_calibration(state);
+        let watermark = (config.context_window * 3 / 5).saturating_sub(config.max_tokens);
+        let mut frontier = state.micro_compact_frontier.max(boundary).min(raw.len());
+        let compacted_summary = state.compacted_summary.clone();
+        let build_view = |frontier: usize| {
+            let tail_msgs = build_request_tail(&raw, boundary, frontier);
+            if compacted_summary.is_empty() {
+                let mut m = Vec::with_capacity(system_messages.len() + tail_msgs.len());
+                m.extend_from_slice(system_messages);
+                m.extend(tail_msgs);
+                m
+            } else {
+                super::compaction::assemble_post_compaction_history(
+                    system_messages,
+                    &compacted_summary,
+                    &tail_msgs,
+                )
+            }
         };
+        let mut messages = build_view(frontier);
+        if estimate_prompt_tokens_calibrated(&messages, fixed_overhead_chars, calibration)
+            > watermark
+        {
+            let advanced = advance_frontier(&raw, MICRO_COMPACT_KEEP_TOOL_RESULTS);
+            if advanced > frontier {
+                tracing::debug!(
+                    frontier = advanced,
+                    raw_len = raw.len(),
+                    "micro-compaction watermark crossed; advancing sticky frontier"
+                );
+                frontier = advanced;
+                state.micro_compact_frontier = frontier;
+                messages = build_view(frontier);
+            }
+        }
         // Defensive boundary 1: demote `role="tool"` messages whose
         // `tool_call_id` has no matching preceding assistant `tool_calls`
         // entry. This happens for sessions saved by older builds that dropped
@@ -258,8 +298,6 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             obs.on_round_start(llm_rounds + 1, &messages);
         }
 
-        let fixed_overhead_chars = fixed_tool_def_chars(tools, stream_style, config);
-        let calibration = build_calibration(state);
         let want_compact = state.compact_requested
             || needs_compaction(
                 &messages,
@@ -282,12 +320,19 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         let new_boundary = split_for_compaction(&fresh).0.len();
                         state.compaction_boundary = new_boundary;
                         state.compacted_summary = summary.clone();
+                        // The frontier is an absolute index; keep it at or past
+                        // the new boundary so it never re-compacts a segment
+                        // the summary already replaced.
+                        state.micro_compact_frontier = state
+                            .micro_compact_frontier
+                            .max(new_boundary)
+                            .min(fresh.len());
                         // Build the post-compaction view to refresh the token
                         // estimate and guard against an infinite compaction loop
                         // (e.g. when the system prompt alone exceeds the
                         // threshold and no amount of summarizing helps).
-                        let tail = &fresh[new_boundary..];
-                        let tail_msgs = micro_compact_messages(tail);
+                        let tail_msgs =
+                            build_request_tail(&fresh, new_boundary, state.micro_compact_frontier);
                         let view = super::compaction::assemble_post_compaction_history(
                             system_messages,
                             &summary,
