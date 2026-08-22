@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::agent::ToolContext;
-use crate::org_graph::{WorkGraphRequest, WorkGraphTaskKind};
+use crate::org_graph::{Risk, WorkGraphRequest, WorkGraphTaskKind};
 use crate::tools::{Tool, ToolError, ToolOutput};
 
 use super::node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerificationOutcome};
@@ -140,6 +140,36 @@ impl BeginNodeTool {
             })
             .transpose()?
             .unwrap_or(false);
+        let risk = match input.get("risk") {
+            None => Risk::Medium,
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| ToolError {
+                message: "invalid 'risk': expected 'low', 'medium', or 'high'".into(),
+                code: Some("invalid_input".into()),
+            })?,
+        };
+        let has_test_infra = input
+            .get("has_test_infra")
+            .map(|value| {
+                value.as_bool().ok_or_else(|| ToolError {
+                    message: "invalid 'has_test_infra': expected boolean".into(),
+                    code: Some("invalid_input".into()),
+                })
+            })
+            .transpose()?
+            .unwrap_or(true);
+        let max_specialists = input
+            .get("max_specialists")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .filter(|number| *number <= 3)
+                    .ok_or_else(|| ToolError {
+                        message: "invalid 'max_specialists': expected an integer in 0..=3".into(),
+                        code: Some("invalid_input".into()),
+                    })
+            })
+            .transpose()?
+            .unwrap_or(1) as u8;
         let node_id = runtime
             .begin_node_with_work_graph(
                 goal,
@@ -150,7 +180,9 @@ impl BeginNodeTool {
                 WorkGraphRequest {
                     task_kind,
                     requires_human_review,
-                    ..Default::default()
+                    risk,
+                    has_test_infra,
+                    max_specialists,
                 },
             )
             .await
@@ -213,6 +245,24 @@ verify scope and rollback."
                     "type": "boolean",
                     "description": "Require a trusted human approval before completion.",
                     "default": false
+                },
+                "risk": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": "Risk tier. 'high' forces the terminal human review gate; 'low' strips the predeclared diagnose stage.",
+                    "default": "medium"
+                },
+                "has_test_infra": {
+                    "type": "boolean",
+                    "description": "Set false when the workspace has no deterministic test commands; composes a compile+verify graph without the test anchor phase.",
+                    "default": true
+                },
+                "max_specialists": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Diagnostic channel capacity; 0 strips the diagnose stage entirely.",
+                    "default": 1
                 }
             },
             "required": ["goal", "verify_commands"]
@@ -582,6 +632,95 @@ mod tests {
         assert_eq!(
             store.selected_template_id_for_test(&root.session_id),
             Some("diagnosis-v1".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_node_tool_composes_signature_template_from_facts() {
+        let directory = TempDir::new().expect("temp directory");
+        let store = Arc::new(ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(directory.path())),
+            2,
+        ));
+        let root = AgentExecutionContext::root(SessionId::new("signature-template"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("tool-signature"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        let begin = BeginNodeTool::with_runtime_store(Arc::clone(&store));
+
+        begin
+            .execute_with_context(
+                &context,
+                json!({
+                    "goal": "risky change without test infra",
+                    "verify_commands": ["true"],
+                    "risk": "high",
+                    "has_test_infra": false
+                }),
+            )
+            .await
+            .expect("begin composed node");
+
+        assert_eq!(
+            store.selected_template_id_for_test(&root.session_id),
+            Some("impl+no-test+review+risk-high".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_node_tool_rejects_invalid_closed_set_facts() {
+        let directory = TempDir::new().expect("temp directory");
+        let store = Arc::new(ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(directory.path())),
+            2,
+        ));
+        let root = AgentExecutionContext::root(SessionId::new("invalid-facts"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("tool-invalid-facts"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        let begin = BeginNodeTool::with_runtime_store(Arc::clone(&store));
+
+        for (field, value, expected_fragment) in [
+            ("risk", json!("extreme"), "'risk'"),
+            ("max_specialists", json!(4), "'max_specialists'"),
+            ("max_specialists", json!(-1), "'max_specialists'"),
+            ("has_test_infra", json!("yes"), "'has_test_infra'"),
+        ] {
+            let error = begin
+                .execute_with_context(
+                    &context,
+                    json!({
+                        "goal": "invalid facts",
+                        "verify_commands": ["true"],
+                        field: value
+                    }),
+                )
+                .await
+                .expect_err("closed-set violations must be rejected");
+            assert_eq!(error.code.as_deref(), Some("invalid_input"));
+            assert!(
+                error.message.contains(expected_fragment),
+                "error should name the field: {}",
+                error.message
+            );
+        }
+        assert!(
+            store
+                .selected_template_id_for_test(&root.session_id)
+                .is_none(),
+            "rejected calls must not persist a work graph"
         );
     }
 

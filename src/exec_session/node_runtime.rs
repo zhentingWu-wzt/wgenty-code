@@ -25,7 +25,7 @@ use super::session::SessionStatus;
 use super::verification_profile::VerificationProfile;
 use super::verify_gate::{VerifyGate, VerifyResult};
 use super::work_graph::{next_step, WorkGraphStep};
-use crate::org_graph::{select_work_graph, WorkGraphRequest};
+use crate::org_graph::{compose_work_graph, WorkGraphRequest};
 use crate::org_graph::{
     AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditCommands,
     GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, HumanReview, NodeRegistry,
@@ -809,7 +809,8 @@ impl NodeRuntime {
         coord.add_node(node).context("add_node failed")?;
         coord.work_state_mut().reset_for_new_node();
         let registry = NodeRegistry::builtin(&Default::default());
-        let selected_plan = select_work_graph(&graph_request)
+        let selected_plan = compose_work_graph(&graph_request)
+            .map_err(|error| anyhow::anyhow!("compose Work-Graph: {error}"))?
             .bind_registry(&registry)
             .map_err(|error| anyhow::anyhow!("bind Work-Graph roles to Org-Graph: {error}"))?;
         coord
