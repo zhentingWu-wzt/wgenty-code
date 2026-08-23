@@ -15,33 +15,28 @@
 
 ## 待办(按风险排序)
 
-### T1 — Failed 节点死锁(高)
+### T1 — Failed 节点死锁(高)✅ 已修(ab97e9b6)
 
-节点 Escalate 后无 Verified 锚点时:`begin_node` 拒(前置校验)、`rollback_node` 拒(no
-verified node to roll back to)——会话永久卡死,只能手工改 session.json。
-**建议**:允许"丢弃当前 Failed 节点并清其 turn"的显式操作(如 `rollback_node` 的
-`--discard-failed` 语义,或 begin_node 对 Failed 前置放行并自动截断)。
+`begin_node` 对 Failed(终态)放行,新节点以当前工作区为新基线;`rollback_node` 无
+Verified 锚点时回退到最后一个 Failed 节点作为丢弃锚点(回滚其 start_turn 并连同
+移除)。Running(非终态)仍拒绝两条路径。
 
-### T2 — rollback 静默吞节点期间的外部提交(高)
+### T2 — rollback 静默吞节点期间的外部提交(高)✅ 已修(1a6b351d)
 
-`rollback_to` 的 Stage 1 对"HEAD ≠ 节点起点"一律 `git reset --hard`,包括与节点无关的
-基础设施提交(实测:两个修复提交被吞,靠 reflog 才找回;连带 `.wgenty-code/checkpoints/`
-untracked 目录被清,导致 rollback 自身死锁)。
-**建议**:(a) 回滚前检测 HEAD 领先节点起点 >1 个提交时拒绝/警告;(b) untracked 清理排除
-`.wgenty-code/`(runtime 状态不应被自身回滚删除)。
+HEAD 与 turn 起点 SHA 之间 >1 个提交时 rollback 拒绝并列出 subject(=1 为 agent
+标准工作流,放行);untracked 清理无条件跳过 `.wgenty-code/`,runtime 状态不再被
+自身回滚删除。
 
-### T3 — daemon 重启与二进制 inode 陷阱(中,工程)
+### T3 — daemon 重启与二进制 inode 陷阱(中,工程)✅ 已修
 
-cargo 重建替换二进制 inode;运行中的 daemon 继续映射旧 inode,`lsof` 显示的路径却是新的
-——"重启了但修复没生效"极易误判(实测连续踩坑 3 次)。
-**建议**:(a) daemon status 输出进程二进制 inode + 启动时间;(b) `daemon stop` 前比对
-磁盘 inode,不一致时提示"二进制已更新,需重启";(c) 文档记录"编译后再重启"的顺序要求。
+`daemon status` 现输出 `Binary: STALE/current`:比对磁盘二进制 mtime 与 daemon 启动
+时间,启动后重建过的二进制不可能在跑(实测当天即捕获一次真实 STALE)。
 
-### T4 — `config set` 不校验路径(低)
+### T4 — `config set` 不校验路径(低)✅ 已修
 
-`config set exec_session.auto_retry_max 5` 静默写入无效顶层键(真实路径是
-`agent.exec_session.auto_retry_max`),无任何报错。
-**建议**:校验 key 路径存在于 Settings schema,未知路径报错。
+serde 默认丢弃未知字段,`config set exec_session.auto_retry_max 5` 会"成功"写入
+无效顶层键。现在 set 后做 round-trip 导航验证:路径不在 schema 中 →
+`unknown setting key` 报错;真实嵌套路径不受影响。
 
 ### T5 — 测试手册沉淀(低)
 
