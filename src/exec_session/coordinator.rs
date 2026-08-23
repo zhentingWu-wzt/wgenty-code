@@ -258,6 +258,31 @@ impl SessionCoordinator {
         Ok(removed)
     }
 
+    /// Truncate the node list at AND including `node_id` — used when a failed
+    /// node (the rollback anchor) is itself being discarded. `current_node`
+    /// clears so the session is ready for a fresh `begin_node`.
+    pub fn truncate_nodes_after_inclusive(&mut self, node_id: &str) -> Result<Vec<String>> {
+        let pos = self
+            .session
+            .node_states
+            .iter()
+            .position(|n| n.id == node_id);
+        let removed: Vec<String> = if let Some(idx) = pos {
+            let removed: Vec<String> = self.session.node_states[idx..]
+                .iter()
+                .map(|n| n.id.clone())
+                .collect();
+            self.session.node_states.truncate(idx);
+            self.session.current_node = None;
+            removed
+        } else {
+            Vec::new()
+        };
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        self.session.save(&self.session_dir)?;
+        Ok(removed)
+    }
+
     /// Increment the retry count of a node by id. Persists immediately.
     /// Called by `verify_node` (Task 6) on verify failure.
     pub fn increment_node_retry(&mut self, node_id: &str) -> Result<()> {

@@ -1042,11 +1042,12 @@ impl NodeRuntime {
             .turn_id
             .clone();
 
-        // Precondition: current node must be Verified or absent.
+        // Precondition: current node must be Verified, Failed (terminal —
+        // recovery continues with a fresh baseline), or absent.
         if let Some(node) = coord.current_node() {
-            if node.status != NodeStatus::Verified {
+            if !matches!(node.status, NodeStatus::Verified | NodeStatus::Failed) {
                 anyhow::bail!(
-                    "cannot begin_node: current node {:?} is not Verified",
+                    "cannot begin_node: current node {:?} is not terminal (Verified/Failed)",
                     node.status
                 );
             }
@@ -1249,30 +1250,38 @@ impl NodeRuntime {
             .write()
             .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
 
-        // Find last Verified node.
-        let verified_node_id = coord
+        // Find last Verified node; when none exists, fall back to the last
+        // Failed node so its work can still be discarded instead of
+        // deadlocking the session (Failed is terminal but its turn bounds
+        // exactly the work to rewind).
+        let anchor_node_id = coord
             .node_states()
             .iter()
             .rev()
-            .find(|n| n.status == NodeStatus::Verified)
+            .find(|n| matches!(n.status, NodeStatus::Verified | NodeStatus::Failed))
             .map(|n| n.id.clone())
-            .ok_or_else(|| anyhow::anyhow!("no verified node to roll back to"))?;
+            .ok_or_else(|| anyhow::anyhow!("no verified or failed node to roll back to"))?;
 
-        // Find the first node after the verified node; its start_turn_id is
+        // Find the first node after the anchor node; its start_turn_id is
         // the workspace rollback target.
         let rollback_turn = {
             let pos = coord
                 .node_states()
                 .iter()
-                .position(|n| n.id == verified_node_id);
+                .position(|n| n.id == anchor_node_id);
             match pos {
                 Some(idx) if idx + 1 < coord.node_states().len() => {
                     coord.node_states()[idx + 1].start_turn_id.clone()
                 }
+                Some(idx) if coord.node_states()[idx].status == NodeStatus::Failed => {
+                    // The anchor itself is the last (failed) node: rewind to
+                    // its own start turn, discarding its work entirely.
+                    coord.node_states()[idx].start_turn_id.clone()
+                }
                 _ => {
                     anyhow::bail!(
-                        "no nodes after verified node {:?} to roll back",
-                        verified_node_id
+                        "no nodes after anchor node {:?} to roll back",
+                        anchor_node_id
                     );
                 }
             }
@@ -1291,10 +1300,22 @@ impl NodeRuntime {
             .rollback_to(&rollback_turn, &*self.hooks)
             .context("workspace rollback_to failed")?;
 
-        // Remove nodes after the verified node.
-        let removed = coord
-            .truncate_nodes_after(&verified_node_id)
-            .context("truncate_nodes_after failed")?;
+        // Remove nodes at/after the anchor. When the anchor itself is the
+        // failed node being discarded, the anchor is removed too.
+        let anchor_is_failed = coord
+            .node_states()
+            .iter()
+            .find(|n| n.id == anchor_node_id)
+            .is_some_and(|n| n.status == NodeStatus::Failed);
+        let removed = if anchor_is_failed {
+            coord
+                .truncate_nodes_after_inclusive(&anchor_node_id)
+                .context("truncate_nodes_after failed")?
+        } else {
+            coord
+                .truncate_nodes_after(&anchor_node_id)
+                .context("truncate_nodes_after failed")?
+        };
 
         // Drop decomposition products of any removed node and restore the
         // pre-decomposition parent budget (snapshot taken before the
@@ -1325,7 +1346,7 @@ impl NodeRuntime {
         }
 
         Ok(NodeRollbackResult {
-            rolled_back_to: verified_node_id,
+            rolled_back_to: anchor_node_id,
             removed_nodes: removed,
         })
     }
@@ -1907,13 +1928,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Current node is Running; begin_node should fail.
+        // Current node is Running (non-terminal); begin_node should fail.
         let err = setup
             .runtime
             .begin_node("goal2".into(), vec!["echo ok".into()], vec![])
             .await
             .unwrap_err();
-        assert!(format!("{err}").contains("not Verified"));
+        assert!(format!("{err}").contains("not terminal"));
     }
 
     #[tokio::test]
@@ -2442,6 +2463,77 @@ mod tests {
             .unit_specialist_reports()
             .iter()
             .all(|report| report.kind == SpecialistReportKind::Implementation));
+    }
+
+    #[tokio::test]
+    async fn begin_node_recovers_from_a_failed_node_without_a_verified_anchor() {
+        // A node that escalated with no earlier Verified anchor must not
+        // deadlock the session: Failed is terminal, so a new node may begin
+        // on the current workspace (its git refs become the fresh baseline).
+        let setup = ScriptedSetup::new([1, 1, 1]);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("doomed first node".into(), vec!["false".into()], vec![])
+            .await
+            .expect("begin first node");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("verify runs");
+        match outcome {
+            NodeVerificationOutcome::Legacy(result) => {
+                assert_eq!(result.status, NodeStatus::Failed);
+            }
+            other => panic!("legacy outcome expected, got {other:?}"),
+        }
+
+        // Recovery: a fresh node begins despite the Failed predecessor.
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("recovery node".into(), vec!["true".into()], vec![])
+            .await
+            .expect("begin_node must recover from a Failed node");
+    }
+
+    #[tokio::test]
+    async fn rollback_without_verified_anchor_discards_the_failed_node_work() {
+        // No Verified anchor exists, but the Failed node's start turn bounds
+        // its work: rollback rewinds to that turn instead of erroring.
+        let setup = ScriptedSetup::new([1, 1, 1]);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("doomed node".into(), vec!["false".into()], vec![])
+            .await
+            .expect("begin node");
+        let outcome = setup.runtime.verify_current_node().await.expect("verify");
+        match outcome {
+            NodeVerificationOutcome::Legacy(result) => {
+                assert_eq!(result.status, NodeStatus::Failed)
+            }
+            other => panic!("legacy outcome expected, got {other:?}"),
+        }
+
+        let rollback = setup
+            .runtime
+            .rollback_node()
+            .await
+            .expect("rollback discards the failed node");
+        assert!(
+            !rollback.removed_nodes.is_empty(),
+            "the failed node is removed"
+        );
+        // After discarding, begin_node works on a clean slate.
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("fresh node".into(), vec!["true".into()], vec![])
+            .await
+            .expect("begin after discard");
     }
 
     #[tokio::test]
@@ -4097,7 +4189,7 @@ mod tests {
         // Node is Running, not Verified.
 
         let err = setup.runtime.rollback_node().await.unwrap_err();
-        assert!(format!("{err}").contains("no verified node"));
+        assert!(format!("{err}").contains("no verified or failed node"));
     }
 
     #[tokio::test]
