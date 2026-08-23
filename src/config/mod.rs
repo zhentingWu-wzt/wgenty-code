@@ -328,10 +328,33 @@ impl Settings {
             }
         }
 
-        set_at(&mut json, &parts, parsed)?;
+        set_at(&mut json, &parts, parsed.clone())?;
 
         let new_settings: Settings = serde_json::from_value(json)
             .map_err(|e| anyhow::anyhow!("invalid setting at '{}': {}", key, e))?;
+        // Unknown keys are silently DROPPED by serde's default (ignore
+        // unknown fields) — the incident where a top-level `exec_session.*`
+        // write happily "succeeded" while the real key lived under
+        // `agent.exec_session.*`. Verify the written path actually survives
+        // a serialization round-trip before saving.
+        let round_trip = serde_json::to_value(&new_settings)?;
+        let mut cursor = &round_trip;
+        for (index, segment) in parts.iter().enumerate() {
+            let Some(next) = cursor.get(segment) else {
+                return Err(anyhow::anyhow!(
+                    "unknown setting key '{}' (segment '{}' is not part of the settings schema)",
+                    key,
+                    segment
+                ));
+            };
+            if index + 1 == parts.len() && next != &parsed {
+                return Err(anyhow::anyhow!(
+                    "setting '{}' did not round-trip; check the value type",
+                    key
+                ));
+            }
+            cursor = next;
+        }
         new_settings.save()?;
         Ok(())
     }

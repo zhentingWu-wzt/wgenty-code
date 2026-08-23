@@ -66,6 +66,30 @@ pub async fn status(cli_port: u16) -> anyhow::Result<()> {
     }
 
     let client = admin_client()?;
+    // Rebuilt-binary trap: cargo replaces the binary's inode on every
+    // rebuild while a running daemon keeps mapping the OLD one — lsof then
+    // shows the NEW path, so "restarted but the fix isn't live" misleads.
+    // Compare the on-disk binary's mtime against the daemon's start time:
+    // a binary rebuilt AFTER the daemon started can never be the one it
+    // runs. Surfaced before anything else.
+    if let Some(file) = &discovery {
+        if let Ok(disk_binary) = std::env::current_exe() {
+            if let Ok(meta) = std::fs::metadata(&disk_binary) {
+                let binary_mtime: Option<chrono::DateTime<chrono::Utc>> =
+                    meta.modified().ok().map(std::convert::Into::into);
+                let started = Some(file.started_at.with_timezone(&chrono::Utc));
+                if let (Some(mtime), Some(started)) = (binary_mtime, started) {
+                    if mtime > started {
+                        println!(
+                            "  Binary:     STALE — on-disk binary rebuilt at {mtime}, after the daemon started at {started}; restart to pick up the new build"
+                        );
+                    } else {
+                        println!("  Binary:     current");
+                    }
+                }
+            }
+        }
+    }
     match crate::utils::http::probe_daemon_health(&client, &base_url).await {
         Some(health) => {
             println!(

@@ -12,6 +12,24 @@ fn test_rlm_settings_default_all_enabled() {
 }
 
 #[test]
+fn set_rejects_keys_outside_the_settings_schema() {
+    // serde silently drops unknown fields, so a typo'd path must be caught
+    // by the round-trip check instead of "succeeding" while the real key
+    // lives elsewhere (top-level exec_session.* vs agent.exec_session.*).
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    let err = Settings::set("exec_session.auto_retry_max", "5").unwrap_err();
+    assert!(
+        format!("{err}").contains("unknown setting key"),
+        "got: {err:#}"
+    );
+
+    Settings::set("agent.exec_session.auto_retry_max", "5")
+        .expect("the real nested path must keep working");
+    std::env::remove_var("WGENTY_HOME");
+}
+
+#[test]
 fn test_rlm_settings_deserialize_partial() {
     let json = r#"{"enabled": false}"#;
     let rlm: RlmSettings = serde_json::from_str(json).unwrap();
