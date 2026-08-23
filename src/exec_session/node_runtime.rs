@@ -525,18 +525,18 @@ impl NodeRuntime {
             let mut last_stderr = String::new();
             while attempts_used < unit.allocation.max_iter {
                 attempts_used += 1;
-                let expected_paths = unit
-                    .expected_files
-                    .iter()
-                    .map(PathBuf::from)
-                    .collect::<Vec<_>>();
-                let result = self
+                // Unit success is judged solely by anchor exit codes: the
+                // session-scope boundary check inside verify_for_work_graph
+                // would compare the whole session's changes against this
+                // unit's expected files and misjudge every cross-unit file
+                // as a violation. The parent node's own verification owns
+                // the boundary verdict for the entire decomposition.
+                let runs = self
                     .verify_gate
-                    .verify_for_work_graph(unit.verify_commands.clone(), expected_paths)
+                    .run_anchor_commands(&unit.verify_commands)
                     .await
                     .context("run unit verification anchors")?;
-                let audit_runs: Vec<AuditCommandRun> = result
-                    .commands_run
+                let audit_runs: Vec<AuditCommandRun> = runs
                     .iter()
                     .map(|run| AuditCommandRun {
                         command: run.cmd.clone(),
@@ -544,8 +544,9 @@ impl NodeRuntime {
                         stderr: truncate_audit_stderr(&run.stderr),
                     })
                     .collect();
-                if !result.success {
-                    last_stderr = collect_stderr(&result.commands_run);
+                let unit_passed = runs.iter().all(|run| run.exit_code == Some(0));
+                if !unit_passed {
+                    last_stderr = collect_stderr(&runs);
                 }
                 {
                     let mut coord = self
@@ -563,7 +564,7 @@ impl NodeRuntime {
                     event.parent_node_id = Some(node_id.clone());
                     coord.work_state_mut().append_graph_audit(event);
                 }
-                if result.success {
+                if unit_passed {
                     passed = true;
                     break;
                 }
