@@ -340,6 +340,13 @@ impl NodeRuntime {
         Self::new(coordinator, verify_gate, auto_retry_max, Arc::new(NoHooks))
     }
 
+    /// The configured node-level retry ceiling, used to seed the work-graph
+    /// budget when the first decomposition arrives before any verification
+    /// pass has initialized it.
+    pub fn auto_retry_max(&self) -> u32 {
+        self.auto_retry_max
+    }
+
     /// Run the fixed compile → test → verify graph using real command output.
     /// Each anchor is persisted before its structured result determines the
     /// next edge. Callers supply commands; the runtime, not an agent report,
@@ -880,7 +887,7 @@ impl NodeRuntime {
     /// Verify the current node using its persisted contract. Nodes without
     /// compile/test anchors retain the original verification-only behavior.
     pub async fn verify_current_node(&self) -> Result<NodeVerificationOutcome> {
-        let (compile_commands, test_commands, verify_commands, expected_files) = {
+        let (compile_commands, test_commands, verify_commands, expected_files, has_pending_units) = {
             let coord = self
                 .coordinator
                 .read()
@@ -893,8 +900,37 @@ impl NodeRuntime {
                 node.contract.test_commands.clone(),
                 node.contract.verify_commands.clone(),
                 node.contract.expected_files.clone(),
+                coord
+                    .work_state()
+                    .decomposed_units()
+                    .iter()
+                    .any(|unit| unit.outcome.is_none()),
             )
         };
+        if has_pending_units {
+            // The agent-facing verify entry point owns unit execution: run
+            // every pending child graph serially (their anchors, budget, and
+            // audit flow through the trusted gate) before the parent
+            // pipeline. Parent anchors remain the final arbiter — a passed
+            // unit only contributes evidence.
+            let units_result = self.run_decomposed_units().await?;
+            if units_result.parent_route == WorkGraphStep::Escalate {
+                self.complete_work_graph_route(WorkGraphStep::Escalate)?;
+                let mut coord = self
+                    .coordinator
+                    .write()
+                    .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+                if let Some(node) = coord.current_node() {
+                    let node_id = node.id.clone();
+                    coord
+                        .update_node_status(&node_id, NodeStatus::Failed)
+                        .context("mark escalated unit execution node failed")?;
+                }
+                return Ok(NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                    next_step: WorkGraphStep::Escalate,
+                }));
+            }
+        }
         if compile_commands.is_empty() && test_commands.is_empty() {
             return self
                 .verify_node()
@@ -2295,6 +2331,116 @@ mod tests {
             .cloned()
             .expect("budget set");
         assert_eq!(budget.iter_used, 1, "total unit failure charges the parent");
+    }
+
+    #[tokio::test]
+    async fn verify_current_node_executes_pending_units_before_parent_anchors() {
+        // The agent-facing verify path must not skip decomposed units: when
+        // units exist without terminal outcomes, their anchored verification
+        // commands run first (each `decomposed` audit event carries them),
+        // and only then does the parent work-graph pipeline run.
+        let setup = ScriptedSetup::with_results_and_retry_budget(
+            [
+                ScriptedCommandResult::success(), // unit-0 anchor
+                ScriptedCommandResult::success(), // unit-1 anchor
+                ScriptedCommandResult::success(), // compile: cargo check
+                ScriptedCommandResult::success(), // test: cargo test --all
+                ScriptedCommandResult::success(), // test: cargo test
+                ScriptedCommandResult::success(), // verify: clippy
+                ScriptedCommandResult::success(), // verify: cargo test
+            ]
+            .into_iter(),
+            5,
+        );
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node_with_anchors(
+                "parent with pending units".into(),
+                vec!["cargo check".into()],
+                vec!["cargo test".into()],
+                vec!["cargo test".into()],
+                vec![],
+            )
+            .await
+            .expect("begin parent node");
+        {
+            let mut coord = setup.coord.write().expect("coordinator");
+            coord
+                .work_state_mut()
+                .set_budget(
+                    NodeType::GeneralPurpose,
+                    Budget {
+                        max_iter: 5,
+                        iter_used: 1,
+                        token_used: 0,
+                    },
+                )
+                .expect("init budget");
+            let plan = crate::org_graph::compose_work_graph(&Default::default())
+                .expect("compose")
+                .bind_registry(&NodeRegistry::builtin(&Default::default()))
+                .expect("bind");
+            let unit = |unit_id: &str| crate::org_graph::DecomposedUnit {
+                unit_id: unit_id.into(),
+                goal: "unit goal".into(),
+                request: Default::default(),
+                plan: plan.clone(),
+                allocation: Budget {
+                    max_iter: 2,
+                    iter_used: 0,
+                    token_used: 0,
+                },
+                verify_commands: vec![format!("echo {unit_id}")],
+                expected_files: vec![],
+                outcome: None,
+            };
+            coord
+                .work_state_mut()
+                .set_decomposed_units(vec![unit("unit-0"), unit("unit-1")]);
+        }
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("verify with units");
+        let NodeVerificationOutcome::WorkGraph(result) = outcome else {
+            panic!("work graph outcome expected");
+        };
+        assert_eq!(result.next_step, WorkGraphStep::Complete);
+
+        // Unit anchors ran before the parent pipeline, each with its own
+        // `decomposed` audit event carrying the unit's command.
+        let calls = setup.calls.lock().expect("calls").clone();
+        assert_eq!(
+            calls,
+            vec![
+                "echo unit-0",
+                "echo unit-1",
+                "cargo check",
+                "cargo test --all",
+                "cargo test",
+                "cargo clippy --all-targets -- -D warnings",
+                "cargo test"
+            ],
+            "unit anchors execute serially before the parent pipeline"
+        );
+        let coord = setup.coord.read().expect("coordinator");
+        let decomposed_with_commands = coord
+            .work_state()
+            .graph_audit()
+            .iter()
+            .filter(|event| event.kind == GraphAuditKind::Decomposed)
+            .filter(|event| !event.commands.is_empty())
+            .count();
+        assert_eq!(decomposed_with_commands, 2, "unit anchor runs are audited");
+        assert!(coord
+            .work_state()
+            .unit_specialist_reports()
+            .iter()
+            .all(|report| report.kind == SpecialistReportKind::Implementation));
     }
 
     #[tokio::test]
