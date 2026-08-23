@@ -355,6 +355,26 @@ async fn max_rounds_exceeded_aborts() {
 }
 
 #[tokio::test]
+async fn unlimited_rounds_does_not_overflow_and_completes() {
+    // resolve_max_rounds maps Some(0) ("unlimited") to usize::MAX; the loop's
+    // warn_rounds = max*8/10 must not overflow there, and a turn that
+    // finalizes on the first round must complete normally.
+    let llm = ScriptedLlm::new(vec![text_response("done")]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
+    let mut config = default_config();
+    config.max_rounds = crate::config::resolve_max_rounds(Some(0));
+    assert_eq!(config.max_rounds, usize::MAX);
+
+    let mut state = LoopTurnState::default();
+    let out = run(&llm, &tools, &events, &history, &config, &mut state)
+        .await
+        .unwrap();
+    assert_eq!(out, "done");
+}
+
+#[tokio::test]
 async fn stuck_detector_aborts_on_repeat() {
     // Repeated identical tool call many times triggers StuckStatus::Abort.
     let mut responses = Vec::new();

@@ -263,74 +263,14 @@ impl Settings {
             .map(|m| m.as_str())
     }
 
-    /// Build a Settings clone where subagent override fields (under agent.subagent)
-    /// have been folded into the corresponding agent.* fields. Used at subagent spawn
-    /// time so the subagent loop can read agent.* directly.
+    /// Effective subagent LLM round cap.
     ///
-    /// Special cases:
-    /// - max_rounds: subagent override `Some(0)` means "unlimited" (mapped to None).
-    /// - subagent_default_k from token_budget is NOT consulted here; it is read by
-    ///   the spawn caller separately as a fallback when no subagent override exists.
-    pub fn resolve_subagent_config(&self) -> Self {
-        let mut s = self.clone();
-        let ov = &self.agent.subagent;
-
-        if let Some(b) = ov.token_budget_k {
-            s.agent.token_budget.main_k = b;
-        }
-        if let Some(r) = ov.max_rounds {
-            s.agent.max_rounds = if r == 0 { None } else { Some(r) };
-        }
-        if let Some(p) = ov.plan_mode {
-            s.agent.plan_mode = p;
-        }
-
-        if let Some(v) = ov.rlm.enabled {
-            s.agent.rlm.enabled = v;
-        }
-        if let Some(v) = ov.rlm.delegate_tool {
-            s.agent.rlm.delegate_tool = v;
-        }
-        if let Some(v) = ov.rlm.auto_routing {
-            s.agent.rlm.auto_routing = v;
-        }
-        if let Some(v) = ov.rlm.retry_enabled {
-            s.agent.rlm.retry_enabled = v;
-        }
-        if let Some(v) = ov.rlm.max_replan_cycles {
-            s.agent.rlm.max_replan_cycles = v;
-        }
-        if let Some(v) = ov.rlm.jaccard_threshold {
-            s.agent.rlm.jaccard_threshold = v;
-        }
-
-        if let Some(v) = ov.prompt.include.permissions {
-            s.prompt.include.permissions = v;
-        }
-        if let Some(v) = ov.prompt.include.developer {
-            s.prompt.include.developer = v;
-        }
-        if let Some(v) = ov.prompt.include.collaboration {
-            s.prompt.include.collaboration = v;
-        }
-        if let Some(v) = ov.prompt.include.environment {
-            s.prompt.include.environment = v;
-        }
-        if let Some(v) = ov.prompt.include.skills {
-            s.prompt.include.skills = v;
-        }
-
-        if let Some(v) = &ov.prompt.developer_instructions {
-            s.prompt.developer_instructions = Some(v.clone());
-        }
-        if let Some(v) = &ov.prompt.collaboration_mode {
-            s.prompt.collaboration_mode = Some(v.clone());
-        }
-        if let Some(v) = &ov.prompt.model_instructions_file {
-            s.prompt.model_instructions_file = Some(v.clone());
-        }
-
-        s
+    /// The subagent override wins when set (`Some(0)` = unlimited); `None`
+    /// inherits `agent.max_rounds`; when both are unset the
+    /// [`DEFAULT_MAX_ROUNDS`](crate::config::DEFAULT_MAX_ROUNDS) default
+    /// applies.
+    pub fn subagent_effective_max_rounds(&self) -> usize {
+        resolve_max_rounds(self.agent.subagent.max_rounds.or(self.agent.max_rounds))
     }
 
     /// Set a configuration value via dotted path.

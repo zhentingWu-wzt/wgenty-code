@@ -38,12 +38,21 @@ pub enum SessionSource {
 /// - `Completed` — `verify_and_complete` (Task 5) passed.
 /// - `Unverified` — agent ended without calling verify (Task 6 fallback).
 /// - `Failed` — repeated verify failures exceeded the retry budget.
+///
+/// Deserialization also accepts the PascalCase spellings (`InProgress`, …):
+/// the released 0.3.x binary shares this `.wgenty-code/snapshots/` dir and
+/// writes PascalCase variants, and a strict parse would permanently brick
+/// the session for this build. Serialization always emits snake_case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
+    #[serde(alias = "InProgress")]
     InProgress,
+    #[serde(alias = "Completed")]
     Completed,
+    #[serde(alias = "Unverified")]
     Unverified,
+    #[serde(alias = "Failed")]
     Failed,
 }
 
@@ -249,6 +258,42 @@ mod tests {
         );
         let s: SessionStatus = serde_json::from_str("\"unverified\"").unwrap();
         assert_eq!(s, SessionStatus::Unverified);
+    }
+
+    #[test]
+    fn status_deserializes_pascal_case_written_by_released_binary() {
+        // The released 0.3.x binary writes PascalCase variants into the same
+        // snapshots dir; a strict parse would brick the session permanently.
+        for (raw, expected) in [
+            ("\"InProgress\"", SessionStatus::InProgress),
+            ("\"Completed\"", SessionStatus::Completed),
+            ("\"Unverified\"", SessionStatus::Unverified),
+            ("\"Failed\"", SessionStatus::Failed),
+        ] {
+            let s: SessionStatus = serde_json::from_str(raw).unwrap();
+            assert_eq!(s, expected);
+        }
+    }
+
+    #[test]
+    fn session_state_loads_pascal_case_status_json() {
+        // Shape mirrors the real-world corrupted file written by 0.3.121.
+        let raw = r#"{
+            "session_id": "es-legacy",
+            "source": "agent-self",
+            "status": "InProgress",
+            "created_at": "2026-08-22T09:31:58+00:00",
+            "updated_at": "2026-08-23T14:38:27+00:00",
+            "turns": [],
+            "current_turn": null,
+            "node_states": [],
+            "current_node": null
+        }"#;
+        let s: SessionState = serde_json::from_str(raw).expect("load PascalCase session");
+        assert_eq!(s.status, SessionStatus::InProgress);
+        // Round-trip normalizes back to snake_case on save.
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"status\":\"in_progress\""));
     }
 
     #[test]

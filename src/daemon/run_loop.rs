@@ -1956,7 +1956,7 @@ async fn run_session_turn(
         variables: Default::default(),
     };
     let outcomes = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(crate::runtime::hooks::FIRE_TIMEOUT_SECS),
         state.hook_manager.fire(
             &crate::runtime::hooks::HookEvent::UserPromptSubmit,
             &hook_ctx,
@@ -1968,7 +1968,10 @@ async fn run_session_turn(
     {
         Ok(v) => v,
         Err(_) => {
-            tracing::warn!("UserPromptSubmit hook timed out (10s), skipping");
+            tracing::warn!(
+                "UserPromptSubmit hook timed out ({}s), skipping",
+                crate::runtime::hooks::FIRE_TIMEOUT_SECS
+            );
             Vec::new()
         }
     };
@@ -1989,7 +1992,7 @@ async fn run_session_turn(
 
     // 6. Per-run loop config/state; a fresh turn id per run.
     let config = RuntimeConfig {
-        max_rounds: settings.agent.max_rounds.unwrap_or(100),
+        max_rounds: settings.agent.effective_max_rounds(),
         plan_mode,
         subagent_timeout_secs: settings.agent.subagent.timeout_secs,
         context_window: crate::config::resolve_context_window(
@@ -2000,7 +2003,7 @@ async fn run_session_turn(
         session_id: session_id.to_string(),
         turn_id: Some(Uuid::new_v4().to_string()),
         agent_generation: 0,
-        stream_max_retries: 2,
+        stream_max_retries: settings.agent.stream_max_retries,
     };
     let store = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
     let history_handle = store.handle();

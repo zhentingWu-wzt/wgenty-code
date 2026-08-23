@@ -161,43 +161,60 @@ fn test_subagent_overrides_default_none() {
 }
 
 #[test]
-fn test_resolve_subagent_config_noop_when_no_overrides() {
-    let s = Settings::default();
-    let r = s.resolve_subagent_config();
-    assert_eq!(r.agent.plan_mode, s.agent.plan_mode);
-    assert_eq!(r.agent.max_rounds, s.agent.max_rounds);
-    assert_eq!(r.agent.token_budget.main_k, s.agent.token_budget.main_k);
-    assert_eq!(r.agent.rlm.enabled, s.agent.rlm.enabled);
-    assert_eq!(r.prompt.include.skills, s.prompt.include.skills);
+fn test_resolve_max_rounds_mappings() {
+    // None → default cap.
+    assert_eq!(resolve_max_rounds(None), DEFAULT_MAX_ROUNDS);
+    // Some(0) → unlimited.
+    assert_eq!(resolve_max_rounds(Some(0)), usize::MAX);
+    // Some(n) → n.
+    assert_eq!(resolve_max_rounds(Some(7)), 7);
 }
 
 #[test]
-fn test_resolve_subagent_config_applies_overrides() {
+fn test_agent_effective_max_rounds() {
     let mut s = Settings::default();
-    s.agent.token_budget.main_k = 100;
-    s.agent.rlm.enabled = true;
-    s.prompt.include.skills = true;
-
-    s.agent.subagent.token_budget_k = Some(50);
-    s.agent.subagent.rlm.enabled = Some(false);
-    s.agent.subagent.prompt.include.skills = Some(false);
-
-    let r = s.resolve_subagent_config();
-    assert_eq!(r.agent.token_budget.main_k, 50);
-    assert!(!r.agent.rlm.enabled);
-    assert!(!r.prompt.include.skills);
-    // Source unchanged
-    assert_eq!(s.agent.token_budget.main_k, 100);
-    assert!(s.agent.rlm.enabled);
+    assert_eq!(s.agent.effective_max_rounds(), DEFAULT_MAX_ROUNDS);
+    s.agent.max_rounds = Some(0);
+    assert_eq!(s.agent.effective_max_rounds(), usize::MAX);
+    s.agent.max_rounds = Some(300);
+    assert_eq!(s.agent.effective_max_rounds(), 300);
 }
 
 #[test]
-fn test_resolve_subagent_max_rounds_zero_means_unlimited() {
+fn test_subagent_effective_max_rounds_inherits_agent() {
     let mut s = Settings::default();
-    s.agent.max_rounds = Some(50);
+    // Both unset → default.
+    assert_eq!(s.subagent_effective_max_rounds(), DEFAULT_MAX_ROUNDS);
+    // Subagent unset inherits agent value.
+    s.agent.max_rounds = Some(300);
+    assert_eq!(s.subagent_effective_max_rounds(), 300);
+    // Subagent override wins; Some(0) = unlimited.
     s.agent.subagent.max_rounds = Some(0);
-    let r = s.resolve_subagent_config();
-    assert_eq!(r.agent.max_rounds, None);
+    assert_eq!(s.subagent_effective_max_rounds(), usize::MAX);
+    s.agent.subagent.max_rounds = Some(5);
+    assert_eq!(s.subagent_effective_max_rounds(), 5);
+    // Agent unlimited propagates too.
+    s.agent.subagent.max_rounds = None;
+    s.agent.max_rounds = Some(0);
+    assert_eq!(s.subagent_effective_max_rounds(), usize::MAX);
+}
+
+#[test]
+fn test_agent_stream_max_retries_default_and_serde() {
+    // Programmatic default.
+    assert_eq!(
+        Settings::default().agent.stream_max_retries,
+        DEFAULT_STREAM_MAX_RETRIES
+    );
+    // Missing field in settings.json → serde default (not 0).
+    let json = r#"{"plan_mode": false}"#;
+    let cfg: AgentConfig = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(cfg.stream_max_retries, DEFAULT_STREAM_MAX_RETRIES);
+    // Explicit value round-trips.
+    let mut s = Settings::default();
+    s.agent.stream_max_retries = 5;
+    let round: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(round.agent.stream_max_retries, 5);
 }
 
 #[test]

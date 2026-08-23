@@ -177,7 +177,7 @@ impl Tool for RunScriptTool {
                                 sub_system_prompt,
                                 &prompt,
                                 &tools,
-                                settings.agent.subagent.max_rounds.unwrap_or(100),
+                                settings.subagent_effective_max_rounds(),
                                 settings.agent.subagent.timeout_secs,
                                 None,
                                 None,
@@ -230,7 +230,7 @@ impl Tool for RunScriptTool {
                     let result = run_subagent_loop_with_permissions(
                         &client, reg.clone(), &child_context, coordinator.clone(),
                         sub_system_prompt,
-                        &prompt, &tools, settings.agent.subagent.max_rounds.unwrap_or(100), settings.agent.subagent.timeout_secs, None, None, None,
+                        &prompt, &tools, settings.subagent_effective_max_rounds(), settings.agent.subagent.timeout_secs, None, None, None,
                         permission, Arc::new(settings.clone()), transcript_store.clone(), None,
                     ).await;
                     if let Some(ref store) = transcript_store {

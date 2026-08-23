@@ -246,12 +246,23 @@ fn decompose_for_runtime(
             code: Some("decompose_failed".into()),
         })?
         .cloned()
-        .ok_or_else(|| {
-            decompose_rejected("work-graph budget must be initialized before decomposition".into())
-        })?;
+        .unwrap_or_else(|| Budget {
+            // First decomposition may arrive before any verification pass
+            // initialized the budget; seed it exactly like
+            // prepare_work_graph_pass does (auto_retry_max).
+            max_iter: runtime.auto_retry_max(),
+            iter_used: 0,
+            token_used: 0,
+        });
     let unit_count = units.len() as u32;
     let remaining = budget.max_iter.saturating_sub(budget.iter_used);
-    let child_max_iter = std::cmp::max(2, remaining / unit_count);
+    // Floor 2 per unit, but never eat the parent's last retained iteration:
+    // the cap `remaining - 1` guarantees the parent keeps exactly one.
+    let child_max_iter = std::cmp::max(2, remaining / unit_count).min(
+        remaining
+            .checked_sub(1)
+            .expect("decomposition requires ≥2 remaining iterations"),
+    );
     let total_allocated = child_max_iter
         .checked_mul(unit_count)
         .expect("unit count is capped at 4");
@@ -477,6 +488,17 @@ mod tests {
         ))
     }
 
+    fn test_store_with_retry_budget(
+        directory: &TempDir,
+        auto_retry_max: u32,
+    ) -> Arc<ExecutionSessionRuntimeStore> {
+        Arc::new(ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(directory.path())),
+            auto_retry_max,
+        ))
+    }
+
     fn context_for<'a>(root: &'a AgentExecutionContext, invocation: &str) -> ToolContext<'a> {
         ToolContext {
             agent: root,
@@ -562,6 +584,33 @@ mod tests {
                 .decomposed_units()
                 .is_empty(),
             "rejected proposal must not persist units into the checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_decomposition_before_any_verification_seeds_the_budget() {
+        // begin_node does not initialize the work-graph budget; the first
+        // verify pass does. A decomposition arriving before any verification
+        // must seed the budget from auto_retry_max instead of rejecting.
+        let directory = TempDir::new().expect("temp directory");
+        // auto_retry_max=5 leaves room for one floor-2 allocation plus the
+        // parent's retained iteration after the proposal charge.
+        let store = test_store_with_retry_budget(&directory, 5);
+        let root = AgentExecutionContext::root(SessionId::new("decompose-seed-budget"));
+        let context = context_for(&root, "tool-decompose-seed-budget");
+        begin_parent_node(&store, &context).await;
+        // No seed_decompose_context_for_test call: the budget is unseeded.
+        let tool = DecomposeNodeTool::with_runtime_store(Arc::clone(&store));
+
+        let output = tool
+            .execute_with_context(&context, proposal(vec![unit_proposal("first unit")]))
+            .await
+            .expect("decomposition seeds the budget instead of rejecting");
+
+        let parsed: serde_json::Value = serde_json::from_str(&output.content).expect("json");
+        assert_eq!(
+            parsed["units"][0]["allocated_max_iter"], 4,
+            "floor max(2, 5/1)=5 capped at remaining-1 so the parent retains one iteration"
         );
     }
 

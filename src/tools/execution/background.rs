@@ -487,7 +487,9 @@ impl BackgroundTool {
                 code: Some("missing_parameter".to_string()),
             });
         }
-        let timeout = input["timeout_secs"].as_u64().unwrap_or(300);
+        let timeout = input["timeout_secs"]
+            .as_u64()
+            .unwrap_or(super::DEFAULT_BACKGROUND_TIMEOUT_SECS);
 
         let policy = resolve_for_context(mode, workdir, None);
         let backend_name = self

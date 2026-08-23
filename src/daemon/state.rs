@@ -1009,7 +1009,7 @@ impl DaemonState {
             Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
                 app_state.settings.storage.working_dir.clone(),
                 checkpoint_store.clone(),
-                2,
+                app_state.settings.agent.exec_session.auto_retry_max,
             ));
         *root_cause_runtime_handle
             .write()

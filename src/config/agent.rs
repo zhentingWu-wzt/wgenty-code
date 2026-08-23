@@ -3,8 +3,31 @@ use serde::{Deserialize, Serialize};
 use super::guardian::RlmSettings;
 use super::models::TokenBudget;
 
+/// Default LLM round cap applied when `agent.max_rounds` is unset.
+pub const DEFAULT_MAX_ROUNDS: usize = 100;
+
+/// Default mid-stream retry budget for one LLM round (connection-level
+/// retries live in the API client, not here).
+pub const DEFAULT_STREAM_MAX_RETRIES: u32 = 2;
+
+/// Default subagent wall-clock timeout, in seconds.
+pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 1800;
+
+/// Map a configured round cap to its effective value.
+///
+/// `None` → [`DEFAULT_MAX_ROUNDS`]; `Some(0)` → unlimited (`usize::MAX`);
+/// `Some(n)` → `n`.
+pub fn resolve_max_rounds(configured: Option<usize>) -> usize {
+    match configured {
+        None => DEFAULT_MAX_ROUNDS,
+        Some(0) => usize::MAX,
+        Some(n) => n,
+    }
+}
+
 /// Per-field overrides that subagents can specify. None on every field = inherit
-/// the corresponding main-agent value. Resolution: see Settings::resolve_subagent_config.
+/// the corresponding main-agent value (resolved at spawn time via
+/// [`crate::config::Settings::subagent_effective_max_rounds`] and friends).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SubagentRlmOverride {
     #[serde(default)]
@@ -174,7 +197,8 @@ impl Default for SubagentTraceConfig {
 
 /// Subagent runtime limits + overrides.
 /// max_depth/max_concurrent/timeout_secs are subagent-only (no main-agent counterpart).
-/// The remaining fields are overrides; None = inherit from agent.* — see resolve_subagent_config.
+/// The remaining fields are overrides; None = inherit from agent.* (resolved at
+/// spawn time — see [`crate::config::Settings::subagent_effective_max_rounds`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentLimits {
     pub max_depth: usize,
@@ -183,8 +207,10 @@ pub struct SubagentLimits {
 
     #[serde(default)]
     pub token_budget_k: Option<usize>,
+    /// LLM round cap override. `None` = inherit `agent.max_rounds`;
+    /// `Some(0)` = unlimited; `Some(n)` = `n` rounds.
     #[serde(default)]
-    pub max_rounds: Option<usize>, // Some(0) = unlimited
+    pub max_rounds: Option<usize>,
     #[serde(default)]
     pub plan_mode: Option<bool>,
     #[serde(default)]
@@ -225,7 +251,7 @@ impl Default for SubagentLimits {
         Self {
             max_depth: 1,
             max_concurrent: 5,
-            timeout_secs: 1800,
+            timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
             token_budget_k: None,
             max_rounds: None,
             plan_mode: None,
@@ -242,12 +268,18 @@ impl Default for SubagentLimits {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     #[serde(default)]
     pub plan_mode: bool,
+    /// LLM round cap for the main agent. `None` → [`DEFAULT_MAX_ROUNDS`];
+    /// `Some(0)` = unlimited; `Some(n)` = `n` rounds.
     #[serde(default)]
     pub max_rounds: Option<usize>,
+    /// Mid-stream retry budget for one LLM round (not connection-level;
+    /// those live in ApiClient). Default: [`DEFAULT_STREAM_MAX_RETRIES`].
+    #[serde(default = "default_stream_max_retries")]
+    pub stream_max_retries: u32,
     #[serde(default)]
     pub token_budget: TokenBudget,
     #[serde(default)]
@@ -266,6 +298,33 @@ pub struct AgentConfig {
     /// Task 7; frontend wiring lands in a follow-up. Default: `true`.
     #[serde(default)]
     pub exec_session: ExecSessionSettings,
+}
+
+fn default_stream_max_retries() -> u32 {
+    DEFAULT_STREAM_MAX_RETRIES
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            plan_mode: false,
+            max_rounds: None,
+            stream_max_retries: default_stream_max_retries(),
+            token_budget: TokenBudget::default(),
+            subagent: SubagentLimits::default(),
+            rlm: RlmSettings::default(),
+            autonomous: AutonomousConfig::default(),
+            checkpoint: CheckpointSettings::default(),
+            exec_session: ExecSessionSettings::default(),
+        }
+    }
+}
+
+impl AgentConfig {
+    /// Effective main-agent LLM round cap (`Some(0)` = unlimited).
+    pub fn effective_max_rounds(&self) -> usize {
+        resolve_max_rounds(self.max_rounds)
+    }
 }
 
 /// ExecutionSession inner-layer settings.

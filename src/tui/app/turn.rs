@@ -200,6 +200,7 @@ impl App {
         let (
             planner_client,
             max_rounds,
+            stream_max_retries,
             subagent_timeout_secs,
             context_window,
             max_tokens,
@@ -221,7 +222,8 @@ impl App {
             };
             (
                 planner,
-                s.agent.max_rounds.unwrap_or(100),
+                s.agent.effective_max_rounds(),
+                s.agent.stream_max_retries,
                 s.agent.subagent.timeout_secs,
                 resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
@@ -302,6 +304,7 @@ impl App {
                 plan_mode,
                 planner_client,
                 max_rounds,
+                stream_max_retries,
                 token_counter,
                 hook_manager,
                 prompt_context,
@@ -376,6 +379,7 @@ impl App {
         let (
             planner_client,
             max_rounds,
+            stream_max_retries,
             subagent_timeout_secs,
             context_window,
             max_tokens,
@@ -397,7 +401,8 @@ impl App {
             };
             (
                 planner,
-                s.agent.max_rounds.unwrap_or(100),
+                s.agent.effective_max_rounds(),
+                s.agent.stream_max_retries,
                 s.agent.subagent.timeout_secs,
                 resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
@@ -423,6 +428,7 @@ impl App {
                 plan_mode,
                 planner_client,
                 max_rounds,
+                stream_max_retries,
                 token_counter,
                 hook_manager,
                 prompt_context,
@@ -466,10 +472,11 @@ impl App {
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
-        let (max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
+        let (max_rounds, stream_max_retries, subagent_timeout_secs, context_window, max_tokens) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
             (
-                s.agent.max_rounds.unwrap_or(100),
+                s.agent.effective_max_rounds(),
+                s.agent.stream_max_retries,
                 s.agent.subagent.timeout_secs,
                 resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
@@ -502,6 +509,7 @@ impl App {
                 false,
                 None,
                 max_rounds,
+                stream_max_retries,
                 token_counter,
                 hook_manager,
                 prompt_context,

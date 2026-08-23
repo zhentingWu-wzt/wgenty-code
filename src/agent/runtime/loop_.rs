@@ -194,7 +194,13 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
     } = args;
     let mut llm_rounds = 0usize;
     let max_rounds = config.max_rounds;
-    let warn_rounds = max_rounds * 8 / 10;
+    // `Some(0)` configs resolve to usize::MAX ("unlimited"); the *8/10 would
+    // overflow there, and the warning would never fire anyway.
+    let warn_rounds = if max_rounds == usize::MAX {
+        usize::MAX
+    } else {
+        max_rounds * 8 / 10
+    };
 
     loop {
         if llm_rounds >= max_rounds {
