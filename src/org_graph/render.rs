@@ -42,6 +42,37 @@ pub fn render_plan(plan: &crate::org_graph::WorkGraphPlan) -> String {
     out
 }
 
+/// 渲染一个节点的分解树:父 plan 概览 + 每个子单元一行(goal 截断、
+/// 组合签名、终态标记),及审计可见的适配/分解计数。
+pub fn render_decomposition(
+    plan: &crate::org_graph::WorkGraphPlan,
+    units: &[crate::org_graph::DecomposedUnit],
+    decompositions_audited: usize,
+) -> String {
+    let mut out = render_plan(plan);
+    if units.is_empty() {
+        out.push_str("UNITS: (none)\n");
+        return out;
+    }
+    out.push_str(&format!(
+        "UNITS ({units} total, {decompositions_audited} audited):\n",
+        units = units.len()
+    ));
+    for unit in units {
+        let goal: String = unit.goal.chars().take(60).collect();
+        let marker = match &unit.outcome {
+            Some(outcome) if outcome.passed => "✓",
+            Some(_) => "✗",
+            None => "…",
+        };
+        out.push_str(&format!(
+            "  {marker} {} | {} | {} rev {}\n",
+            unit.unit_id, goal, unit.plan.template_id, unit.plan.revision
+        ));
+    }
+    out
+}
+
 /// JSON 全保真（含 system_prompt）。序列化 5 契约数组。
 fn render_json(registry: &NodeRegistry) -> String {
     let contracts = registry.iter();
@@ -317,6 +348,41 @@ mod tests {
             out.contains("verify -> diagnose"),
             "spliced edge listed: {out}"
         );
+    }
+
+    #[test]
+    fn render_decomposition_shows_unit_tree_with_outcomes() {
+        let plan = crate::org_graph::compose_work_graph(&Default::default()).expect("compose");
+        let make_unit = |unit_id: &str, passed: Option<bool>| crate::org_graph::DecomposedUnit {
+            unit_id: unit_id.into(),
+            goal: "refactor the streaming layer for resilience".into(),
+            request: Default::default(),
+            plan: plan.clone(),
+            allocation: crate::org_graph::Budget {
+                max_iter: 2,
+                iter_used: 0,
+                token_used: 0,
+            },
+            verify_commands: vec!["cargo test".into()],
+            expected_files: vec![],
+            outcome: passed.map(|passed| crate::org_graph::UnitOutcome {
+                passed,
+                attempts_used: 1,
+                summary: String::new(),
+            }),
+        };
+        let units = vec![make_unit("unit-0", Some(true)), make_unit("unit-1", None)];
+        let out = render_decomposition(&plan, &units, 2);
+        assert!(out.contains("UNITS (2 total, 2 audited):"), "{out}");
+        assert!(
+            out.contains("✓ unit-0 | refactor the streaming layer for resilien"),
+            "{out}"
+        );
+        assert!(out.contains("… unit-1"), "{out}");
+        assert!(out.contains("implementation-v1 rev 1"), "{out}");
+
+        let empty = render_decomposition(&plan, &[], 0);
+        assert!(empty.contains("UNITS: (none)"), "{empty}");
     }
 
     #[test]

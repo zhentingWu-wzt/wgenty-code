@@ -302,6 +302,9 @@ fn decompose_for_runtime(
     // (5) Budget split: the proposal consumes one parent iteration and the
     // parent budget shrinks to the retained amount (no lending).
     let mut parent_budget = budget;
+    coord
+        .work_state_mut()
+        .set_pre_decompose_budget(parent_budget.clone());
     parent_budget.iter_used = parent_budget.iter_used.saturating_add(1);
     parent_budget.max_iter = parent_budget.iter_used + retained;
     coord
