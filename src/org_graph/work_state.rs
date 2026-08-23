@@ -63,6 +63,11 @@ pub struct WorkState {
     /// dedup would collapse the bounded ≤4 units into one entry).
     #[serde(default)]
     unit_specialist_reports: Vec<SpecialistReport>,
+    /// Parent budget snapshot taken immediately before an accepted
+    /// decomposition split it; `rollback_node` restores this so a rolled-back
+    /// node does not inherit the shrunken allocation.
+    #[serde(default)]
+    pre_decompose_budget: Option<Budget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -521,6 +526,25 @@ impl WorkState {
         self.decomposed_units = units;
     }
 
+    /// Read the pre-decomposition parent budget snapshot, if any.
+    pub fn pre_decompose_budget(&self) -> Option<&Budget> {
+        self.pre_decompose_budget.as_ref()
+    }
+
+    /// Coordinator-owned snapshot of the parent budget before a split.
+    pub(crate) fn set_pre_decompose_budget(&mut self, budget: Budget) {
+        self.pre_decompose_budget = Some(budget);
+    }
+
+    /// Rollback hook: drop every decomposition product (units, unit reports,
+    /// budget snapshot). Audit events are deliberately retained — they are
+    /// the immutable record of what happened.
+    pub(crate) fn clear_decomposition(&mut self) {
+        self.decomposed_units.clear();
+        self.unit_specialist_reports.clear();
+        self.pre_decompose_budget = None;
+    }
+
     pub fn graph_child_bindings(&self) -> &[GraphChildBinding] {
         &self.graph_child_bindings
     }
@@ -846,6 +870,7 @@ impl WorkState {
         self.selected_work_graph = None;
         self.decomposed_units.clear();
         self.unit_specialist_reports.clear();
+        self.pre_decompose_budget = None;
     }
 
     /// Invalidate every result derived from a prior work-graph pass before a
@@ -879,6 +904,7 @@ impl WorkState {
             graph_depth: self.graph_depth,
             decomposed_units: self.decomposed_units.clone(),
             unit_specialist_reports: self.unit_specialist_reports.clone(),
+            pre_decompose_budget: None,
         }
     }
 }
@@ -1230,6 +1256,7 @@ mod tests {
             graph_depth: 0,
             decomposed_units: Vec::new(),
             unit_specialist_reports: Vec::new(),
+            pre_decompose_budget: None,
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
@@ -1650,6 +1677,7 @@ mod tests {
             graph_depth: 0,
             decomposed_units: Vec::new(),
             unit_specialist_reports: Vec::new(),
+            pre_decompose_budget: None,
         };
         let next = state.inherit_for_new_turn();
         assert_eq!(next.requirement.as_deref(), Some("跨 turn"));

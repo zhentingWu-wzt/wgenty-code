@@ -1241,6 +1241,14 @@ impl NodeRuntime {
             }
         };
 
+        // Snapshot decomposition state before rollback_to replaces the
+        // in-memory work state with the checkpointed copy.
+        let pre_decompose_budget = coord.work_state().pre_decompose_budget().cloned();
+        let had_decomposition = !coord.work_state().decomposed_units().is_empty();
+        // The audit trail is append-only: events recorded since the restore
+        // target's checkpoint must survive the work-state swap.
+        let pre_rollback_audit = coord.work_state().graph_audit().to_vec();
+
         // Restore workspace to the rollback turn.
         coord
             .rollback_to(&rollback_turn, &*self.hooks)
@@ -1250,6 +1258,34 @@ impl NodeRuntime {
         let removed = coord
             .truncate_nodes_after(&verified_node_id)
             .context("truncate_nodes_after failed")?;
+
+        // Drop decomposition products of any removed node and restore the
+        // pre-decomposition parent budget (snapshot taken before the
+        // checkpoint restore replaced the in-memory work state); the audit
+        // trail (including every `decomposed` event) is deliberately retained
+        // as the immutable record of what ran.
+        if had_decomposition {
+            let restored_budget = pre_decompose_budget.unwrap_or(Budget {
+                max_iter: 1,
+                iter_used: 0,
+                token_used: 0,
+            });
+            coord
+                .work_state_mut()
+                .set_budget(NodeType::GeneralPurpose, restored_budget)
+                .context("restore pre-decomposition budget after rollback")?;
+        }
+        coord.work_state_mut().clear_decomposition();
+
+        // Re-apply audit events the checkpoint restore dropped. The restored
+        // copy only knows what existed at the checkpoint; anything recorded
+        // since (anchors, adaptations, decompositions) is durable history.
+        let restored_audit = coord.work_state().graph_audit().to_vec();
+        for event in pre_rollback_audit {
+            if !restored_audit.contains(&event) {
+                coord.work_state_mut().append_graph_audit(event);
+            }
+        }
 
         Ok(NodeRollbackResult {
             rolled_back_to: verified_node_id,
@@ -2259,6 +2295,119 @@ mod tests {
             .cloned()
             .expect("budget set");
         assert_eq!(budget.iter_used, 1, "total unit failure charges the parent");
+    }
+
+    #[tokio::test]
+    async fn rollback_node_clears_decomposition_and_restores_budget() {
+        // Node 1 verifies, node 2 decomposes; rolling back to node 1 removes
+        // node 2's decomposition products and restores the pre-split budget
+        // while the decomposed audit events survive as the durable record.
+        let setup = ScriptedSetup::new([0]);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("first node".into(), vec!["true".into()], vec![])
+            .await
+            .expect("begin first node");
+        let result = setup
+            .runtime
+            .verify_node()
+            .await
+            .expect("verify first node");
+        assert_eq!(result.status, NodeStatus::Verified);
+
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("decomposing node".into(), vec!["true".into()], vec![])
+            .await
+            .expect("begin second node");
+        {
+            let mut coord = setup.coord.write().expect("coordinator");
+            coord
+                .work_state_mut()
+                .set_budget(
+                    NodeType::GeneralPurpose,
+                    Budget {
+                        max_iter: 8,
+                        iter_used: 1,
+                        token_used: 0,
+                    },
+                )
+                .expect("init budget");
+            coord.work_state_mut().set_pre_decompose_budget(Budget {
+                max_iter: 8,
+                iter_used: 1,
+                token_used: 0,
+            });
+            coord
+                .work_state_mut()
+                .set_budget(
+                    NodeType::GeneralPurpose,
+                    Budget {
+                        max_iter: 3,
+                        iter_used: 2,
+                        token_used: 0,
+                    },
+                )
+                .expect("shrunken budget");
+            let plan = crate::org_graph::compose_work_graph(&Default::default())
+                .expect("compose")
+                .bind_registry(&NodeRegistry::builtin(&Default::default()))
+                .expect("bind");
+            coord
+                .work_state_mut()
+                .set_decomposed_units(vec![crate::org_graph::DecomposedUnit {
+                    unit_id: "unit-0".into(),
+                    goal: "unit".into(),
+                    request: Default::default(),
+                    plan,
+                    allocation: Budget {
+                        max_iter: 2,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                    verify_commands: vec!["true".into()],
+                    expected_files: vec![],
+                    outcome: None,
+                }]);
+            coord.work_state_mut().append_graph_audit(GraphAuditEvent {
+                node_id: "n2".into(),
+                attempt: 1,
+                kind: GraphAuditKind::Decomposed,
+                anchor: None,
+                commands: Vec::new(),
+                route: None,
+                profile: None,
+                resolved_commands: None,
+                adapted: None,
+                parent_node_id: Some("n2".into()),
+                budget: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+        }
+
+        let rollback = setup.runtime.rollback_node().await.expect("rollback node");
+        assert!(!rollback.removed_nodes.is_empty());
+
+        let coord = setup.coord.read().expect("coordinator");
+        assert!(coord.work_state().decomposed_units().is_empty());
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .expect("budget read")
+            .cloned()
+            .expect("budget present");
+        assert_eq!(budget.max_iter, 8, "pre-decomposition budget restored");
+        assert_eq!(budget.iter_used, 1);
+        assert!(
+            coord
+                .work_state()
+                .graph_audit()
+                .iter()
+                .any(|event| event.kind == GraphAuditKind::Decomposed),
+            "decomposed audit events survive rollback"
+        );
     }
 
     #[tokio::test]
