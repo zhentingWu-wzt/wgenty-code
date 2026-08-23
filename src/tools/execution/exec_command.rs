@@ -101,11 +101,13 @@ impl Tool for ExecCommandTool {
             code: Some("missing_parameter".to_string()),
         })?;
         let workdir = input["workdir"].as_str().map(std::path::PathBuf::from);
-        let yield_time_ms = input["yield_time_ms"].as_u64().unwrap_or(1000);
+        let yield_time_ms = input["yield_time_ms"]
+            .as_u64()
+            .unwrap_or(super::DEFAULT_YIELD_TIME_MS);
         let max_output_chars = input["max_output_chars"]
             .as_u64()
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
-            .unwrap_or(4000);
+            .unwrap_or(super::DEFAULT_MAX_OUTPUT_CHARS);
 
         self.run(
             command,
@@ -130,11 +132,13 @@ impl Tool for ExecCommandTool {
             .as_str()
             .map(std::path::PathBuf::from)
             .or_else(|| context.workdir.map(|p| p.to_path_buf()));
-        let yield_time_ms = input["yield_time_ms"].as_u64().unwrap_or(1000);
+        let yield_time_ms = input["yield_time_ms"]
+            .as_u64()
+            .unwrap_or(super::DEFAULT_YIELD_TIME_MS);
         let max_output_chars = input["max_output_chars"]
             .as_u64()
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
-            .unwrap_or(4000);
+            .unwrap_or(super::DEFAULT_MAX_OUTPUT_CHARS);
 
         self.run(
             command,

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (Work-Graph)
+
+- **verify 前的 decomposition 不再被 "budget must be initialized" 拒绝**：`begin_node`
+  从不初始化 work-graph budget（只有第一次 verify pass 会），因此首个
+  `decompose_node` 必然失败。现在 decompose 在 budget 未初始化时按
+  `auto_retry_max` 种子化（与 `prepare_work_graph_pass` 一致），且每 unit 分配额
+  封顶为 `remaining - 1`，保证父节点始终保留恰好一次迭代（原
+  `max(2, remaining/units)` 公式在单 unit 场景会吃光全部预算导致永久拒绝）。
+- **daemon 的 work-graph `auto_retry_max` 从配置读取**（`agent.exec_session.auto_retry_max`），
+  不再写死 2——原硬编码使任何 decomposition 都负担不起（N 个 unit 需
+  `2N + 1` 次迭代预算）。恢复当日被误丢弃的两个修复提交（86a4736c / bd3b8178）。
+
+### Changed (Runtime limits)
+
+- **`max_rounds` 默认值收敛为单一来源**：新增 `config::DEFAULT_MAX_ROUNDS`（100）与
+  `resolve_max_rounds()`，替换 7 处散落的 `unwrap_or(100)` 硬编码（daemon run loop、
+  TUI turn、headless CLI、task/run_script 子代理路径、`RuntimeConfig::default`）。
+- **`0 = unlimited` 生效**：`agent.max_rounds` / `agent.subagent.max_rounds` 设为 `0`
+  表示不限轮次（此前 `Some(0)` 会在第一轮立即触发 `MaxRoundsExceeded`）。子代理
+  未设置时继承 `agent.max_rounds`（此前固定回落 100，无视 agent 配置）。
+- **新增 `agent.stream_max_retries` 配置**（默认 2）：mid-stream 重试预算不再在
+  daemon/TUI/headless 各自写死。
+- **删除死代码 `Settings::resolve_subagent_config`**：无任何生产调用方，且其
+  `Some(0) → None` 映射与消费端 `unwrap_or(100)` 语义矛盾。
+- **硬编码收敛**：daemon 默认端口 8371 → `daemon::DEFAULT_PORT`（tui/cli 复用）；
+  hook fan-out 超时 10s → `hooks::FIRE_TIMEOUT_SECS`（daemon/TUI 复用）；
+  `exec_command`/`write_stdin` 的 yield 窗口与输出上限、`exec_background` 默认超时
+  提为 `tools::execution` 模块级常量；`RuntimeConfig::default` 全部改用 config 层常量。
+
 ### Added (Daemon run queue)
 
 - **session run 槽位忙时消息自动排队**：`POST /api/v1/sessions/:id/run` 遇到活跃

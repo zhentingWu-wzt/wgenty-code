@@ -75,11 +75,10 @@ pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<S
     // project root), writes its own token + discovery file, and survives
     // TUI exit. stdio is redirected to null so the child doesn't hold the
     // terminal.
-    const DEFAULT_PORT: u16 = 8371;
-    if let Some(base_url) = spawn_external_daemon(DEFAULT_PORT).await {
+    if let Some(base_url) = spawn_external_daemon(crate::daemon::DEFAULT_PORT).await {
         tracing::info!(
             "daemon spawned as external process on port {}",
-            DEFAULT_PORT
+            crate::daemon::DEFAULT_PORT
         );
         return Ok(StartDaemonOutcome::Spawned { base_url });
     }
@@ -168,7 +167,7 @@ async fn spawn_external_daemon(port: u16) -> Option<String> {
 async fn spawn_embedded_daemon(
     app_state: crate::state::AppState,
 ) -> anyhow::Result<StartDaemonOutcome> {
-    const DEFAULT_PORT: u16 = 8371;
+    const DEFAULT_PORT: u16 = crate::daemon::DEFAULT_PORT;
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
         Ok(l) => l,
         Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0").await?,

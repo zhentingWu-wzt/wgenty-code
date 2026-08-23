@@ -13,6 +13,10 @@ use std::collections::HashMap;
 pub use matching::{expand_hook_variables, matches_matcher};
 pub use types::*;
 
+/// How long a frontend waits for one hook event's fan-out before giving up
+/// and proceeding without hook output. Shared by the daemon run loop and TUI.
+pub const FIRE_TIMEOUT_SECS: u64 = 10;
+
 /// Internal result from running a shell command hook.
 struct ShellCommandResult {
     continue_execution: bool,

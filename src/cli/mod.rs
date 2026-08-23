@@ -83,7 +83,7 @@ pub enum Commands {
         yolo: bool,
 
         /// Override the agent loop max rounds
-        /// (default: settings.agent.max_rounds or 100)
+        /// (default: settings.agent.max_rounds; 0 = unlimited)
         #[arg(long, value_name = "N")]
         max_rounds: Option<usize>,
     },
@@ -192,7 +192,7 @@ pub enum Commands {
         action: Option<DaemonCommands>,
 
         /// Port to listen on
-        #[arg(long, default_value = "8371")]
+        #[arg(long, default_value_t = crate::daemon::DEFAULT_PORT)]
         port: u16,
 
         /// IP address to bind (`0.0.0.0` exposes the daemon — API and

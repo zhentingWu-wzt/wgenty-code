@@ -347,7 +347,7 @@ impl TaskTool {
             system_prompt,
             full_prompt,
             &allowed_tools,
-            self.settings.agent.subagent.max_rounds.unwrap_or(100),
+            self.settings.subagent_effective_max_rounds(),
             timeout_secs,
             None,
             None,

@@ -50,7 +50,7 @@ impl AgentLoop {
             session_id: self.session_id.clone(),
             turn_id: self.turn_id.clone(),
             agent_generation: self.agent_generation,
-            stream_max_retries: super::MAX_RETRIES,
+            stream_max_retries: self.stream_max_retries,
         };
 
         let mut state = LoopTurnState {

@@ -460,9 +460,9 @@ pub async fn run_oneshot(
         });
 
     let config = RuntimeConfig {
-        max_rounds: max_rounds_override
-            .or(settings.agent.max_rounds)
-            .unwrap_or(100),
+        max_rounds: crate::config::resolve_max_rounds(
+            max_rounds_override.or(settings.agent.max_rounds),
+        ),
         plan_mode: false,
         subagent_timeout_secs: settings.agent.subagent.timeout_secs,
         context_window: resolve_context_window(
@@ -473,7 +473,7 @@ pub async fn run_oneshot(
         session_id,
         turn_id: Some(turn_id),
         agent_generation: 0,
-        stream_max_retries: 2,
+        stream_max_retries: settings.agent.stream_max_retries,
     };
 
     let mut stuck_detector = crate::utils::stuck_detector::StuckDetector::new();

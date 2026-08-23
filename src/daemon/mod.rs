@@ -7,6 +7,9 @@
 //!
 //! Launch via: `wgenty-code daemon --port 8371`
 
+/// Port the daemon listens on when `--port` is not given.
+pub const DEFAULT_PORT: u16 = 8371;
+
 pub mod auth;
 pub(crate) mod fs;
 pub mod global_events;
