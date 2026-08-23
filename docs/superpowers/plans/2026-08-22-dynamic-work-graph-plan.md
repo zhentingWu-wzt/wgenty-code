@@ -167,35 +167,27 @@
 ### Task 9: 子图执行与证据回流
 
 **Files:**
-- Modify: `src/exec_session/node_runtime.rs`
-- Modify: `src/exec_session/runtime_store.rs`
-- Test: `src/exec_session/node_runtime.rs`
+- Modify: `src/exec_session/node_runtime.rs`(`run_decomposed_units` 串行执行器)
+- Modify: `src/org_graph/work_state.rs`(`UnitOutcome`、`unit_specialist_reports` 独立存储、`SpecialistReportKind::Implementation`)
 
-**Interfaces:**
-- 子单元串行执行,复用 `run_work_graph` 管线(独立 revision/审计/预算)。
-- 终态映射:`Complete` → 父级 `specialist_reports` 追加 `(GeneralPurpose, Implementation)` 结构化子报告;`Escalate` → 子单元失败不拖垮父级,父级按规则选重试/放弃/继续其余。
-- 全部单元终态落定后回到父级锚点;父级锚点是唯一最终裁决(子图全绿 + 父锚点红 → 父级重试)。
-- 子代理 terminal 未发布交接 → 复用 `escalate_current_work_graph`。
+- [x] 集成测试 A/B/C/D:父锚点唯一裁决(单元全绿仍路由 CompileAnchor)、失败单元不拖垮兄弟、单元预算独立记账、全败才记父级一次账。
+- [x] 内联串行执行,复用 verify gate 锚点管线;全部路由只来自 exit code,不消费任何模型输出。
+- [x] 全量 fmt/clippy/test(1856+218 通过)。
+- [x] Commit: `feat(graph): child graph execution with parent-anchor arbitration`。(30e3b05f)
 
-- [ ] 集成测试 A:子图 Complete + 父锚点失败 → 父级进入重试路由(证明父锚点唯一裁决)。
-- [ ] 集成测试 B:某子单元 Escalate → 其余单元继续执行,父级最终可 Complete。
-- [ ] 集成测试 C:预算分账后父级剩余 = 保留量;子预算独立耗尽不污染兄弟。
-- [ ] 实现执行与回流。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `feat(graph): child graph execution with parent-anchor arbitration`。
+**偏差记录**:子报告存独立 `unit_specialist_reports` 字段而非 `specialist_reports`——后者按 (producer, kind) 去重会把 ≤4 个单元折叠成一条。
 
 ### Task 10: 回滚子树与树状渲染
 
 **Files:**
-- Modify: `src/exec_session/node_runtime.rs`(`rollback_node` 扩展:回滚父节点连带整个子树失效,审计保留)
-- Modify: `src/org_graph/render.rs` / `src/cli/org_graph.rs`(缩进树展示分解层级 + 每层 revision)
-- Test: `src/exec_session/node_runtime.rs`、`src/org_graph/render.rs`
+- Modify: `src/exec_session/node_runtime.rs`(`rollback_node`:快照→恢复→清理→审计回放)
+- Modify: `src/org_graph/work_state.rs`(`pre_decompose_budget`、`clear_decomposition`)
+- Modify: `src/org_graph/render.rs`(`render_decomposition` 缩进树)
 
-- [ ] 测试:回滚父节点 → 子树产物失效、`graph_child_bindings` 审计保留(对齐 `inherit_for_new_turn` 语义)。
-- [ ] render 测试:两层分解的 plan 渲染为缩进树。
-- [ ] 实现回滚扩展与渲染。
-- [ ] 全量 fmt/clippy/test。
-- [ ] Commit: `feat(graph): subtree rollback and tree rendering`。
+- [x] 测试:回滚后 units/单元报告清空、budget 恢复提案前、Decomposed 审计存活;渲染树断言(✓/✗/… 终态标记、goal 截断、审计计数)。
+- [x] 审计 append-only:checkpoint restore 覆盖 WorkState 后回放缺失事件。
+- [x] 全量 fmt/clippy/test(1858+218 通过)。
+- [x] Commit: `feat(graph): subtree rollback and tree rendering`。(3d5658c4)
 
 ### Task 11: 注入测试与全量验证
 
