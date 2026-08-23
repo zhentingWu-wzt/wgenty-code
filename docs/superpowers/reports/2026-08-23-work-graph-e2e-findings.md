@@ -38,7 +38,10 @@ serde 默认丢弃未知字段,`config set exec_session.auto_retry_max 5` 会"�
 无效顶层键。现在 set 后做 round-trip 导航验证:路径不在 schema 中 →
 `unknown setting key` 报错;真实嵌套路径不受影响。
 
-### T5 — 测试手册沉淀(低)
+### T5 — 测试手册沉淀(低)✅ 已完成
+
+见 `2026-08-23-work-graph-e2e-testplaybook.md`:测试矩阵 M1–M5、边界检查语义、
+四大陷阱(二进制 inode / rollback 吞提交 / 预算下限 / 配置路径)、审计断言脚本。
 
 模型侧无法"诚实"测试封闭集拒绝(schema enum 使模型自动纠正非法值)——该场景只跑单测。
 提示词驱动必须点名工具名(`begin_node`/`decompose_node`),否则模型直接干活不走图。
