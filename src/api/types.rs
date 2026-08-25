@@ -254,7 +254,11 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub max_tokens: usize,
     pub stream: bool,
-    pub temperature: f32,
+    /// Omitted entirely when unset — some providers (e.g. kimi-k3) reject any
+    /// explicit temperature other than the model's fixed one, so the field is
+    /// only sent when the user configured `models.main.temperature`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -355,6 +359,41 @@ pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_chat_request_temperature_omitted_when_unset() {
+        // Models that lock temperature (e.g. kimi-k3) reject any explicit
+        // value, so None must omit the field entirely rather than send null.
+        let request = ChatRequest {
+            model: "kimi-k3".to_string(),
+            messages: vec![ChatMessage::user("hi")],
+            max_tokens: 4096,
+            stream: false,
+            temperature: None,
+            tools: None,
+            stream_options: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(
+            !json.contains("temperature"),
+            "temperature should be omitted when unset, got: {json}"
+        );
+
+        let request = ChatRequest {
+            temperature: Some(1.0),
+            ..ChatRequest {
+                model: "kimi-k3".to_string(),
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: 4096,
+                stream: false,
+                temperature: None,
+                tools: None,
+                stream_options: None,
+            }
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains(r#""temperature":1.0"#), "got: {json}");
+    }
 
     #[test]
     fn test_chat_message_serialization() {

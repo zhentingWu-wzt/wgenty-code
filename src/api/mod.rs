@@ -322,7 +322,7 @@ impl ApiClient {
             messages,
             max_tokens: self.settings.models.transport.max_tokens,
             stream: false,
-            temperature: 0.7,
+            temperature: self.settings.models.main.temperature,
             tools,
             stream_options: None,
         };
@@ -469,7 +469,7 @@ impl ApiClient {
             messages,
             max_tokens: self.settings.models.transport.max_tokens,
             stream: true,
-            temperature: 0.7,
+            temperature: self.settings.models.main.temperature,
             tools,
             stream_options: Some(StreamOptions {
                 include_usage: true,

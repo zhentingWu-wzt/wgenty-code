@@ -41,6 +41,13 @@ pub struct ModelEndpoint {
     /// or custom models that expose a non-standard window.
     #[serde(default)]
     pub context_window: Option<usize>,
+    /// Sampling temperature for requests to this endpoint. When `None`, the
+    /// field is omitted from the request entirely so the provider applies the
+    /// model's own default. Some models (e.g. kimi-k3) reject any value other
+    /// than their fixed one — leaving this unset is the safe choice for them,
+    /// or set it explicitly (e.g. `1.0`) if the provider requires the field.
+    #[serde(default)]
+    pub temperature: Option<f32>,
     /// Human-readable label shown in the `/model` picker (e.g. "Claude Sonnet",
     /// "DeepSeek Chat"). When absent, the picker falls back to [`Self::name`].
     /// Display-only; the code path always keys off `name` for API calls.
@@ -265,6 +272,7 @@ impl Default for ModelsConfig {
                 appkey: None,
                 provider: None,
                 context_window: None,
+                temperature: None,
                 display_name: None,
                 tier: None,
             },
