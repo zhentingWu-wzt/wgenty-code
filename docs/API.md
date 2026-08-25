@@ -115,9 +115,10 @@ One session runs one agent turn at a time. When `POST /api/v1/sessions/:id/run`
 finds the run slot busy, the message joins a per-session FIFO instead of
 failing (opt out with `"queue": false` in the request body to keep the legacy
 immediate-409 contract). A queued submission still answers `202` with
-`{"run_id": "", "queued": true, "queue_position": N}` — the scheduler assigns
-the real run id later, and clients adopt it from the first SSE event of the
-new turn.
+`{"run_id": "<pre-minted>", "queued": true, "queue_position": N}` — the run id
+is minted at POST time and the scheduler reuses it verbatim when it starts
+the turn, so clients can subscribe and filter on it immediately (no
+first-event adoption needed).
 
 After a run finishes, the daemon-owned scheduler drains pending work in a
 fixed order: background results first, then ready task groups, then queued
@@ -128,11 +129,37 @@ Queue management:
 
 | Endpoint | Effect |
 |:---------|:-------|
-| `GET /api/v1/sessions/:id/queue` | `{"session_id", "messages": [{message_id, message, plan_mode}]}` (pending only) |
+| `GET /api/v1/sessions/:id/queue` | `{"session_id", "messages": [{message_id, message, plan_mode, run_id}]}` (pending only) |
 | `DELETE /api/v1/sessions/:id/queue` | drop all pending messages; answers `{"dropped": N}` |
 | `DELETE /api/v1/sessions/:id/queue/:message_id` | retract one pending message; `204` or `404` (already started/gone) |
 
 The queue is in-memory: pending messages do not survive a daemon restart.
+
+### Run-status reconciliation
+
+`GET /api/v1/sessions/:id/run` answers `{"run_id": <string|null>, "queued": N}`:
+the session's ACTIVE run id (null when idle) plus how many user messages still
+wait in the FIFO. Mid-turn `sync_lost` subscribers (event buffer evicted their
+replay window, or the daemon restarted) poll this to decide whether the
+awaited turn is still live instead of hanging on a terminal event that fired
+inside the lost window. `404` when the session is unknown.
+
+### Turn phase events
+
+`phase_changed` is published on the session event stream at the transitions
+thin clients cannot derive from the other events:
+
+| `data` | Meaning |
+|:-------|:--------|
+| `{"phase": "thinking"}` | run start / prompt assembly / compaction finished |
+| `{"phase": "connecting", "attempt": N, "max_retries": M}` | LLM stream open or retry |
+| `{"phase": "preparing_tools"}` | model is emitting tool calls |
+| `{"phase": "compacting"}` | auto/manual history compaction started |
+
+Clients that derive phases locally keep their derivation as the fallback
+(older daemons never send `phase_changed`); when present it is authoritative.
+`streaming`/`executing`/`error` remain client-derived from
+`content_delta`/`tool_start`/`turn_error`.
 
 ### 409 semantics
 

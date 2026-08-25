@@ -37,6 +37,7 @@ import type {
   PruneResult,
   ProjectInfo,
   RunResponse,
+  SessionRunStatus,
   SessionInfo,
   SessionResponse,
   SkillInfoDto,
@@ -869,6 +870,13 @@ export class DaemonClient {
       await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/cancel`, {
         method: "POST",
       }),
+    );
+  }
+
+  /** GET /sessions/:id/run — active-run reconciliation (post-sync_lost). */
+  async getRunStatus(sessionId: string): Promise<SessionRunStatus> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`),
     );
   }
 

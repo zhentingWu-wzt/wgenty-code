@@ -201,6 +201,35 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
         // Live context occupancy for web/Tauri status bars; the TUI reads its
         // in-process TokenCounter directly.
         SessionEventKind::UsageUpdate => Vec::new(),
+        // Daemon-truth turn phase: forward to the existing phase-deriving
+        // AppEvents (agent_phase_from_event picks them up), so server-side
+        // TUI turns show Connecting/Compacting like the in-process loop did.
+        SessionEventKind::PhaseChanged => {
+            let phase = ev.data.get("phase").and_then(|p| p.as_str()).unwrap_or("");
+            match phase {
+                "connecting" => {
+                    let attempt = ev
+                        .data
+                        .get("attempt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1) as usize;
+                    let max_retries = ev
+                        .data
+                        .get("max_retries")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1) as usize;
+                    vec![AppEvent::Connecting {
+                        attempt,
+                        max_retries,
+                    }]
+                }
+                "preparing_tools" => vec![AppEvent::PreparingTools],
+                "compacting" => vec![AppEvent::CompactionStarted],
+                // "thinking" needs no AppEvent: the next delta/tool event
+                // transitions the phase anyway (Compacting included).
+                _ => Vec::new(),
+            }
+        }
     }
 }
 
@@ -1032,6 +1061,50 @@ mod tests {
             AppEvent::StreamDone { finish_reason } if finish_reason == "stop"
         ));
         assert!(matches!(&apps[1], AppEvent::TurnComplete));
+    }
+
+    /// Daemon-truth phases map onto the existing phase-deriving AppEvents, so
+    /// server-side TUI turns show Connecting/Compacting like in-process ones.
+    #[test]
+    fn phase_changed_maps_to_phase_app_events() {
+        let connecting = session_event_to_app_events(ev(
+            6,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "connecting", "attempt": 2, "max_retries": 3}),
+        ));
+        assert_eq!(connecting.len(), 1);
+        assert!(matches!(
+            &connecting[0],
+            AppEvent::Connecting {
+                attempt: 2,
+                max_retries: 3
+            }
+        ));
+
+        let compacting = session_event_to_app_events(ev(
+            7,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "compacting"}),
+        ));
+        assert_eq!(compacting.len(), 1);
+        assert!(matches!(&compacting[0], AppEvent::CompactionStarted));
+
+        let preparing = session_event_to_app_events(ev(
+            8,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "preparing_tools"}),
+        ));
+        assert_eq!(preparing.len(), 1);
+        assert!(matches!(&preparing[0], AppEvent::PreparingTools));
+
+        // "thinking" needs no AppEvent: the next delta/tool event
+        // transitions the phase anyway.
+        let thinking = session_event_to_app_events(ev(
+            9,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "thinking"}),
+        ));
+        assert!(thinking.is_empty());
     }
 
     #[test]

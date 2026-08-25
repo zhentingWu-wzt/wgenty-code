@@ -94,6 +94,30 @@ interface PendingPermission {
   resolve: (decision: PermissionDecision) => void;
 }
 
+/** Fine-grained turn phase — the subset of the TUI's AgentPhase
+ *  (src/state/agent_phase.rs) the status bar renders. `connecting` and
+ *  `compacting` only ever arrive via daemon `phase_changed` events (older
+ *  daemons never send them); the rest are derived from the event stream by
+ *  sessionRunner. The StatusBar renders the same labels as
+ *  src/tui/components/status.rs so both frontends read identically. */
+export type AgentPhase =
+  | "thinking"
+  | "connecting"
+  | "streaming"
+  | "preparing_tools"
+  | "executing"
+  | "compacting"
+  | "error";
+
+export interface AgentPhaseInfo {
+  phase: AgentPhase;
+  /** Tool name when phase === "executing". */
+  toolName?: string;
+  /** Retry position when phase === "connecting" (daemon truth only). */
+  attempt?: number;
+  maxRetries?: number;
+}
+
 let nextId = 1;
 const genId = (): string => `m${nextId++}`;
 
@@ -116,6 +140,11 @@ export interface SessionState {
    * updated live by `usage_update` events mid-turn and by the turn-end
    * `turn_context` snapshot. Null until the first update arrives. */
   contextTokens: number | null;
+  /** Fine-grained turn phase (TUI-aligned), derived from SessionEvents by
+   *  sessionRunner. Null when no turn is active. */
+  agentPhase: AgentPhaseInfo | null;
+  /** Wall-clock ms when the current turn started (StatusBar elapsed timer). */
+  turnStartedAt: number | null;
 
   /** FIFO queue of messages waiting to run after the current turn completes.
    *  Mirrors the TUI's `pending_inputs`: while a turn runs, new sends are
@@ -144,6 +173,10 @@ export interface SessionState {
   setTurnContext: (data: TurnContextData) => void;
   /** Live context-occupancy setter (usage_update events). */
   setContextTokens: (n: number) => void;
+  /** Turn phase setter (sessionRunner derives from SessionEvents). */
+  setAgentPhase: (p: AgentPhaseInfo | null) => void;
+  /** Turn start timestamp setter (paired with agentPhase). */
+  setTurnStartedAt: (t: number | null) => void;
   /** Append a message to the per-session queue (sent while a turn runs). */
   enqueueInput: (text: string) => void;
   /** Pop the next queued message (FIFO). Returns undefined when empty. */
@@ -190,6 +223,8 @@ export function createSessionStore() {
     pendingQuestion: null,
     turnContext: null,
     contextTokens: null,
+    agentPhase: null,
+    turnStartedAt: null,
 
     pendingInputs: [],
     setConnection: (s) => set({ connection: s }),
@@ -263,6 +298,8 @@ export function createSessionStore() {
         contextTokens: data.usage.context_tokens ?? get().contextTokens,
       }),
     setContextTokens: (n) => set({ contextTokens: n }),
+    setAgentPhase: (p) => set({ agentPhase: p }),
+    setTurnStartedAt: (t) => set({ turnStartedAt: t }),
     setRunning: (b) => set({ isRunning: b }),
 
     enqueueInput: (text) => set((s) => ({ pendingInputs: [...s.pendingInputs, text] })),
@@ -329,7 +366,7 @@ export function createSessionStore() {
       // composer gates sends on isRunning — leaving it set makes the Stop
       // button look dead and queues every later message forever. The loop's
       // finally writes the same value again; the double write is idempotent.
-      set({ isRunning: false });
+      set({ isRunning: false, agentPhase: null, turnStartedAt: null });
     },
 
     clear: () =>
@@ -341,6 +378,8 @@ export function createSessionStore() {
         pendingQuestion: null,
         isRunning: false,
         pendingInputs: [],
+        agentPhase: null,
+        turnStartedAt: null,
       }),
   }));
 }

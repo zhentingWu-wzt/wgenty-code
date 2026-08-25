@@ -17,7 +17,8 @@ interface StatusBarProps {
   onSwitchModel: () => void;
 }
 
-/** 底部状态栏：daemon 连接 · 运行状态 · 待审批数 · 权限模式 · 模型。 */
+/** 底部状态栏：daemon 连接 · 待审批数 · workspace · context bar · 权限模式 · 模型。
+ *  轮次 phase（spinner/文案/耗时）在输入框上方的 TurnStatus 条，不在这里。 */
 export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const connection = useSessionManager((s) => s.connection);
   const modelName = useSessionManager((s) => s.modelName);
@@ -28,13 +29,9 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
     s.activeId ? (s.entries[s.activeId]?.store ?? null) : null,
   );
   const pendingApprovals = useSessionManager(selectPendingApprovalCount);
-  const activeStatus = useSessionManager((s) =>
-    s.activeId ? s.entries[s.activeId]?.status : undefined,
-  );
   // Workspace root of the ACTIVE session (worktree, else project path, else
   // the main project) — shows which checkout a turn will land in.
   const { root: workRoot } = useWorkspaceRoot(client);
-  const isRunning = activeStatus === "running" || activeStatus === "awaiting_approval";
   const [modeOpen, setModeOpen] = useState(false);
 
   // Context-window occupancy of the active session, updated LIVE by
@@ -84,7 +81,6 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
         />
         {statusText}
       </span>
-      {isRunning && <span className="text-warning">working</span>}
       {pendingApprovals > 0 && (
         <span className="rounded-sm bg-warning/20 px-1 text-warning">
           {pendingApprovals} approval{pendingApprovals > 1 ? "s" : ""}

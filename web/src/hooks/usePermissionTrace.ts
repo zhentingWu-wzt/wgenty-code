@@ -40,11 +40,18 @@ export function usePermissionTrace(client: DaemonClient | null): void {
   const activeId = useSessionManager((s) => s.activeId);
 
   // Route a trace event (or a recovered pending permission) to the session
-  // store it belongs to, falling back to the active session — daemon session
-  // ids don't always match local session ids.
+  // store it belongs to: direct local-id hit (bound sessions), then a
+  // reverse lookup by daemonId (unbound local sessions get their daemonId
+  // only after the first turn — without this, prompts landed on the ACTIVE
+  // session or vanished entirely in multi-session setups), then the active
+  // session as a last resort.
   const routeTarget = (sessionId: string) => {
     const m = useSessionManager.getState();
-    return m.entries[sessionId] ?? (m.activeId ? m.entries[m.activeId] : null);
+    return (
+      m.entries[sessionId] ??
+      Object.values(m.entries).find((e) => e.daemonId === sessionId) ??
+      (m.activeId ? m.entries[m.activeId] : null)
+    );
   };
 
   const handleEvent = (ev: TraceEvent) => {

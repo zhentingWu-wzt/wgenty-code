@@ -17,7 +17,7 @@ import { wsChannel } from "../api/wsChannel";
 import { toast } from "sonner";
 import { sessionTitleFromMessage, useSessionManager } from "../state/sessionManager";
 import type { SessionStore } from "../state/sessionStore";
-import type { SessionEvent, SessionEventKind } from "../api/types";
+import type { SessionEvent, SessionEventKind, SessionRunStatus } from "../api/types";
 import type { ToolExecution } from "./types";
 
 /** Pending tool invocation (started but not yet resulted). */
@@ -57,15 +57,24 @@ function isTerminalEvent(ev: SessionEvent): boolean {
  * usage_update values (identical measure) simply stay on screen. */
 const TURN_CONTEXT_GRACE_MS = 500;
 
+/** sync_lost reconciliation probe cadence. The first tick lands here after a
+ * sync_lost (post-realign events would disarm the probe before it fires). */
+const SYNC_LOST_RECONCILE_MS = 5_000;
+
 /**
  * Observe one session's turn over the shared ws push channel and await its
  * end. The channel owns connection/reconnect and replays from its cursor on
  * reattach (sync_lost realign included), so this is a thin shell: filter to
  * the run, mirror events, resolve on the terminal event.
  *
+ * Exported for unit tests (the subscribe/status/fetchRunState seams let the
+ * state machine run without the singleton channel or a live daemon).
+ *
  * - `acquireRunId` (runSessionTurn): events arriving before the POST /run
  *   response carries the run id are buffered and replayed once it is known —
- *   a fast turn must not finish invisibly in that gap.
+ *   a fast turn must not finish invisibly in that gap. Resolving `null`
+ *   (legacy daemon queued the message with an empty run_id) switches to
+ *   adoption mode: no run filter, settle on the first terminal.
  * - Without it (observeDaemonRun): the run id is learned from the first event.
  * - `idleTimeoutMs`: resolve "idle" if not a single event arrived in time
  *   (observer attach gap — the run already finished; its history loads the
@@ -74,20 +83,33 @@ const TURN_CONTEXT_GRACE_MS = 500;
  *   connection for this long mid-turn (daemon down) instead of hanging the
  *   UI in "running" forever — the ws successor of the SSE eventless-drop
  *   guard. A connected-but-quiet turn is NOT a stall (slow LLM is normal).
+ * - `fetchRunState`: after a sync_lost (terminal may have fired inside the
+ *   lost window) poll the run-state endpoint; settle "finished" once the
+ *   awaited run is no longer active while the stream stays quiet.
  */
-function awaitTurnOverWs(opts: {
+export function awaitTurnOverWs(opts: {
   daemonSessionId: string;
   abort: AbortSignal;
   onEvent: (ev: SessionEvent) => void;
   isTerminal: (ev: SessionEvent) => boolean;
-  acquireRunId?: () => Promise<string>;
+  /** POST /run. Resolves `null` when a legacy daemon queued the message
+   *  (empty `run_id`) — the run id is then adopted from the first event
+   *  instead of filtering everything out. */
+  acquireRunId?: () => Promise<string | null>;
   idleTimeoutMs?: number;
   stallTimeoutMs?: number;
+  /** GET /sessions/:id/run — reconciliation probe armed after a sync_lost
+   *  (the terminal event may have fired inside the lost window). */
+  fetchRunState?: () => Promise<SessionRunStatus | null>;
+  /** Test seams; default to the singleton ws channel. */
+  subscribe?: (sessionId: string, handler: (ev: SessionEvent) => void) => { unsubscribe(): void };
+  channelStatus?: () => string;
 }): Promise<TurnOutcome> {
   const { daemonSessionId, abort, onEvent, isTerminal } = opts;
   return new Promise<TurnOutcome>((resolve, reject) => {
     let settled = false;
     let runId: string | null = null;
+    let runIdKnown = false;
     let received = 0;
     const buffer: SessionEvent[] = [];
 
@@ -112,17 +134,58 @@ function awaitTurnOverWs(opts: {
       settle("finished");
     };
 
+    // ── sync_lost reconciliation ──────────────────────────────────────────
+    // sync_lost means the daemon's replay window no longer covers our cursor
+    // (buffer eviction / restart): the awaited terminal event may already
+    // have fired inside the lost window and will never arrive. While the
+    // stream stays quiet, poll the run-state endpoint; once the awaited run
+    // is no longer active (idle, or replaced by another run) settle
+    // "finished" instead of hanging on "running" forever. Any live event
+    // disarms the probe — normal terminal handling resumes.
+    let reconcileTimer: ReturnType<typeof setInterval> | null = null;
+    const armReconcile = () => {
+      if (reconcileTimer !== null || !opts.fetchRunState) return;
+      reconcileTimer = setInterval(() => {
+        void (async () => {
+          if (settled) return;
+          let st: SessionRunStatus | null = null;
+          try {
+            st = await opts.fetchRunState!();
+          } catch {
+            return; // probe failed: keep waiting (stall watchdog still guards)
+          }
+          if (st === null) return;
+          // Adoption mode (runId null): anything still active or queued
+          // keeps the wait alive. Run-scoped mode: only OUR run does.
+          const keepWaiting =
+            runId !== null ? st.run_id === runId : st.run_id !== null || st.queued > 0;
+          if (!keepWaiting) settle("finished");
+        })();
+      }, SYNC_LOST_RECONCILE_MS);
+    };
+    const disarmReconcile = () => {
+      if (reconcileTimer !== null) {
+        clearInterval(reconcileTimer);
+        reconcileTimer = null;
+      }
+    };
+
     const process = (ev: SessionEvent): void => {
       if (settled) return; // post-terminal buffered events are not consumed
-      if (ev.kind === "sync_lost") return; // the channel realigns its cursor
-      if (runId === null) {
+      if (ev.kind === "sync_lost") {
+        armReconcile(); // the channel realigns its cursor on its own
+        return;
+      }
+      disarmReconcile();
+      if (!runIdKnown) {
         if (opts.acquireRunId) {
           buffer.push(ev); // pre-runId events: replayed once the id is known
           return;
         }
-        runId = ev.run_id; // observer mode: adopt the first event's run
+        runId = ev.run_id; // observer / queued-legacy mode: adopt the first run
+        runIdKnown = true;
       }
-      if (ev.run_id !== runId) return; // stale: an earlier run's events
+      if (runId !== null && ev.run_id !== runId) return; // stale: an earlier run's events
       // The daemon publishes turn_context after turn_done/turn_error (final
       // save first), so a terminal event opens a short grace window: consume
       // ONLY that snapshot, then settle early. Any other trailing event is
@@ -143,7 +206,11 @@ function awaitTurnOverWs(opts: {
       }
     };
 
-    const sub = wsChannel.subscribeSession(daemonSessionId, process);
+    const subscribe =
+      opts.subscribe ??
+      ((sid: string, handler: (ev: SessionEvent) => void) =>
+        wsChannel.subscribeSession(sid, handler));
+    const sub = subscribe(daemonSessionId, process);
 
     const onAbort = () => settle(received === 0 && opts.idleTimeoutMs ? "idle" : "aborted");
     abort.addEventListener("abort", onAbort, { once: true });
@@ -158,11 +225,12 @@ function awaitTurnOverWs(opts: {
     // Stall watchdog: accumulate time with the channel NOT open. A turn can
     // legitimately run quiet for minutes while connected; only a sustained
     // inability to hold any connection is a transport failure.
+    const channelStatus = opts.channelStatus ?? (() => wsChannel.status());
     let closedMs = 0;
     const stallProbe =
       opts.stallTimeoutMs !== undefined
         ? setInterval(() => {
-            closedMs = wsChannel.status() === "open" ? 0 : closedMs + 5_000;
+            closedMs = channelStatus() === "open" ? 0 : closedMs + 5_000;
             if (closedMs >= opts.stallTimeoutMs!) settle("stalled");
           }, 5_000)
         : null;
@@ -173,12 +241,16 @@ function awaitTurnOverWs(opts: {
       if (idleTimer !== null) clearTimeout(idleTimer);
       if (graceTimer !== null) clearTimeout(graceTimer);
       if (stallProbe !== null) clearInterval(stallProbe);
+      disarmReconcile();
     }
 
     if (opts.acquireRunId) {
+      const acquire = opts.acquireRunId;
       void (async () => {
         try {
-          runId = await opts.acquireRunId!();
+          // `null` = legacy queued response (empty run_id): adoption mode.
+          runId = await acquire();
+          runIdKnown = true;
           for (const ev of buffer.splice(0)) process(ev);
         } catch (err) {
           fail(err);
@@ -227,6 +299,10 @@ export async function runSessionTurn(
   const isFirstUserTurn = store.getState().messages.length === 1;
   store.getState().setError(null);
   store.getState().setRunning(true);
+  // TUI-aligned phase: a turn starts in "thinking" (the daemon is assembling
+  // the prompt / awaiting the first model chunk) — see AgentPhase::Thinking.
+  store.getState().setAgentPhase({ phase: "thinking" });
+  store.getState().setTurnStartedAt(Date.now());
   m.setStatus(sessionId, "running");
   m.setPreview(sessionId, "");
 
@@ -266,9 +342,14 @@ export async function runSessionTurn(
       onEvent: (ev) => handleEvent(ev, store, sessionId, ctx),
       isTerminal: isTerminalEvent,
       acquireRunId: async () => {
-        const { run_id: runId } = await client.runSession(daemonId, text, abort.signal);
-        return runId;
+        const resp = await client.runSession(daemonId, text, abort.signal);
+        // Legacy daemon queued the message (empty run_id): adopt the id from
+        // the first event rather than filtering every event out (the
+        // pre-fix "sent a message, nothing happens" freeze). Current daemons
+        // always return the pre-minted id, queued or not.
+        return resp.run_id || null;
       },
+      fetchRunState: () => client.getRunStatus(daemonId),
       stallTimeoutMs: 60_000,
     });
     if (outcomeWs === "stalled") {
@@ -298,6 +379,8 @@ export async function runSessionTurn(
     store.getState().registerAbort(null);
     if (ctx.assistantId) store.getState().finalizeAssistant(ctx.assistantId);
     store.getState().setRunning(false);
+    store.getState().setAgentPhase(null);
+    store.getState().setTurnStartedAt(null);
     if (m.entries[sessionId]?.store.getState().lastError === null) {
       m.setStatus(sessionId, "idle");
     }
@@ -360,6 +443,8 @@ export async function observeDaemonRun(
 
   store.getState().setError(null);
   store.getState().setRunning(true);
+  store.getState().setAgentPhase({ phase: "thinking" });
+  store.getState().setTurnStartedAt(Date.now());
   m.setStatus(sessionId, "running");
   const abort = new AbortController();
   store.getState().registerAbort(abort);
@@ -385,6 +470,10 @@ export async function observeDaemonRun(
       isTerminal: isTerminalEvent,
       idleTimeoutMs: 20_000,
       stallTimeoutMs: 60_000,
+      // Reconcile a sync_lost that swallows the continuation's terminal
+      // event: adoption mode keeps waiting while any run is active or any
+      // message is queued, settles once the session goes idle.
+      fetchRunState: () => client.getRunStatus(daemonSessionId),
     });
   } catch {
     // Transport failure while acquiring the run: exit quietly. An observed
@@ -394,6 +483,8 @@ export async function observeDaemonRun(
     store.getState().registerAbort(null);
     if (ctx.assistantId) store.getState().finalizeAssistant(ctx.assistantId);
     store.getState().setRunning(false);
+    store.getState().setAgentPhase(null);
+    store.getState().setTurnStartedAt(null);
     const mgr = useSessionManager.getState();
     if (mgr.entries[sessionId]?.store.getState().lastError === null) {
       mgr.setStatus(sessionId, "idle");
@@ -420,7 +511,13 @@ function openBubbleForText(ctx: RenderCtx, store: SessionStore): void {
   }
 }
 
-/** Map a SessionEvent to store mutations (the rendering contract). */
+/** Map a SessionEvent to store mutations (the rendering contract).
+ *
+ * Besides per-event rendering, each event advances the TUI-aligned
+ * `agentPhase` (mirrors src/tui/components/status.rs transitions):
+ * delta → streaming; turn_done(tool_calls) → preparing_tools;
+ * tool_start → executing{name}; tool_result → thinking (next round);
+ * turn_error → error. */
 function handleEvent(
   ev: SessionEvent,
   store: SessionStore,
@@ -431,6 +528,7 @@ function handleEvent(
   switch (ev.kind as SessionEventKind) {
     case "content_delta": {
       const text = String(ev.data.text ?? "");
+      s.setAgentPhase({ phase: "streaming" });
       openBubbleForText(ctx, store);
       s.appendAssistant(ctx.assistantId!, { type: "contentDelta", text });
       useSessionManager.getState().setPreview(sessionId, text);
@@ -438,6 +536,7 @@ function handleEvent(
     }
     case "reasoning_delta": {
       const text = String(ev.data.text ?? "");
+      s.setAgentPhase({ phase: "streaming" });
       openBubbleForText(ctx, store);
       s.appendAssistant(ctx.assistantId!, { type: "reasoningDelta", text });
       break;
@@ -445,6 +544,7 @@ function handleEvent(
     case "tool_start": {
       const name = String(ev.data.name ?? "unknown");
       const args = (ev.data.args as Record<string, unknown>) ?? {};
+      s.setAgentPhase({ phase: "executing", toolName: name });
       // The placeholder appears at its stream position so the user sees the
       // call start (running card) before the result arrives.
       const msgId = store.getState().pushToolStart(name, args);
@@ -455,6 +555,8 @@ function handleEvent(
       const name = String(ev.data.name ?? "unknown");
       const args = (ev.data.args as Record<string, unknown>) ?? {};
       const content = String(ev.data.content ?? "");
+      // Tools finished: the next LLM round starts (Thinking, per TUI).
+      s.setAgentPhase({ phase: "thinking" });
       const pending = ctx.pendingTools.shift();
       const exec: ToolExecution = {
         call: {
@@ -470,15 +572,31 @@ function handleEvent(
       if (pending?.msgId) store.getState().completeTool(pending.msgId, exec);
       break;
     }
-    case "turn_done":
+    case "turn_done": {
+      const finishReason = String(ev.data.finish_reason ?? "");
       // finish_reason tool_calls only ends one LLM round — the following
       // tool_start/tool_result belong to the just-ended round, and the next
       // content_delta opens a new round bubble.
-      if (ev.data.finish_reason === "tool_calls") ctx.boundary = true;
+      if (finishReason === "tool_calls") {
+        ctx.boundary = true;
+        // Tools are about to execute (TUI PreparingTools).
+        s.setAgentPhase({ phase: "preparing_tools" });
+      } else if (finishReason === "length" || finishReason === "max_tokens") {
+        // The provider hit the token budget — with reasoning models the
+        // budget is often consumed by reasoning_content first, so the answer
+        // can come back empty ("long reasoning, then nothing happens").
+        // Surface it instead of ending the turn silently.
+        toast.warning("Response truncated — max tokens reached", {
+          description:
+            "The token budget ran out (often from long reasoning). Resend, or raise max_tokens.",
+        });
+      }
       break; // finalization handled by the finally block
+    }
     case "turn_error": {
       const message = String(ev.data.message ?? "turn failed");
       s.setError({ message, kind: "upstream" });
+      s.setAgentPhase({ phase: "error" });
       useSessionManager.getState().setStatus(sessionId, "error");
       break;
     }
@@ -497,5 +615,31 @@ function handleEvent(
     }
     case "save":
       break; // daemon persisted; nothing to do client-side
+    case "phase_changed": {
+      // Daemon-truth phase (v2 status contract): authoritative when present.
+      // The local derivation above stays as the fallback for older daemons
+      // that never send this event; values it can already derive
+      // (preparing_tools) simply agree.
+      const phase = String(ev.data.phase ?? "");
+      if (
+        phase === "thinking" ||
+        phase === "connecting" ||
+        phase === "preparing_tools" ||
+        phase === "compacting"
+      ) {
+        const attempt = Number(ev.data.attempt);
+        const maxRetries = Number(ev.data.max_retries);
+        s.setAgentPhase({
+          phase,
+          ...(phase === "connecting" && Number.isFinite(attempt)
+            ? {
+                attempt,
+                maxRetries: Number.isFinite(maxRetries) ? maxRetries : undefined,
+              }
+            : {}),
+        });
+      }
+      break;
+    }
   }
 }
