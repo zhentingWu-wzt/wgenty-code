@@ -1,8 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionManager } from "../state/sessionManager";
-import { runSessionTurn, stopSessionTurn } from "./sessionRunner";
+import { awaitTurnOverWs, runSessionTurn, stopSessionTurn } from "./sessionRunner";
 import type { DaemonClient } from "../api/client";
 import type { SessionEvent } from "../api/types";
+import { toast } from "sonner";
+
+// Toast assertions (truncation hint): the real toaster is DOM noise in jsdom.
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), warning: vi.fn() },
+}));
 
 // ── Fake ws push channel ─────────────────────────────────────────────────────
 // sessionRunner consumes the wsChannel singleton; tests swap it for a local
@@ -119,6 +125,105 @@ describe("runSessionTurn (server-side observer)", () => {
     expect(store.isRunning).toBe(false);
     expect(useSessionManager.getState().entries[id].status).toBe("idle");
     expect(client.runSession).toHaveBeenCalledWith("daemon-s1", "hi", expect.any(AbortSignal));
+  });
+
+  it("derives the TUI-aligned agentPhase from the event stream", async () => {
+    // Phase transitions mirror src/tui/components/status.rs: thinking on
+    // send → streaming on first delta → preparing_tools at a tool_calls
+    // round boundary → executing{tool} at tool_start → thinking after
+    // tool_result → cleared when the turn settles. Tracked via a store
+    // subscription (pre-runId events are buffered by the awaiter, so the
+    // transitions only surface when they are replayed).
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "content_delta", { text: "plan" }),
+        makeEvent(2, "turn_done", { finish_reason: "tool_calls" }),
+        makeEvent(3, "tool_start", { name: "file_read", args: {} }),
+        makeEvent(4, "tool_result", { name: "file_read", args: {}, content: "ok" }),
+        makeEvent(5, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    const seen: Array<string | null> = [];
+    const unsub = useSessionManager.getState().entries[id].store.subscribe((s, prev) => {
+      const phase = s.agentPhase?.phase ?? null;
+      if (phase !== (prev.agentPhase?.phase ?? null)) seen.push(phase);
+    });
+    await runSessionTurn(client as unknown as DaemonClient, id, "go");
+    unsub();
+
+    expect(seen).toEqual([
+      "thinking",
+      "streaming",
+      "preparing_tools",
+      "executing",
+      "thinking",
+      null,
+    ]);
+    // Turn settled: timer cleared alongside the phase.
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.agentPhase).toBeNull();
+    expect(store.turnStartedAt).toBeNull();
+  });
+
+  it("daemon phase_changed events are authoritative (connecting/compacting)", async () => {
+    // v2 status contract: phases thin clients cannot derive arrive as
+    // `phase_changed` SessionEvents; the local derivation keeps serving the
+    // rest. A retrying connect and a mid-turn compaction must surface, with
+    // the retry position riding along.
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "phase_changed", { phase: "connecting", attempt: 2, max_retries: 3 }),
+        makeEvent(2, "content_delta", { text: "hi" }),
+        makeEvent(3, "phase_changed", { phase: "compacting" }),
+        makeEvent(4, "phase_changed", { phase: "thinking" }),
+        makeEvent(5, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    const transitions: Array<string | null> = [];
+    let connectingInfo: unknown = null;
+    const unsub = useSessionManager.getState().entries[id].store.subscribe((s, prev) => {
+      const phase = s.agentPhase?.phase ?? null;
+      if (phase !== (prev.agentPhase?.phase ?? null)) {
+        transitions.push(phase);
+        if (phase === "connecting") connectingInfo = s.agentPhase;
+      }
+    });
+    await runSessionTurn(client as unknown as DaemonClient, id, "go");
+    unsub();
+
+    expect(transitions).toEqual([
+      "thinking",
+      "connecting",
+      "streaming",
+      "compacting",
+      "thinking",
+      null,
+    ]);
+    expect(connectingInfo).toMatchObject({ phase: "connecting", attempt: 2, maxRetries: 3 });
+  });
+
+  it("warns on turn_done finish_reason length (silent truncation regression)", async () => {
+    // Reasoning models can burn the whole max_tokens budget on
+    // reasoning_content: the provider answers finish_reason "length"
+    // (Anthropic "max_tokens" is normalized to "length" daemon-side) and the
+    // turn ENDS with no visible content. The observer must say so instead
+    // of looking like the agent just stopped.
+    vi.mocked(toast.warning).mockClear();
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "reasoning_delta", { text: "very long thinking…" }),
+        makeEvent(2, "turn_done", { finish_reason: "length" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "go");
+
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(toast.warning).mock.calls[0][0]).toContain("truncated");
+    // The turn itself still settles normally (idle, not error).
+    expect(useSessionManager.getState().entries[id].status).toBe("idle");
   });
 
   it("tool_start + tool_result renders as a standalone tool entry", async () => {
@@ -389,5 +494,156 @@ describe("runSessionTurn (server-side observer)", () => {
 
     const store = useSessionManager.getState().entries[id].store.getState();
     expect(store.contextTokens).toBe(4321);
+  });
+});
+
+// ── awaitTurnOverWs state machine (injected seams) ──────────────────────────
+// Regression coverage for the "web freezes with wrong status" bugs:
+// 1. legacy queued POST /run (empty run_id) must not filter every event out;
+// 2. run-scoped filtering must drop a busy session's earlier-run tail;
+// 3. a sync_lost that swallows the terminal event must reconcile via the
+//    run-state endpoint instead of waiting forever.
+
+function seamEvent(
+  seq: number,
+  runId: string,
+  kind: SessionEvent["kind"],
+  data: Record<string, unknown> = {},
+): SessionEvent {
+  return { seq, session_id: "s", run_id: runId, kind, data };
+}
+
+function seamSyncLost(latestSeq: number): SessionEvent {
+  return {
+    seq: 0,
+    session_id: "s",
+    run_id: "",
+    kind: "sync_lost",
+    data: { reason: "lagged", latest_seq: latestSeq },
+  };
+}
+
+describe("awaitTurnOverWs (run adoption / sync_lost reconcile)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Captures the subscribe handler; drives the awaiter with an always-open
+   *  fake channel. Returns the event push function. */
+  function harness(onEvent: (ev: SessionEvent) => void) {
+    let handler: ((ev: SessionEvent) => void) | null = null;
+    const push = (ev: SessionEvent) => handler?.(ev);
+    const opts = {
+      daemonSessionId: "s",
+      abort: new AbortController().signal,
+      onEvent,
+      isTerminal: (e: SessionEvent) =>
+        (e.kind === "turn_done" || e.kind === "turn_error") &&
+        e.data.finish_reason !== "tool_calls",
+      subscribe: (_sid: string, h: (ev: SessionEvent) => void) => {
+        handler = h;
+        return { unsubscribe: () => (handler = null) };
+      },
+      channelStatus: () => "open" as const,
+    };
+    return { push, opts };
+  }
+
+  /** Flush pending microtask chains (resolve → await → resolve …). */
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+
+  /** Advance past TURN_CONTEXT_GRACE_MS so a seen terminal settles. */
+  async function settleGrace(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(600);
+    await flush();
+  }
+
+  it("settles finished on the terminal event of the acquired run", async () => {
+    const kinds: string[] = [];
+    const h = harness((e) => kinds.push(e.kind));
+    const p = awaitTurnOverWs({ ...h.opts, acquireRunId: async () => "r2" });
+    await flush();
+    // Busy session's earlier-run tail must be filtered out.
+    h.push(seamEvent(1, "r1", "content_delta", { text: "stale" }));
+    h.push(seamEvent(2, "r2", "content_delta", { text: "ours" }));
+    h.push(seamEvent(3, "r2", "turn_done", { finish_reason: "stop" }));
+    await settleGrace();
+    await expect(p).resolves.toBe("finished");
+    expect(kinds.filter((k) => k === "content_delta")).toHaveLength(1);
+  });
+
+  it("queued legacy response (null run id) adopts the live run instead of freezing", async () => {
+    const kinds: string[] = [];
+    const h = harness((e) => kinds.push(e.kind));
+    const p = awaitTurnOverWs({ ...h.opts, acquireRunId: async () => null });
+    await flush();
+    h.push(seamEvent(1, "r1", "content_delta", { text: "active run tail" }));
+    h.push(seamEvent(2, "r1", "turn_done", { finish_reason: "stop" }));
+    await settleGrace();
+    // Pre-fix this hung forever: the empty-string filter dropped every event.
+    await expect(p).resolves.toBe("finished");
+    expect(kinds).toContain("content_delta");
+  });
+
+  it("reconciles a sync_lost that swallowed the terminal event (run went idle)", async () => {
+    const h = harness(() => {});
+    const probe = vi.fn(async () => ({ run_id: null, queued: 0 }));
+    const p = awaitTurnOverWs({
+      ...h.opts,
+      acquireRunId: async () => "r1",
+      fetchRunState: probe,
+    });
+    await flush();
+    h.push(seamEvent(1, "r1", "content_delta", { text: "partial" }));
+    h.push(seamSyncLost(9));
+    // No further events: the probe's first tick must settle "finished".
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    await expect(p).resolves.toBe("finished");
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps waiting through sync_lost while the run is still active", async () => {
+    const h = harness(() => {});
+    let active = true;
+    const p = awaitTurnOverWs({
+      ...h.opts,
+      acquireRunId: async () => "r1",
+      fetchRunState: async () => ({ run_id: active ? "r1" : null, queued: 0 }),
+    });
+    await flush();
+    h.push(seamSyncLost(5));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    // Run finishes for real after realignment — terminal arrives late.
+    h.push(seamEvent(6, "r1", "turn_done", { finish_reason: "stop" }));
+    active = false;
+    await settleGrace();
+    await expect(p).resolves.toBe("finished");
+  });
+
+  it("adoption mode keeps waiting while messages are still queued", async () => {
+    const h = harness(() => {});
+    let queued = 1;
+    const p = awaitTurnOverWs({
+      ...h.opts,
+      acquireRunId: async () => null,
+      fetchRunState: async () => ({ run_id: null, queued }),
+    });
+    await flush();
+    h.push(seamSyncLost(3));
+    // Queue still holds our message — the probe must not settle yet.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    // Scheduler drains the queue and runs our turn to completion.
+    queued = 0;
+    h.push(seamEvent(4, "rq", "turn_done", { finish_reason: "stop" }));
+    await settleGrace();
+    await expect(p).resolves.toBe("finished");
   });
 });

@@ -218,7 +218,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // as an active client on upgrade (task 2.4).
         .route("/api/v1/ws", get(ws_push::ws_handler))
         // Session server-side runs (spawn / cancel an agent turn, live SSE events)
-        .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
+        .route(
+            "/api/v1/sessions/:id/run",
+            post(run_loop::post_run).get(run_loop::get_run_status),
+        )
         .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))
         // Queued user messages (submitted while the run slot was busy)
         .route(

@@ -351,6 +351,14 @@ pub struct QueuedMessage {
     /// Preserved from the submitting request so a queued Plan-mode turn still
     /// runs as Plan mode when the scheduler finally starts it.
     pub plan_mode: bool,
+    /// Run id pre-minted at POST /run time so the response can return it
+    /// immediately: the client subscribes and filters on this id while the
+    /// turn waits in the queue, and the scheduler reuses it verbatim when it
+    /// starts the turn. (Previously the response answered `run_id: ""` and
+    /// clients were expected to adopt the id from the first event — a
+    /// contract the web observer never implemented, freezing its status on
+    /// "running" forever.)
+    pub run_id: String,
 }
 
 #[derive(Default)]
@@ -395,6 +403,7 @@ impl MessageInbox {
             message_id: uuid::Uuid::new_v4().to_string(),
             message,
             plan_mode,
+            run_id: uuid::Uuid::new_v4().to_string(),
         };
         session.pending.push_back(queued.clone());
         Ok(queued)
@@ -413,8 +422,15 @@ impl MessageInbox {
             .map_or(0, |session| session.pending.len())
     }
 
-    fn has_pending(&self, session_id: &str) -> bool {
-        self.depth(session_id) > 0
+    /// Peek the run id of the queue head WITHOUT claiming it, so the
+    /// scheduler can claim the run slot under the same id the enqueueing
+    /// POST /run already handed the client.
+    fn head_run_id(&self, session_id: &str) -> Option<String> {
+        self.by_session
+            .get(session_id)?
+            .pending
+            .front()
+            .map(|queued| queued.run_id.clone())
     }
 
     /// Move the head message into an exclusive claim by `run_id`.
@@ -1305,8 +1321,11 @@ impl DaemonState {
         self.message_inbox.read().await.depth(session_id)
     }
 
-    pub(crate) async fn has_queued_messages(&self, session_id: &str) -> bool {
-        self.message_inbox.read().await.has_pending(session_id)
+    /// Run id the scheduler will use when it starts the queue head, if any.
+    /// The scheduler pairs this with [`Self::claim_queued_message`] so the
+    /// started turn keeps the id POST /run already returned to the client.
+    pub(crate) async fn queued_head_run_id(&self, session_id: &str) -> Option<String> {
+        self.message_inbox.read().await.head_run_id(session_id)
     }
 
     pub(crate) async fn claim_queued_message(

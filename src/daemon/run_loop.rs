@@ -57,6 +57,14 @@ pub enum SessionEventKind {
     /// recalled memories, new messages, hook reminder, and token usage.
     /// Emitted once per run, after the loop exits and before the final save.
     TurnContext,
+    /// Daemon-truth turn phase (v2 of the status contract): published at the
+    /// transitions thin clients cannot derive from the other events —
+    /// `thinking` (run start / prompt assembly / post-compaction),
+    /// `connecting` (LLM stream open or retry, carries `attempt` and
+    /// `max_retries`), `preparing_tools`, `compacting`. Clients that derive
+    /// phases locally keep their derivation as the fallback (older daemons
+    /// never send this); when present it is authoritative.
+    PhaseChanged,
 }
 
 /// Broadcast channel over which one daemon run publishes [`SessionEvent`]s.
@@ -357,7 +365,44 @@ impl EventSink for DaemonEventSink {
                     });
                 }
             }
-            // v1: connection noise and UI-only signals are not broadcast.
+            // Daemon-truth turn phases thin clients cannot derive (v2 status
+            // contract, SessionEventKind::PhaseChanged): LLM connect/retry,
+            // tool prep, compaction start/end.
+            RuntimeEvent::Connecting {
+                attempt,
+                max_retries,
+            } => {
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({
+                        "phase": "connecting",
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                    }),
+                );
+            }
+            RuntimeEvent::PreparingTools => {
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({ "phase": "preparing_tools" }),
+                );
+            }
+            RuntimeEvent::CompactionStarted => {
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({ "phase": "compacting" }),
+                );
+            }
+            RuntimeEvent::ContextCompacted { .. } => {
+                // Compaction finished; the loop resumes with the next LLM
+                // round. Publishing "thinking" un-sticks a client that
+                // entered its compacting state.
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({ "phase": "thinking" }),
+                );
+            }
+            // v1: background-task noise and UI-only signals are not broadcast.
             _ => {}
         }
     }
@@ -865,8 +910,9 @@ impl RunRegistry {
             .contains_key(session_id)
     }
 
-    #[cfg(test)]
-    fn active_run_id(&self, session_id: &str) -> Option<String> {
+    /// The active run's id, if any (GET /sessions/:id/run exposes it so
+    /// clients can reconcile after a `sync_lost` event-window eviction).
+    pub fn active_run_id(&self, session_id: &str) -> Option<String> {
         self.inner
             .read()
             .expect("session_runs lock poisoned")
@@ -1173,11 +1219,10 @@ async fn prepare_message_continuation(
         return None;
     }
     state.resolve_session(session_id).await.as_ref()?;
-    if !state.has_queued_messages(session_id).await {
-        return None;
-    }
-
-    let run_id = Uuid::new_v4().to_string();
+    // Peek the head's pre-minted run id BEFORE claiming the run slot: the
+    // slot must be claimed under the same id POST /run already returned to
+    // the submitting client, so its event subscription lines up.
+    let run_id = state.queued_head_run_id(session_id).await?;
     let cancel = CancellationToken::new();
     let next_run = SessionRun {
         run_id: run_id.clone(),
@@ -1306,7 +1351,10 @@ const fn queue_default_true() -> bool {
 
 #[derive(Debug, Serialize)]
 pub struct RunResponse {
-    /// Empty string when the turn was queued instead of started.
+    /// Always set — minted at POST time. A queued turn keeps this exact id
+    /// when the scheduler starts it, so clients can subscribe and filter on
+    /// it right away. (Historically an empty string was returned for queued
+    /// turns; clients were expected to adopt the id from the first event.)
     pub run_id: String,
     pub session_id: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -1319,11 +1367,12 @@ pub struct RunResponse {
 /// POST /api/v1/sessions/:id/run — spawn a server-side agent turn.
 ///
 /// 400 empty message / 404 unknown session. On success 202: either the turn
-/// starts immediately (`run_id` set), or — when a run is already active and
-/// `queue != false` — the message joins the session FIFO (`queued: true`,
-/// empty `run_id`; the scheduler assigns the run later and clients adopt the
-/// run id from the first SSE event). 409 only when `queue=false` collides
-/// with an active run; 429 when the queue is at `MESSAGE_QUEUE_MAX_DEPTH`.
+/// starts immediately (`queued: false`), or — when a run is already active
+/// and `queue != false` — the message joins the session FIFO (`queued: true`,
+/// `queue_position` set). In both cases `run_id` identifies the turn and is
+/// carried by every SessionEvent of that run. 409 only when `queue=false`
+/// collides with an active run; 429 when the queue is at
+/// `MESSAGE_QUEUE_MAX_DEPTH`.
 pub(crate) async fn post_run(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
@@ -1390,13 +1439,17 @@ pub(crate) async fn post_run(
         tracing::debug!(
             session_id = %id,
             message_id = %queued.message_id,
+            run_id = %queued.run_id,
             depth,
             "run busy; user message queued"
         );
         return Ok((
             StatusCode::ACCEPTED,
             Json(RunResponse {
-                run_id: String::new(),
+                // Pre-minted id: the scheduler reuses it verbatim, so the
+                // client can subscribe/filter on it NOW instead of adopting
+                // the id from the first event.
+                run_id: queued.run_id,
                 session_id: id,
                 queued: true,
                 queue_position: Some(depth),
@@ -1435,6 +1488,34 @@ pub(crate) async fn post_cancel(
     } else {
         StatusCode::NOT_FOUND
     }
+}
+
+/// GET /api/v1/sessions/:id/run — active-run reconciliation snapshot.
+///
+/// After a `sync_lost` (event buffer evicted the client's replay window, or
+/// the daemon restarted) a mid-turn subscriber can no longer trust the event
+/// stream to deliver its terminal `turn_done`: this endpoint answers whether
+/// the awaited run is still the active one (`run_id`), another run took
+/// over, or the session went idle (`run_id: null`, plus how many user
+/// messages still wait in the FIFO). 404 when the session is unknown.
+#[derive(Debug, Serialize)]
+pub struct RunStatusResponse {
+    /// Active run's id; null when the session's run slot is idle.
+    pub run_id: Option<String>,
+    /// Messages still waiting in the session's FIFO (not yet started).
+    pub queued: usize,
+}
+
+pub(crate) async fn get_run_status(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Result<Json<RunStatusResponse>, StatusCode> {
+    if state.resolve_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let run_id = state.session_runs.active_run_id(&id);
+    let queued = state.message_queue_depth(&id).await;
+    Ok(Json(RunStatusResponse { run_id, queued }))
 }
 
 #[derive(Debug, Serialize)]
@@ -1819,6 +1900,15 @@ async fn run_session_turn(
         state.session_event_hub.clone(),
         state.session_seq_counter(session_id),
         state.session_buffer(session_id),
+    );
+
+    // Daemon-truth initial phase: the run is assembling the prompt (memory
+    // recall + hooks) before the first LLM connect — exactly the window thin
+    // clients used to guess "thinking" for. Observers attaching mid-run get
+    // the same anchor via buffer replay.
+    sink.publish(
+        SessionEventKind::PhaseChanged,
+        serde_json::json!({ "phase": "thinking" }),
     );
 
     // 1. Resolve the owning session store + persisted session (multi-project
@@ -2533,8 +2623,10 @@ mod tests {
 
     #[test]
     fn unmapped_variants_are_skipped() {
-        // Connecting/PreparingTools/StreamDone/CompactionStarted 等不产生事件
-        //（v1 不广播连接噪声）；StreamError → TurnError；StreamDone → TurnDone
+        // v2 status contract: Connecting/PreparingTools/CompactionStarted now
+        // broadcast PhaseChanged (daemon-truth phases); truly unmapped noise
+        // (BackgroundTaskResult) still produces nothing. StreamError →
+        // TurnError; StreamDone → TurnDone.
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
         let sink = DaemonEventSink::new(
             "s1".into(),
@@ -2551,6 +2643,9 @@ mod tests {
             finish_reason: "stop".into(),
         });
         sink.emit(RuntimeEvent::StreamError("boom".into()));
+        assert!(rx
+            .try_recv()
+            .is_ok_and(|e| e.kind == SessionEventKind::PhaseChanged));
         assert!(rx
             .try_recv()
             .is_ok_and(|e| e.kind == SessionEventKind::TurnDone));
@@ -2918,6 +3013,66 @@ mod tests {
         state
     }
 
+    /// PhaseChanged publish contract (v2 status): Connecting / PreparingTools
+    /// / CompactionStarted / ContextCompacted map onto `phase_changed`
+    /// SessionEvents carrying the same phase vocabulary the TUI AgentPhase
+    /// and the web statusPhase render.
+    #[test]
+    fn event_sink_publishes_phase_changed_for_underivable_phases() {
+        use crate::agent::runtime::events::RuntimeEvent;
+        use crate::agent::runtime::ports::EventSink;
+
+        let hub = tokio::sync::broadcast::channel(64).0;
+        let next_seq = Arc::new(AtomicU64::new(1));
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(64)));
+        let sink = DaemonEventSink::new("s".into(), "r".into(), hub, next_seq, Arc::clone(&buffer));
+
+        sink.emit(RuntimeEvent::Connecting {
+            attempt: 2,
+            max_retries: 3,
+        });
+        sink.emit(RuntimeEvent::PreparingTools);
+        sink.emit(RuntimeEvent::CompactionStarted);
+        sink.emit(RuntimeEvent::ContextCompacted {
+            summary_chars: 10,
+            compressed_len: 5,
+        });
+
+        let phase_events: Vec<SessionEvent> = {
+            let buf = buffer.read().unwrap();
+            buf.events_after(0)
+                .filter(|e| e.kind == SessionEventKind::PhaseChanged)
+                .cloned()
+                .collect()
+        };
+        let phases: Vec<(String, u64, u64)> = phase_events
+            .iter()
+            .map(|e| {
+                (
+                    e.data
+                        .get("phase")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    e.data.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0),
+                    e.data
+                        .get("max_retries")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                )
+            })
+            .collect();
+        assert_eq!(
+            phases,
+            vec![
+                ("connecting".to_string(), 2, 3),
+                ("preparing_tools".to_string(), 0, 0),
+                ("compacting".to_string(), 0, 0),
+                ("thinking".to_string(), 0, 0),
+            ]
+        );
+    }
+
     /// Drive a session-a root task group to readiness: one child, finished.
     async fn make_ready_root_group(state: &Arc<DaemonState>) {
         let root = state.root_context("session-a").await.expect("root context");
@@ -3003,7 +3158,7 @@ mod tests {
     #[tokio::test]
     async fn queued_message_waits_for_an_idle_session() {
         let state = continuation_test_state().await;
-        state
+        let queued = state
             .enqueue_message("session-a", "follow-up".to_string(), true)
             .await
             .expect("enqueue");
@@ -3026,6 +3181,10 @@ mod tests {
             .expect("idle session with a queued message should continue");
         assert_eq!(continuation.message, "follow-up");
         assert!(continuation.plan_mode);
+        // The scheduler must claim the run slot under the id POST /run
+        // already handed the client (pre-minted at enqueue time), so the
+        // client's subscription filter lines up with the started turn.
+        assert_eq!(continuation.run_id, queued.run_id);
         assert_eq!(
             state.session_runs.active_run_id("session-a").as_deref(),
             Some(continuation.run_id.as_str())
@@ -3116,7 +3275,7 @@ mod tests {
         assert_eq!(snapshot[0].message, "two");
 
         assert_eq!(state.clear_queued_messages("session-a").await, 1);
-        assert!(!state.has_queued_messages("session-a").await);
+        assert!(state.queued_head_run_id("session-a").await.is_none());
     }
 
     #[tokio::test]

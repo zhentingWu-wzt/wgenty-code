@@ -2,6 +2,7 @@ import { useState, type KeyboardEvent } from "react";
 import { Clock, Send, Square, X } from "lucide-react";
 import { useSessionStore } from "../../state/sessionContext";
 import { Button } from "../../components/ui/button";
+import { deriveTurnVisual } from "../../components/statusPhase";
 import {
   filterSlashCommands,
   matchSlashCommand,
@@ -32,6 +33,22 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
   const pendingInputs = useSessionStore((s) => s.pendingInputs);
   const editPendingInput = useSessionStore((s) => s.editPendingInput);
   const removePendingInput = useSessionStore((s) => s.removePendingInput);
+  // Input frame follows the TurnStatus strip via the SAME derivation
+  // (deriveTurnVisual, single source of truth): per-phase hue while running,
+  // warning amber when a decision is pending, danger red after an errored
+  // turn (until the next send), default when idle.
+  const agentPhase = useSessionStore((s) => s.agentPhase);
+  const hasPendingDecision = useSessionStore(
+    (s) => s.pendingPermission !== null || s.pendingSubagent !== null || s.pendingQuestion !== null,
+  );
+  const hasError = useSessionStore((s) => s.lastError !== null);
+  const visual = deriveTurnVisual({
+    awaitingDecision: hasPendingDecision,
+    hasError,
+    isRunning,
+    agentPhase,
+  });
+  const frameClass = visual.frame;
 
   const menuItems = filterSlashCommands(text);
 
@@ -74,7 +91,9 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
   };
 
   return (
-    <div className="relative border-t border-border bg-background p-3">
+    // No border-t: the StatusBar strip directly above owns the separator, so
+    // the two read as one input unit pinned to the column bottom.
+    <div className="relative bg-background p-3">
       {menuItems.length > 0 && (
         <div
           role="listbox"
@@ -103,9 +122,7 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
         <div className="mb-2 space-y-1.5">
           <div className="flex items-center gap-1.5 px-0.5 text-[11px] text-muted-foreground">
             <Clock size={12} />
-            <span>
-              {pendingInputs.length} queued — sends when the current turn finishes
-            </span>
+            <span>{pendingInputs.length} queued — sends when the current turn finishes</span>
           </div>
           {pendingInputs.map((qText, i) => (
             <div
@@ -131,7 +148,9 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2 rounded-lg border border-input bg-card px-3 py-2 focus-within:ring-1 focus-within:ring-ring">
+      <div
+        className={`flex items-end gap-2 rounded-lg border bg-card px-3 py-2 focus-within:ring-1 ${frameClass}`}
+      >
         <textarea
           className="max-h-40 min-h-[20px] flex-1 resize-none bg-transparent text-[13px] leading-relaxed outline-none placeholder:text-muted-foreground"
           placeholder={

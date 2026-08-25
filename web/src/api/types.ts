@@ -552,7 +552,11 @@ export type SessionEventKind =
   /** Root tool Ask / ask_user_question notifications (web consumes the same
    *  prompts via the trace stream; tolerated here for forward-compat). */
   | "permission_required"
-  | "ask_user";
+  | "ask_user"
+  /** Daemon-truth turn phase (thinking / connecting / preparing_tools /
+   *  compacting). Authoritative when present; local derivation stays as the
+   *  fallback for older daemons that never send it. */
+  | "phase_changed";
 
 /** Mirrors SessionEvent (src/daemon/run_loop.rs:26). Server-side run broadcasts
  * these on GET /sessions/:id/events (SSE). data shape varies by kind. */
@@ -573,10 +577,24 @@ export interface GlobalEvent {
   data: Record<string, unknown>;
 }
 
-/** Response to POST /sessions/:id/run. */
+/** Response to POST /sessions/:id/run. `run_id` is ALWAYS set — a queued
+ *  turn keeps the same id when the scheduler starts it, so the observer can
+ *  filter on it immediately. Legacy daemons answered `run_id: ""` +
+ *  `queued: true`; `runSessionTurn` falls back to run-id adoption for those. */
 export interface RunResponse {
   run_id: string;
   session_id: string;
+  queued?: boolean;
+  queue_position?: number;
+}
+
+/** Response to GET /sessions/:id/run — active-run reconciliation snapshot
+ *  (consumed after a `sync_lost` to decide whether the awaited turn is still
+ *  live). `run_id` null = session idle; `queued` counts FIFO messages that
+ *  have not started yet. */
+export interface SessionRunStatus {
+  run_id: string | null;
+  queued: number;
 }
 
 /** Mirrors PendingSubagentPermission (src/daemon/models.rs) — one blocked

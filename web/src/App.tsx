@@ -9,6 +9,7 @@ import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
 import { ConfirmProvider } from "./components/ui/ConfirmModal";
 import { StatusBar } from "./components/StatusBar";
+import { TurnStatus } from "./components/TurnStatus";
 import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { SessionTabBar } from "./components/layout/SessionTabBar";
 import { ChatView } from "./features/chat/ChatView";
@@ -356,6 +357,9 @@ export function App() {
                   不遮挡任何内容。仅活跃会话有待处理项时占位。 */}
               <PermissionModal client={client} />
               <QuestionModal client={client} />
+              {/* 轮次状态条：仅 turn phase（spinner/文案/耗时），紧贴输入框
+                  上方提高可见性；连接/模型/模式等常驻信息仍在底部 StatusBar。 */}
+              <TurnStatus />
               <Composer
                 onSend={(text) => {
                   if (!activeId || !activeStore) return;

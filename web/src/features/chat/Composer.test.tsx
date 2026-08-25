@@ -102,6 +102,59 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("follow up");
     expect(input).toHaveValue("");
   });
+
+  /** The input frame mirrors the status-bar state (same palette/priority):
+   *  pending decision → warning, errored last turn → danger, running →
+   *  primary, idle → default. */
+  describe("input frame follows the turn state", () => {
+    const frame = () => screen.getByRole("textbox").parentElement!.className;
+
+    it("idle keeps the default input border", () => {
+      renderComposer(vi.fn());
+      expect(frame()).toContain("border-input");
+    });
+
+    it("a running turn tints the frame primary", () => {
+      const store = createSessionStore();
+      store.getState().setRunning(true);
+      renderComposer(vi.fn(), store);
+      expect(frame()).toContain("border-primary/60");
+      expect(frame()).toContain("focus-within:ring-primary");
+    });
+
+    it("the frame hue follows the phase (thinking → sky, executing → teal)", () => {
+      const thinking = createSessionStore();
+      thinking.getState().setRunning(true);
+      thinking.getState().setAgentPhase({ phase: "thinking" });
+      const first = renderComposer(vi.fn(), thinking);
+      expect(frame()).toContain("border-sky-500/60");
+      first.unmount();
+
+      const executing = createSessionStore();
+      executing.getState().setRunning(true);
+      executing.getState().setAgentPhase({ phase: "executing", toolName: "file_read" });
+      renderComposer(vi.fn(), executing);
+      expect(frame()).toContain("border-teal-500/60");
+    });
+
+    it("a pending decision (permission/question) wins over running → warning", () => {
+      const store = createSessionStore();
+      store.getState().setRunning(true);
+      store.getState().pushSubagentPermission({} as never);
+      renderComposer(vi.fn(), store);
+      expect(frame()).toContain("border-warning");
+    });
+
+    it("an errored last turn tints the frame danger and persists at idle", () => {
+      const store = createSessionStore();
+      store.getState().setRunning(true);
+      store.getState().setError({ message: "boom", kind: "upstream" });
+      store.getState().setRunning(false);
+      renderComposer(vi.fn(), store);
+      expect(frame()).toContain("border-danger");
+      expect(frame()).toContain("focus-within:ring-danger");
+    });
+  });
 });
 
 describe("Composer pending queue", () => {

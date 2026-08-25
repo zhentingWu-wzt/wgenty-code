@@ -178,12 +178,15 @@ export function ChatView() {
                   {m.streaming ? " · …" : ""}
                 </div>
                 {m.reasoning && (
-                  <details className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
-                    <summary className="cursor-pointer px-2 py-1 select-none">reasoning</summary>
-                    <pre className="max-h-60 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
+                  // Default-open reasoning (no <details> collapse): shown
+                  // live while streaming and fully readable afterwards. The
+                  // bordered block keeps it visually distinct from content.
+                  <div className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
+                    <div className="px-2 py-1 font-medium">reasoning</div>
+                    <pre className="max-h-96 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
                       {m.reasoning}
                     </pre>
-                  </details>
+                  </div>
                 )}
                 {m.content && (
                   <div
