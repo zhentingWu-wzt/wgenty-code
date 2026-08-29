@@ -95,14 +95,14 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 ```
 前端层 (CLI/TUI/Web/Desktop + Daemon)
   -> Agent Loop (agent/)          s01+s02: 核心循环 + SSE 流
-  -> Prompt Assembly (prompts/)   8 层指令注入
+  -> Prompt Assembly (prompts/)   分层指令注入（10+ 层）
   -> 业务层
      tools/        s01: Agent 工具（文件/搜索/执行/元操作）
      context/      s06+s07: 记忆/会话/压缩
      tasks/        s03+s07: 任务追踪
      teams/        s04,s09-s12: 子代理/团队
   -> 安全层
-     guardian/     命令安全审查（规则+LLM 两阶段）
+     guardian/     命令安全审查（规则模式 + 风险分级）
      sandbox/      OS 进程隔离
   -> 基础设施层
      api/          多 Provider 客户端
@@ -151,7 +151,7 @@ node/attempt 和外部锚点重新派发一个**新** child，再按正常预绑
 
 **Desktop 打包**（daemon 以 externalBin 方式捆绑进安装包）：daemon 以**独立进程**随 app 分发（`wgenty-code daemon`），Tauri 侧通过 `bundle.externalBin` 打包。约定：`desktop/src-tauri/binaries/` 下放置 `wgenty-code-<target-triple>` 命名（Windows 为 `wgenty-code-<target-triple>.exe`）的 daemon 二进制，`daemon_manager.rs::locate_daemon_binary` 在 resource_dir 中按前缀 `wgenty-code` 查找。本地一键打包：`bash desktop/scripts/bundle.sh`（构建 daemon release → 复制为 target-triple 命名 → `cd web && npm run build` → `cargo tauri build`），产物在 `desktop/src-tauri/target/release/bundle/`。CI 由 `release.yml` 的 `desktop` job 在 tag 触发时完成（三平台：macos/linux/windows，原生架构）。
 
-Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections
+Prompt 分层（10+ 层）：base_instructions → context_assembler → permissions → developer → collaboration → environment → memory recall → skills_inventory → 全局 WGENTY.md → 用户 rules → 项目 WGENTY.md → AGENTS.md
 
 ---
 
@@ -160,7 +160,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 - **agent/**: `StreamProcessor` 共享 SSE 流解析，产生 `StreamEvent`(Chunk/ToolCall/Error/Done)
 - **api/**: `ApiClient` 多 Provider 支持(DeepSeek/Anthropic/DashScope)，`detect_provider()` 自动路由
 - **tools/**: `Tool` trait(name/description/input_schema/execute/is_read_only)，**`is_read_only()` 默认 false**，只读工具必须显式返回 true。25个内置工具：filesystem(read/write/edit/apply_patch/list/view)、search(grep/glob/search/web_search/web_fetch)、execution(exec_command/kill_session/git/run_test/background)、meta(think/lsp/ask_user/update_plan/note_edit/compact)、checkpoint。`with_settings()` 按 provider 动态移除不兼容工具
-- **guardian/**: 两阶段审查（规则+LLM），RiskLevel: Low/Medium/High/Critical
+- **guardian/**: 规则审查（模式匹配 + 风险分级），RiskLevel: Low/Medium/High/Critical；Critical 自动拒绝
 - **sandbox/**: `SandboxBackend` trait，macOS(Seatbelt)/Linux(seccomp-bpf)/Windows(Job Objects)，无内核时降级 no-op
 - **context/**: `ConsolidationEngine` 3层压缩，`ContextWindow`/`HistoryManager` 窗口管理，双源记忆存储（project + global），`MemoryOrigin` 区分 project/global 范围，`MemoryContextInjector` 负责召回/格式化
 - **tasks/**: `TodoWrite` 会话清单(max 20, 1 in_progress)，`TaskManagement` 持久化 CRUD
@@ -338,7 +338,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 1. **子代理限制**: max_subagent_depth=1（默认禁用递归）, max_concurrent_subagents=5
 2. **token_budget_k=0**: 无限，可设置累计 token 上限
 3. **API key 运行时重新读取**: 每次调用从环境变量重新读取，支持切换不重启
-4. **Prompts 8 层可选**: 各 include_xxx 开关控制，优雅降级
+4. **Prompts 分层可选（10+ 层）**: 各 include_xxx 开关控制，优雅降级
 5. **Sandbox 多平台**: 统一 SandboxBackend trait，无内核支持降级 no-op
 6. **技能按需加载**: 仅注入名称+描述到 Layer 7，完整内容由 agent 动态获取
 7. **多 Provider API 路由**: 根据 base_url 自动检测，透明转换请求格式

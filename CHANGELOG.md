@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (Security)
+
+- **`integrations.guardian` 配置生效**：daemon 的 `ToolExecutor` 与子代理
+  `SubagentPermissionContext` 此前用 `Guardian::default()`，使
+  `enabled` / `auto_deny_critical` 开关形同虚设。现在两处均从用户设置构造
+  `Guardian`。
+- **命令审查工具覆盖缺口**：`background`（后台执行任意 shell）、`write_stdin`
+  （向运行中会话注入命令）此前完全绕过 guardian 的 Critical 自动拒绝与
+  policy 的命令风险分类。新增共享的 `shell_text_for_tool()`，四个生效点
+  （daemon run loop、headless RegistryToolPort、TUI DaemonToolPort、子代理
+  GuardingToolPort）统一审查 `execute_command`/`exec_command`/`background`/
+  `write_stdin`。
+- **换行走私**：`split_shell_commands` 现按引号外的换行符切分子命令，
+  `echo hi\nchmod 777 /` 不再只按首个 `echo` 分类。
+- **命令替换内容纳入审查**：`$(...)` 与反引号包裹的命令体（嵌套上限 3 层）
+  同样按 base-name 风险分类，`echo $(chmod 777 /)` 现在会请求审批。
+- **guardian Critical 变体**：新增 token 级检测，`rm -r -f /`、`rm --recursive
+  -f /*`、`/usr/bin/rm -fr /` 等参数顺序/路径变体与无空格 fork 炸弹
+  （`:(){:|:&};:`）现在判为 Critical。
+- **未知写工具 fail-closed**：policy 中 `_ => Allow` 兜底改为每会话一次 Ask
+  （`tool:<name>` 规则）；`git_operations` 只读操作（status/log/diff/branch/
+  worktree_list）放行，其余操作需 `git:<op>` 审批并在 reason 中标注
+  `--force` 类旗标。
+
+### Changed
+
+- **identity 词汇表下沉到 `tools::context`**：`SessionId`/`AgentId`/
+  `ToolInvocationId`/`AgentExecutionContext`/`ToolContext`/`CheckpointCapture`
+  从 `agent::identity` 迁至 `tools::context`（`agent` 保留 re-export），
+  兑现 AGENTS.md「tools 不依赖 agent」的约定（子代理机制的深层耦合除外）。
+- **`thiserror` 统一为 2.x**（此前依赖树 1.x/2.x 共存）；
+  `TranscriptError` 改用 derive 实现。
+- **`tasks/management.rs` 移除生产路径调试代码**：不再向
+  `/tmp/wgenty-code-debug.log` 追加写入（每次任务读写都会触发），改走
+  `tracing::debug`。
+- **文档与实现对齐**：README/README.zh/WGENTY.md 的「两级（规则+LLM）
+  Guardian」「25 个工具」「8 层 prompt」「Linux seccomp-bpf」表述改为实际
+  实现（规则式 Guardian、29 个工具、10+ 层、bubblewrap/unshare）。
+
+### Refactor
+
+- **`agent::progress` 下沉为顶层 `progress` 模块**：子代理进度词汇表
+  （`SubagentProgress`/`ProgressCallback`/`SubagentStatus` 等，675 行）被
+  agent/teams/tools/transcript/daemon/TUI 十个模块共用，现迁至
+  `src/progress.rs`（`agent` 保留 re-export），tools 层不再经由 `agent`
+  引用这些类型。
+- **TUI `EventHandler` trait 首次投入使用**：`MemoryState`/`SessionState`/
+  `PlanPanelState` 各自实现 `tui::traits::EventHandler`，接管
+  `MemoryListLoaded`/`SessionListLoaded`/`TodosSnapshot` 三个事件；
+  `App::handle_event` 在主 match 前增加面板分发链，后续面板可按同一
+  模式迁移，逐步分解巨型 match（`Component` trait 此前已有
+  question/inspector/permission 三处实现并接线）。
+
 ### Fixed (Work-Graph)
 
 - **verify 前的 decomposition 不再被 "budget must be initialized" 拒绝**：`begin_node`
