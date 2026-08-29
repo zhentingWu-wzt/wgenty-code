@@ -1,4 +1,4 @@
-use crate::agent::progress::{ErrorInfo, ErrorType, SubagentStatus};
+use crate::progress::{ErrorInfo, ErrorType, SubagentStatus};
 use crate::teams::subagent_loop::{build_failure_diagnostics, SubagentError};
 use crate::transcript::{
     SubagentEventRecord, SubagentTranscript, SubagentTranscriptStore, TranscriptStatus,

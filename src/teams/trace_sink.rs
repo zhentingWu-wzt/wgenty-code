@@ -23,8 +23,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::agent::progress::{ProgressCallback, SubagentProgress};
 use crate::config::TraceSinkMode;
+use crate::progress::{ProgressCallback, SubagentProgress};
 use crate::teams::failure_diagnostics::redact_params;
 use crate::utils::current_project_root;
 
@@ -558,7 +558,7 @@ async fn secure_file(_path: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::progress::{ErrorInfo, SubagentProgress, SubagentStatus};
+    use crate::progress::{ErrorInfo, SubagentProgress, SubagentStatus};
     use crate::teams::failure_diagnostics::{FailureRootCause, ToolCallStep};
     use serde_json::{json, Value};
     use std::fs;

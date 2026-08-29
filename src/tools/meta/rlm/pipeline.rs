@@ -2,9 +2,9 @@
 //!
 //! The core pipeline used by the `delegate` tool.
 
-use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::api::{ApiClient, ChatMessage};
 use crate::config::Settings;
+use crate::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
 use crate::tools::meta::task::transcript::{new_transcript_id, save_minimal_transcript};

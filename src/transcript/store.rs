@@ -5,7 +5,7 @@ use super::{
     TranscriptStatus,
 };
 
-use crate::agent::progress::ErrorInfo;
+use crate::progress::ErrorInfo;
 use crate::teams::failure_diagnostics::FailureRootCause;
 use rusqlite::{params, Connection};
 use std::path::Path;
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_failure_diagnostics_round_trip() {
-        use crate::agent::progress::{ErrorInfo, ErrorType};
+        use crate::progress::{ErrorInfo, ErrorType};
         use crate::teams::failure_diagnostics::FailureRootCause;
         let (store, _dir) = setup_store();
         let mut t = sample_transcript("diag-1", "s1");
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn test_header_root_cause_round_trip_from_failure() {
-        use crate::agent::progress::ErrorInfo;
+        use crate::progress::ErrorInfo;
         use crate::teams::failure_diagnostics::FailureRootCause;
         let (store, _dir) = setup_store();
         let mut t = sample_transcript("fail-1", "s1");
