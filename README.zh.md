@@ -8,7 +8,7 @@
 
 Wgenty Code 是用 Rust 编写的 LLM 驱动编程助手。你不必再把代码片段复制到聊天框里，而是直接把它指向一个真实项目：它会读文件、跑搜索、执行命令、应用修改，并不断迭代直到任务完成——全部来自一个自包含二进制，无需 Node.js 或 Python 运行时。
 
-它内置 **25 种工具**（文件系统、代码搜索、命令执行、网页访问……），配备**两级命令 Guardian 审查**和**全平台 OS 级沙箱**，让 Agent 在自主行动的同时默认安全。支持多 AI 提供商自动路由——**Anthropic (Claude)**、**OpenAI**、**DeepSeek**，以及任何 OpenAI 兼容端点（DashScope、Ollama、vLLM……）——模型别名 `sonnet`、`haiku`、`opus` 会被透明映射。
+它内置 **29 种工具**（文件系统、代码搜索、命令执行、网页访问……），配备**规则式命令 Guardian 审查**和**全平台 OS 级沙箱**，让 Agent 在自主行动的同时默认安全。支持多 AI 提供商自动路由——**Anthropic (Claude)**、**OpenAI**、**DeepSeek**，以及任何 OpenAI 兼容端点（DashScope、Ollama、vLLM……）——模型别名 `sonnet`、`haiku`、`opus` 会被透明映射。
 
 [English](README.md)
 
@@ -18,9 +18,9 @@ Wgenty Code 是用 Rust 编写的 LLM 驱动编程助手。你不必再把代码
 
 - **交互式 TUI** - 基于 Turn 的聊天、结构化计划面板、可折叠的工具输出、Agent 模式切换（`Normal / Plan / Accept Edits / Yolo`）
 - **Plan 模式** - Agent 先探索代码库并提出计划，*再*执行任何修改（`Ctrl+P` 切换）；在你批准前不会改动任何东西
-- **25 种内置工具** - 文件读/写/编辑、代码搜索（grep/glob/LSP）、命令执行、网页搜索/获取等
+- **29 种内置工具** - 文件读/写/编辑、代码搜索（grep/glob/LSP）、命令执行、网页搜索/获取等
 - **多提供商路由 & `/model` 切换** - 根据 base_url 自动检测提供商；在 REPL 中用 `/model` 实时切换 Claude、OpenAI、DeepSeek 或自托管端点，重启后保持选择，子代理自动跟随
-- **默认安全** - 每条命令都经过两级 Guardian 审查（规则 + 可选 LLM 审查）；严重风险操作自动拒绝；全平台 OS 级沙箱：macOS Seatbelt、Linux seccomp-bpf、Windows Job Objects
+- **默认安全** - 每条命令都经过规则式 Guardian 审查（模式匹配 + 风险分级 `低/中/高/严重`）；严重风险操作自动拒绝；全平台 OS 级沙箱：macOS Seatbelt、Linux bubblewrap/unshare、Windows Job Objects
 - **子代理委派** - 复杂任务自动分解为并行子任务，带递归控制（RLM 管道：Planner -> Executor -> Aggregator）；子代理模型按任务复杂度自动路由（light/medium/heavy 三档）
 - **会话与记忆管理** - 保存/加载/搜索历史会话；双源记忆（项目级 + 全局），带 TF-IDF 召回、tier-2 LLM 复核、召回反馈循环与陈旧度审计
 - **撤销与回滚** - 用 `/undo` 将文件编辑回退到任意按轮次检查点；交互式 turn 选择器，支持范围选择
@@ -51,20 +51,20 @@ Wgenty Code 是用 Rust 编写的 LLM 驱动编程助手。你不必再把代码
 
 ### 🔒 默认安全
 
-Agent 要执行的每条命令都经过**两级 Guardian 审查**：
+Agent 要执行的每条命令都经过**规则式 Guardian 审查**：
 
-1. **规则过滤** - 静态模式阻止明显危险的操作（如 `rm -rf /`、`curl | sh`）
-2. **LLM 审查**（可选）- 模型评估模糊命令的风险，分类为 `低 / 中 / 高 / 严重`
+1. **模式过滤** - 静态模式阻止明显危险的操作（如 `rm -rf /`、`curl | sh`、fork 炸弹，含 `rm -r -f /` 等参数顺序变体）
+2. **风险分级** - 命令被分类为 `低 / 中 / 高 / 严重`；中级及以上标记需审批，严重级自动拒绝
 
-严重风险操作自动拒绝。执行面还通过 **OS 级沙箱**进一步隔离（macOS Seatbelt、Linux seccomp-bpf、Windows Job Objects），无内核支持时优雅降级为 no-op。
+命令替换内容（`$(...)`、反引号）与换行分隔的语句同样会被分析，危险载荷无法藏在无害的首个命令之后。执行面还通过 **OS 级沙箱**进一步隔离（macOS Seatbelt、Linux bubblewrap/unshare、Windows Job Objects），无内核支持时优雅降级为 no-op。
 
-### 🧩 25 种工具，一个抽象
+### 🧩 29 种工具，一个抽象
 
 所有 Agent 能力——文件操作、代码搜索、命令执行、网页访问——都实现单一 `Tool` trait。关键设计选择：**`is_read_only()` 默认为 `false`**。每个只读工具必须显式声明自己是安全的，这样 Guardian 始终偏向谨慎。
 
-### 📐 8 层 Prompt 组装
+### 📐 分层 Prompt 组装
 
-系统 prompt 由 8 个可独立开关的层组装而成：
+系统 prompt 由 10+ 个可独立开关的层组装而成：
 
 ```
 base_instructions -> permissions -> developer -> collaboration
