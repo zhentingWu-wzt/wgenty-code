@@ -12,18 +12,18 @@
 //! - `explore`                   — codebase search and analysis
 //! - `plan`                      — architecture planning and breakdown
 
-use crate::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::agent::{AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest};
-use crate::tools::context::ToolContext;
 use crate::api::ApiClient;
 use crate::config::{RootPermissionMode, Settings};
 use crate::permissions::policy::ToolPermissionPolicy;
 use crate::permissions::{PermissionModeEntry, PermissionModeStore};
+use crate::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::runtime::guardian::Guardian;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::permission_bridge::PermissionBridge;
 use crate::teams::subagent_loop::{run_subagent_loop_with_permissions, SubagentError};
 use crate::teams::subagent_mailbox::SubagentResultMailbox;
+use crate::tools::context::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use crate::transcript::TranscriptStatus;
 use async_trait::async_trait;
@@ -41,10 +41,8 @@ use self::transcript::{new_transcript_id, save_minimal_transcript};
 
 /// Convert a live `SubagentEvent` (progress timeline) into the persisted
 /// `SubagentEventRecord` (transcript) shape.
-fn convert_event(
-    e: &crate::agent::progress::SubagentEvent,
-) -> crate::transcript::SubagentEventRecord {
-    use crate::agent::progress::SubagentEventType;
+fn convert_event(e: &crate::progress::SubagentEvent) -> crate::transcript::SubagentEventRecord {
+    use crate::progress::SubagentEventType;
     let (event_type, tool_name, data) = match &e.event_type {
         SubagentEventType::Thought { text } => ("thought".to_string(), None, text.clone()),
         SubagentEventType::Action {
@@ -218,7 +216,11 @@ impl TaskTool {
             ask_strategy: limits.ask_strategy,
             approval_timeout_secs: limits.approval_timeout_secs,
             timeout_decision: limits.timeout_decision,
-            guardian: Guardian::default(),
+            // Honour the user's integrations.guardian settings; the previous
+            // Guardian::default() silently ignored them for subagents.
+            guardian: Guardian::new(crate::runtime::guardian::GuardianConfig::from(
+                &self.settings.integrations.guardian,
+            )),
             agent_id: agent_id.to_string(),
             root_mode: entry.root_mode,
             effective_mode: entry.effective_mode,
@@ -981,7 +983,7 @@ impl Tool for TaskTool {
                         // Only fill error_details if the real emit didn't.
                         if p.error_details.is_none() {
                             if let Some(msg) = &error_msg {
-                                p.error_details = Some(crate::agent::progress::ErrorInfo {
+                                p.error_details = Some(crate::progress::ErrorInfo {
                                     error_type: ErrorType::Unknown,
                                     message: msg.clone(),
                                     last_tool: None,

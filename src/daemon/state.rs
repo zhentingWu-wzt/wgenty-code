@@ -580,7 +580,7 @@ pub struct DaemonState {
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
     /// Subagent progress store, scoped by session_id → node_id.
     pub subagent_progress:
-        Arc<RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>>,
+        Arc<RwLock<HashMap<String, HashMap<String, crate::progress::SubagentProgress>>>>,
     /// Last poll timestamp per session, used for TTL-based eviction.
     pub subagent_poll_times: Arc<RwLock<HashMap<String, Instant>>>,
     /// Exclusive owner of agent spawning, concurrency, and lifecycle. Scoped
@@ -815,7 +815,7 @@ impl DaemonState {
         crate::utils::startup_timing::mark("daemon state: skill loader ready");
 
         let progress_store: Arc<
-            RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>,
+            RwLock<HashMap<String, HashMap<String, crate::progress::SubagentProgress>>>,
         > = Arc::new(RwLock::new(HashMap::new()));
 
         let mcp_manager = Arc::new(crate::mcp::McpManager::new());
@@ -1110,8 +1110,16 @@ impl DaemonState {
         // home directory and diverges from WGENTY.md / historical project sessions.
         let session_manager =
             MemorySessionManager::with_project_root(app_state.settings.storage.working_dir.clone());
+        // Guardian from user settings (`integrations.guardian`); previously a
+        // Guardian::default() made the enable/auto-deny switches ineffective.
+        let guardian = crate::runtime::guardian::Guardian::new(
+            crate::runtime::guardian::GuardianConfig::from(
+                &app_state.settings.integrations.guardian,
+            ),
+        );
         let tool_executor = ToolExecutor::new(tool_registry.clone(), policy)
             .with_hooks(hook_manager.clone())
+            .with_guardian(guardian)
             .with_shared_session_rules(shared_session_rules);
 
         // Shared pooled HTTP clients for LLM API calls. Built once so every

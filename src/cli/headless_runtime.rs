@@ -162,10 +162,10 @@ impl ToolPort for RegistryToolPort {
     async fn execute(&self, req: ToolRequest) -> ToolResponse {
         // YOLO bypasses the guardian critical-risk block so the agent can run
         // arbitrary commands (builds, tests, installs) in disposable sandboxes.
-        if self.effective_mode != EffectiveMode::Yolo
-            && (req.name == "execute_command" || req.name == "exec_command")
-        {
-            if let Some(cmd) = req.arguments.get("command").and_then(|v| v.as_str()) {
+        if self.effective_mode != EffectiveMode::Yolo {
+            if let Some(cmd) =
+                crate::runtime::guardian::shell_text_for_tool(&req.name, &req.arguments)
+            {
                 let risk = crate::runtime::guardian::classify_risk(cmd);
                 if risk >= crate::runtime::guardian::RiskLevel::Critical {
                     let content = format!(

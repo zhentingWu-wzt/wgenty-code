@@ -656,10 +656,7 @@ impl RootToolPort {
     /// Guardian pre-check, copied from the headless `RegistryToolPort`:
     /// critical-risk shell commands are blocked before execution.
     fn guardian_block(&self, req: &ToolRequest) -> Option<ToolResponse> {
-        if req.name != "execute_command" && req.name != "exec_command" {
-            return None;
-        }
-        let cmd = req.arguments.get("command").and_then(|v| v.as_str())?;
+        let cmd = crate::runtime::guardian::shell_text_for_tool(&req.name, &req.arguments)?;
         let risk = crate::runtime::guardian::classify_risk(cmd);
         if risk >= crate::runtime::guardian::RiskLevel::Critical {
             let content = format!(

@@ -63,11 +63,116 @@ impl ToolPermissionPolicy {
             "file_write" | "file_edit" | "apply_patch" => {
                 self.validate_write_paths(tool_name, args, session_rules)
             }
-            "execute_command" | "exec_command" => {
+            "execute_command" | "exec_command" | "background" => {
                 self.validate_command(tool_name, args, session_rules)
             }
-            _ => Ok(PolicyDecision::Allow),
+            "write_stdin" => self.validate_stdin_input(tool_name, args, session_rules),
+            "git_operations" => self.validate_git_operation(tool_name, args, session_rules),
+            // Structured tools whose inputs never carry raw shell text and
+            // which enforce their own guards (trusted ToolContext identity,
+            // subagent policy, work-graph lifecycle checks).
+            "checkpoint"
+            | "update_plan"
+            | "ask_user_question"
+            | "request_approval"
+            | "team_message"
+            | "task_management"
+            | "memory_add"
+            | "task"
+            | "rlm"
+            | "dismiss_codegraph_guidance"
+            | "kill_session"
+            | "begin_node"
+            | "decompose_node"
+            | "verify_node"
+            | "rollback_node"
+            | "verify_and_complete"
+            | "submit_specialist_report" => Ok(PolicyDecision::Allow),
+            // Any other state-changing tool (known but unclassified, or newly
+            // registered without an explicit policy) fails closed: one Ask
+            // per session, recorded under the `tool:<name>` session rule.
+            _ => {
+                let session_rule = format!("tool:{tool_name}");
+                if session_rules.contains(&session_rule) {
+                    return Ok(PolicyDecision::Allow);
+                }
+                Ok(PolicyDecision::Ask(PermissionRequest {
+                    tool_name: tool_name.to_string(),
+                    reason: format!(
+                        "tool `{tool_name}` may modify state and has no explicit permission classification; approval required"
+                    ),
+                    session_rule,
+                }))
+            }
         }
+    }
+
+    /// Validate `write_stdin`: the injected characters may be interpreted as
+    /// commands by an interactive shell session, so the same base-name risk
+    /// classification applies to the `chars` payload.
+    fn validate_stdin_input(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        session_rules: &HashSet<String>,
+    ) -> Result<PolicyDecision, ToolError> {
+        let chars = args["chars"].as_str().unwrap_or("");
+        if chars.is_empty() {
+            return Ok(PolicyDecision::Allow);
+        }
+        if let Some((base, reason)) = classify_command_risk(chars) {
+            let rule_key = format!("command:{}", base);
+            if session_rules.contains(&rule_key) {
+                return Ok(PolicyDecision::Allow);
+            }
+            return Ok(PolicyDecision::Ask(PermissionRequest {
+                tool_name: tool_name.to_string(),
+                reason: format!("stdin payload contains {reason}"),
+                session_rule: rule_key,
+            }));
+        }
+        Ok(PolicyDecision::Allow)
+    }
+
+    /// Validate `git_operations`: read-only inspections are allowed; every
+    /// repository-mutating operation asks once per session (`git:<op>` rule).
+    /// `--force`-style flags are surfaced in the reason.
+    fn validate_git_operation(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        session_rules: &HashSet<String>,
+    ) -> Result<PolicyDecision, ToolError> {
+        const READ_OPS: &[&str] = &["status", "log", "diff", "branch", "worktree_list"];
+        const FORCE_FLAGS: &[&str] = &["--force", "-f", "-D", "-d", "--delete", "--hard"];
+
+        let op = args["operation"].as_str().unwrap_or("");
+        if READ_OPS.contains(&op) {
+            return Ok(PolicyDecision::Allow);
+        }
+        let session_rule = format!("git:{op}");
+        if session_rules.contains(&session_rule) {
+            return Ok(PolicyDecision::Allow);
+        }
+        let forced = args["args"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .any(|flag| FORCE_FLAGS.contains(&flag))
+            })
+            .unwrap_or(false);
+        let reason = if forced {
+            format!("git `{op}` with force/delete flags requires approval")
+        } else {
+            format!("git operation `{op}` modifies the repository; approval required")
+        };
+        Ok(PolicyDecision::Ask(PermissionRequest {
+            tool_name: tool_name.to_string(),
+            reason,
+            session_rule,
+        }))
     }
 
     /// Validate read-only tools that access filesystem paths.
@@ -344,6 +449,19 @@ fn split_shell_commands(command: &str) -> Vec<&str> {
                 // background `&`
                 start = i + 1;
             }
+            // Newlines separate statements in every POSIX-compatible shell;
+            // treat them as control operators outside quotes so
+            // `echo hi\nchmod 777 /` cannot smuggle the second statement past
+            // classification. `\r\n` yields an empty segment after trim.
+            b'\n' | b'\r' if !in_single && !in_double && depth == 0 => {
+                if start < i {
+                    let sub = command[start..i].trim();
+                    if !sub.is_empty() {
+                        result.push(sub);
+                    }
+                }
+                start = i + 1;
+            }
             b';' | b'|' if !in_single && !in_double && depth == 0 => {
                 if start < i {
                     let sub = command[start..i].trim();
@@ -516,14 +634,96 @@ fn has_file_redirect(sub: &str) -> bool {
     false
 }
 
+/// Extract the bodies of command substitutions — `$(...)` and `` `...` `` —
+/// that appear outside quotes. The splitter keeps substitutions inside a
+/// single sub-command, so their contents are analysed separately here.
+fn substitution_bodies(command: &str) -> Vec<&str> {
+    let bytes = command.as_bytes();
+    let mut bodies = Vec::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_double && i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+            }
+            b'$' if !in_single && i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                let mut depth = 1u8;
+                let mut j = i + 2;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'(' => depth = depth.saturating_add(1),
+                        b')' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if j < bytes.len() && j > i + 2 {
+                    bodies.push(&command[i + 2..j]);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            b'`' if !in_single => {
+                if let Some(rel) = command[i + 1..].find('`') {
+                    let end = i + 1 + rel;
+                    if end > i + 1 {
+                        bodies.push(&command[i + 1..end]);
+                    }
+                    i = end + 1;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    bodies
+}
+
 /// Classify the risk of a shell command by examining each sub-command's base name.
 ///
 /// Returns `Some((base_command_name, reason))` if the command needs approval,
 /// or `None` if it is safe to execute.
 fn classify_command_risk(command: &str) -> Option<(String, String)> {
-    let sub_commands = split_shell_commands(command);
+    classify_command_risk_inner(command, 0)
+}
 
-    for sub in &sub_commands {
+/// Maximum levels of nested command substitution to expand while classifying.
+const MAX_SUBSTITUTION_DEPTH: u8 = 3;
+
+/// Bounded expansion: substitution bodies are classified too, so
+/// `echo $(chmod 777 /)` asks instead of hiding behind `echo`.
+fn classify_command_risk_inner(command: &str, depth: u8) -> Option<(String, String)> {
+    if let Some(hit) = classify_segments(&split_shell_commands(command), command) {
+        return Some(hit);
+    }
+    if depth < MAX_SUBSTITUTION_DEPTH {
+        for body in substitution_bodies(command) {
+            if let Some(hit) = classify_command_risk_inner(body, depth + 1) {
+                return Some(hit);
+            }
+        }
+    }
+    None
+}
+
+fn classify_segments(segments: &[&str], command: &str) -> Option<(String, String)> {
+    for sub in segments {
         let Some(base) = command_base_name(sub) else {
             continue;
         };
@@ -1072,10 +1272,205 @@ mod tests {
 
     #[test]
     fn test_classify_for_loop_body_not_keyed_as_do() {
-        // `for x in a; do rg y; done` must not surface session_rule command:do.
+        // `for x in a; do rm y; done` must not surface session_rule command:do.
         assert!(classify_command_risk("for m in agent api; do rg foo; done").is_none());
         let (base, _) =
             classify_command_risk("for m in agent; do rm -rf /tmp/x; done").expect("rm asks");
         assert_eq!(base, "rm");
+    }
+
+    // ── Newline / substitution smuggling regressions ──────────────
+
+    #[test]
+    fn test_split_by_newline() {
+        let parts = split_shell_commands("echo hi\nchmod 777 /");
+        assert_eq!(parts, vec!["echo hi", "chmod 777 /"]);
+    }
+
+    #[test]
+    fn test_split_newline_inside_quotes_preserved() {
+        let parts = split_shell_commands("echo \"a\nb\"");
+        assert_eq!(parts, vec!["echo \"a\nb\""]);
+    }
+
+    #[test]
+    fn test_classify_newline_smuggling_asks() {
+        let (base, _) =
+            classify_command_risk("echo hi\nchmod 777 /").expect("second line must ask");
+        assert_eq!(base, "chmod");
+    }
+
+    #[test]
+    fn test_classify_command_substitution_asks() {
+        let (base, _) =
+            classify_command_risk("echo $(chmod 777 /)").expect("substitution must ask");
+        assert_eq!(base, "chmod");
+        let (base, _) = classify_command_risk("echo `rm -rf /tmp/x`").expect("backtick must ask");
+        assert_eq!(base, "rm");
+    }
+
+    #[test]
+    fn test_classify_nested_substitution_asks() {
+        let (base, _) = classify_command_risk("echo $($(chmod 777 /))").expect("nested must ask");
+        assert_eq!(base, "chmod");
+    }
+
+    #[test]
+    fn test_classify_single_quoted_substitution_literal_is_safe() {
+        assert!(classify_command_risk(r#"echo '$(rm -rf /)'"#).is_none());
+    }
+
+    // ── Coverage: background / write_stdin / git_operations ───────
+
+    /// Minimal non-read-only tool carrying a fixed name, for policy dispatch.
+    struct NamedWriteTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for NamedWriteTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            unreachable!("permission test does not execute the tool")
+        }
+    }
+
+    #[test]
+    fn test_background_command_routes_through_command_classification() {
+        let policy = policy_for_test();
+        let tool = NamedWriteTool("background");
+        let risky = policy.validate_tool_call(
+            &tool,
+            "background",
+            &serde_json::json!({"command": "rm -rf build"}),
+            &empty_rules(),
+        );
+        assert!(matches!(risky, Ok(PolicyDecision::Ask(_))));
+
+        let safe = policy.validate_tool_call(
+            &tool,
+            "background",
+            &serde_json::json!({"command": "ls -la"}),
+            &empty_rules(),
+        );
+        assert!(matches!(safe, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_write_stdin_benign_chars_allowed_dangerous_ask() {
+        let policy = policy_for_test();
+        let tool = NamedWriteTool("write_stdin");
+
+        let benign = policy.validate_tool_call(
+            &tool,
+            "write_stdin",
+            &serde_json::json!({"session_id": 1, "chars": "y\n"}),
+            &empty_rules(),
+        );
+        assert!(matches!(benign, Ok(PolicyDecision::Allow)));
+
+        let dangerous = policy.validate_tool_call(
+            &tool,
+            "write_stdin",
+            &serde_json::json!({"session_id": 1, "chars": "rm -rf /tmp/x\n"}),
+            &empty_rules(),
+        );
+        match dangerous {
+            Ok(PolicyDecision::Ask(req)) => assert_eq!(req.session_rule, "command:rm"),
+            other => panic!("expected Ask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_git_read_ops_allowed_mutating_ops_ask() {
+        let policy = policy_for_test();
+        let tool = NamedWriteTool("git_operations");
+
+        let status = policy.validate_tool_call(
+            &tool,
+            "git_operations",
+            &serde_json::json!({"operation": "status"}),
+            &empty_rules(),
+        );
+        assert!(matches!(status, Ok(PolicyDecision::Allow)));
+
+        let commit = policy.validate_tool_call(
+            &tool,
+            "git_operations",
+            &serde_json::json!({"operation": "commit", "message": "x"}),
+            &empty_rules(),
+        );
+        match commit {
+            Ok(PolicyDecision::Ask(req)) => assert_eq!(req.session_rule, "git:commit"),
+            other => panic!("expected Ask, got {other:?}"),
+        }
+
+        // Session rule unlocks the operation for the rest of the session.
+        let rules = HashSet::from(["git:commit".to_string()]);
+        let allowed = policy.validate_tool_call(
+            &tool,
+            "git_operations",
+            &serde_json::json!({"operation": "commit", "message": "x"}),
+            &rules,
+        );
+        assert!(matches!(allowed, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_git_push_force_flags_surfaced_in_reason() {
+        let policy = policy_for_test();
+        let tool = NamedWriteTool("git_operations");
+        match policy.validate_tool_call(
+            &tool,
+            "git_operations",
+            &serde_json::json!({"operation": "push", "args": ["--force"]}),
+            &empty_rules(),
+        ) {
+            Ok(PolicyDecision::Ask(req)) => {
+                assert!(req.reason.contains("force"), "reason: {}", req.reason)
+            }
+            other => panic!("expected Ask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unclassified_write_tool_fails_closed() {
+        let policy = policy_for_test();
+        let tool = NamedWriteTool("mystery_writer");
+
+        let first = policy.validate_tool_call(
+            &tool,
+            "mystery_writer",
+            &serde_json::json!({}),
+            &empty_rules(),
+        );
+        assert!(matches!(first, Ok(PolicyDecision::Ask(_))));
+
+        let rules = HashSet::from(["tool:mystery_writer".to_string()]);
+        let second =
+            policy.validate_tool_call(&tool, "mystery_writer", &serde_json::json!({}), &rules);
+        assert!(matches!(second, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_structured_meta_tools_still_allowed() {
+        let policy = policy_for_test();
+        for name in [
+            "update_plan",
+            "task_management",
+            "checkpoint",
+            "kill_session",
+        ] {
+            let tool = NamedWriteTool(name);
+            let decision =
+                policy.validate_tool_call(&tool, name, &serde_json::json!({}), &empty_rules());
+            assert!(matches!(decision, Ok(PolicyDecision::Allow)), "{name}");
+        }
     }
 }
