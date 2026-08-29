@@ -5,10 +5,6 @@
 //! non-root synthesis barrier) and exposes [`run_subagent_loop_with_permissions`]
 //! for `task` / RLM / run_script callers.
 
-use crate::agent::progress::{
-    ErrorInfo, ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
-    SubagentProgress, SubagentStatus,
-};
 use crate::agent::runtime::{
     run_agent_loop, ApiLlmPort, EventSink, HistoryStore, InboxPort, LoopHooks, LoopTurnState,
     MutexHistoryStore, RoundObserver, RunLoopArgs, RuntimeConfig, RuntimeError, RuntimeEvent,
@@ -20,6 +16,10 @@ use crate::agent::{
 };
 use crate::api::{ApiClient, ChatMessage};
 use crate::config::resolve_context_window;
+use crate::progress::{
+    ErrorInfo, ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
+    SubagentProgress, SubagentStatus,
+};
 use crate::teams::approval_registry;
 use crate::teams::failure_diagnostics::{
     redact_params, truncate_char_safe, FailedRoundContext, FailureRootCause, RetryAttempt,
