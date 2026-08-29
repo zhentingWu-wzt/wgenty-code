@@ -48,10 +48,3 @@ pub use crate::progress::{
     ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
     SubagentProgress, SubagentStatus,
 };
-
-/// Compatibility path shim so `crate::agent::progress::X` import paths keep
-/// working during the module migration; removed once all importers use
-/// `crate::progress` directly.
-pub mod progress {
-    pub use crate::progress::*;
-}

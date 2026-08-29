@@ -4,6 +4,7 @@ use super::types::*;
 use super::App;
 use crate::prompts::{self, PromptContext};
 use crate::tui::components::subagent_focus_view::FocusViewState;
+use crate::tui::traits::EventHandler;
 use crate::tui::util::{
     agent_phase_from_event, compute_collapse_state, extract_diff_data, extract_tool_metadata,
     format_tool_result, tool_label,
@@ -35,6 +36,19 @@ impl App {
                 }
                 self.phase = next_phase;
             }
+        }
+        // Panel-owned events dispatch to the component that owns the state
+        // (`tui::traits::EventHandler`) before the main match; consumed
+        // events never reach it. This is the decomposition path for the
+        // giant match — migrate further panels here over time.
+        if self.memory_state.handle_event(&event) {
+            return;
+        }
+        if self.session_state.handle_event(&event) {
+            return;
+        }
+        if self.plan_panel_state.handle_event(&event) {
+            return;
         }
         match event {
             AppEvent::KeyEvent(key) => self.handle_key_event(*key),
@@ -677,9 +691,11 @@ impl App {
                     });
                 }
             }
-            AppEvent::MemoryListLoaded(items) => {
-                self.memory_state.show_items(items);
-            }
+            // Consumed by the panel EventHandler dispatch above; this arm
+            // exists only to keep the match exhaustive.
+            AppEvent::MemoryListLoaded(_)
+            | AppEvent::SessionListLoaded(_)
+            | AppEvent::TodosSnapshot(_) => {}
             AppEvent::DeleteMemory(origin, id) => {
                 let mm = self.memory_manager.clone();
                 let tx = self.event_tx.clone();
@@ -762,9 +778,6 @@ impl App {
                         .collect();
                     let _ = tx.send(AppEvent::MemoryListLoaded(items));
                 });
-            }
-            AppEvent::SessionListLoaded(sessions) => {
-                self.session_state.show(sessions);
             }
             AppEvent::DeleteSession(id) => {
                 let client = self.daemon_client.clone();
@@ -1261,17 +1274,6 @@ impl App {
             }
             AppEvent::PlanUpdate(value) => {
                 self.plan_panel_state.apply_update_value(&value);
-            }
-            AppEvent::TodosSnapshot(items) => {
-                use crate::tui::components::plan_panel::{PlanItem, PlanStatus};
-                let items = items
-                    .into_iter()
-                    .map(|t| PlanItem {
-                        step: t.content,
-                        status: PlanStatus::parse_status(&t.status),
-                    })
-                    .collect::<Vec<_>>();
-                self.plan_panel_state.update(items);
             }
             AppEvent::MemoriesReady(lines) => {
                 // Cross-session memory recall completed in the background at

@@ -5,8 +5,8 @@
 //! the Web client does. Foundation for migrating the TUI from a client-side
 //! loop to a server-side loop.
 
-use crate::agent::progress::{SubagentProgress, SubagentStatus};
 use crate::daemon::run_loop::{SessionEvent, SessionEventKind};
+use crate::progress::{SubagentProgress, SubagentStatus};
 use crate::teams::trace_sink::{TraceEvent, TraceEventKind};
 use crate::tui::app::types::AppEvent;
 use crate::tui::client::{DaemonClient, GlobalEventWire};
