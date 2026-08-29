@@ -1,6 +1,6 @@
 //! File Write Tool
 
-use crate::agent::ToolContext;
+use crate::tools::context::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;

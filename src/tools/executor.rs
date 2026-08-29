@@ -1,4 +1,4 @@
-use crate::agent::ToolContext;
+use crate::tools::context::ToolContext;
 use crate::api::ChatMessage;
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::runtime::guardian::{Guardian, GuardianDecision};

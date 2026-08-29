@@ -139,7 +139,7 @@ impl Default for GlobTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+    use crate::tools::context::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
     use crate::tools::Tool;
 
     fn make_ctx<'a>(
