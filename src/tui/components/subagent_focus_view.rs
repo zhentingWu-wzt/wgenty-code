@@ -5,8 +5,8 @@
 //! bar, and pressing Enter opens this full-screen focus view with the complete
 //! event timeline.
 
-use crate::agent::progress::SubagentStatus;
 use crate::api::ChatMessage;
+use crate::progress::SubagentStatus;
 use crate::tui::app::{MessageRole, UIMessage};
 use crate::tui::components::chat::message_to_lines;
 use crate::tui::components::subagent_tree::SubagentTree;
@@ -659,7 +659,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::progress::{SubagentEvent, SubagentEventType, SubagentProgress};
+    use crate::progress::{SubagentEvent, SubagentEventType, SubagentProgress};
     use crate::tui::components::subagent_tree::SubagentNode;
 
     #[test]
@@ -861,7 +861,7 @@ mod tests {
 
     #[test]
     fn test_build_with_error_details() {
-        use crate::agent::progress::{ErrorInfo, ErrorType};
+        use crate::progress::{ErrorInfo, ErrorType};
 
         let mut tree = SubagentTree::default();
         let mut node = make_node("n1", vec![]);

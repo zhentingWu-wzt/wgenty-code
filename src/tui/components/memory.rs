@@ -1,7 +1,9 @@
 //! Memory browser popup — list project/global memories (hygiene L1).
 
 use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
+use crate::tui::app::AppEvent;
 use crate::tui::theme;
+use crate::tui::traits::EventHandler;
 use chrono::{DateTime, Utc};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -434,6 +436,17 @@ fn format_age(ts: DateTime<Utc>) -> String {
     }
 }
 
+/// Owns the `MemoryListLoaded` event so the giant App match does not.
+impl EventHandler for MemoryState {
+    fn handle_event(&mut self, event: &AppEvent) -> bool {
+        if let AppEvent::MemoryListLoaded(items) = event {
+            self.show_items(items.clone());
+            return true;
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +455,25 @@ mod tests {
         let mut entry = MemoryEntry::new(MemoryType::Knowledge, content);
         entry.importance = importance;
         MemoryListItem { origin, entry }
+    }
+
+    #[test]
+    fn event_handler_consumes_memory_list_loaded() {
+        let mut state = MemoryState::new();
+        assert!(!state.visible);
+
+        let event = AppEvent::MemoryListLoaded(vec![item(MemoryOrigin::Project, "p1", 0.9)]);
+        assert!(crate::tui::traits::EventHandler::handle_event(
+            &mut state, &event
+        ));
+        assert!(state.visible);
+        assert_eq!(state.items.len(), 1);
+
+        // Events owned by other panels are not consumed.
+        assert!(!crate::tui::traits::EventHandler::handle_event(
+            &mut state,
+            &AppEvent::Tick
+        ));
     }
 
     #[test]

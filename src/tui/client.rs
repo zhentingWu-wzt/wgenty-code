@@ -1373,7 +1373,7 @@ struct ListPendingPermissionsResponse {
     pending: Vec<PendingSubagentPermission>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
     pub name: String,

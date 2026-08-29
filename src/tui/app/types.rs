@@ -313,7 +313,7 @@ pub enum AppEvent {
     /// server-side mode; client-side mode populates the tree via
     /// [`AppEvent::AgentLocalView`] polling (upsert there would fight
     /// `replace_local`).
-    SubagentTraceProgress(Box<crate::agent::progress::SubagentProgress>),
+    SubagentTraceProgress(Box<crate::progress::SubagentProgress>),
     /// A server-side permission request was resolved (approved/denied),
     /// possibly from another device. Dismisses the matching popup if still
     /// showing without re-sending a decision (the daemon already has it).
