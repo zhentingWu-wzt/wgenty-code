@@ -15,11 +15,11 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::identity::{AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId};
 use crate::agent::store::{
     AgentRecord, DirectoryEntry, InMemoryAgentStore, LocalAgentView, StoreError,
 };
 use crate::agent::task_group::{TaskGroupDelivery, TaskGroupError, TaskGroupId, TaskGroupStore};
+use crate::tools::context::{AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId};
 
 /// Default bounded shutdown timeout applied while awaiting cancelling children.
 ///

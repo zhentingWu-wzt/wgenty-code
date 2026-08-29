@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::agent::identity::{AgentId, AgentLifecycleStatus, SessionId};
+use crate::tools::context::{AgentId, AgentLifecycleStatus, SessionId};
 
 /// Canonical record for one agent execution in the hierarchy.
 #[derive(Debug, Clone)]

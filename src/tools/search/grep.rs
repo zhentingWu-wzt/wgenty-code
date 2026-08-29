@@ -233,7 +233,7 @@ impl Default for GrepTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+    use crate::tools::context::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
 
     fn make_ctx<'a>(
         root: &'a AgentExecutionContext,

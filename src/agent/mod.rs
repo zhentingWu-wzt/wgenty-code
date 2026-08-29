@@ -16,8 +16,6 @@ pub mod coordinator;
 pub mod core;
 pub mod events;
 pub mod fallback;
-pub mod identity;
-pub mod progress;
 pub mod runtime;
 pub mod store;
 pub mod task_group;
@@ -28,13 +26,32 @@ pub use coordinator::{
 };
 pub use core::StreamProcessor;
 pub use events::{StreamEvent, StreamResult};
-pub use identity::{
-    AgentExecutionContext, AgentId, AgentLifecycleStatus, CheckpointCapture, SessionId,
-    ToolContext, ToolInvocationId,
-};
-pub use progress::{ProgressCallback, SubagentMetadata, SubagentProgress, SubagentStatus};
 pub use store::{
     AgentRecord, ChildSummary, DirectChildView, InMemoryAgentStore, LocalAgentView, SelfView,
     StoreError,
 };
 pub use task_group::{TaskGroupDelivery, TaskGroupError, TaskGroupId, TaskGroupStore};
+
+// Identity vocabulary (agent/session ids, trusted `AgentExecutionContext`,
+// `ToolContext`) lives in `tools::context` so the tools layer does not depend
+// on `agent` (AGENTS.md module-dependency rule). Re-exported here because the
+// agent layer remains the primary producer of these values.
+pub use crate::tools::context::{
+    AgentExecutionContext, AgentId, AgentLifecycleStatus, CheckpointCapture, SessionId,
+    ToolContext, ToolInvocationId,
+};
+
+// Subagent progress vocabulary lives in the top-level `progress` module
+// (shared by agent, teams, tools, transcript, daemon and TUI without a
+// dependency on `agent`). Re-exported here for existing import paths.
+pub use crate::progress::{
+    ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
+    SubagentProgress, SubagentStatus,
+};
+
+/// Compatibility path shim so `crate::agent::progress::X` import paths keep
+/// working during the module migration; removed once all importers use
+/// `crate::progress` directly.
+pub mod progress {
+    pub use crate::progress::*;
+}

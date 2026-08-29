@@ -12,10 +12,9 @@
 //! - `explore`                   — codebase search and analysis
 //! - `plan`                      — architecture planning and breakdown
 
-use crate::agent::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
-use crate::agent::{
-    AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
-};
+use crate::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
+use crate::agent::{AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest};
+use crate::tools::context::ToolContext;
 use crate::api::ApiClient;
 use crate::config::{RootPermissionMode, Settings};
 use crate::permissions::policy::ToolPermissionPolicy;

@@ -8,6 +8,7 @@
 
 pub mod checkpoint;
 pub mod checkpoint_store;
+pub mod context;
 pub mod execution;
 pub mod executor;
 pub mod filesystem;
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak};
 
-use crate::agent::ToolContext;
+pub use context::ToolContext;
 
 /// Resolve a (possibly relative) file path against an optional per-agent workdir.
 ///

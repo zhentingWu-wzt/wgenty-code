@@ -1,5 +1,5 @@
-use crate::agent::ToolContext;
 use crate::sandbox::EffectiveMode;
+use crate::tools::context::ToolContext;
 use crate::tools::execution::sandbox_exec::{resolve_for_context, sandbox_metadata};
 use crate::tools::execution::CommandSessionManager;
 use crate::tools::{Tool, ToolError, ToolOutput};

@@ -10,11 +10,11 @@ use wgenty_code::agent::coordinator::{ChildResult, ChildTerminalStatus, Coordina
 use wgenty_code::agent::fallback::{
     fallback_eligible_from_child_result, fallback_eligible_from_coordinator_error, FallbackKind,
 };
-use wgenty_code::agent::identity::AgentId;
-use wgenty_code::agent::progress::ErrorType;
 use wgenty_code::config::Settings;
+use wgenty_code::progress::ErrorType;
 use wgenty_code::teams::subagent_health::FailureMode;
 use wgenty_code::teams::subagent_loop::{classify_stream_error, SubagentError};
+use wgenty_code::tools::context::AgentId;
 
 #[test]
 fn integration_model_unavailable_classification() {

@@ -11,8 +11,8 @@ use super::sandbox_exec::{
     resolve_for_context, sandbox_infra_tool_error, sandbox_metadata, should_degrade_to_direct,
 };
 use super::test_output::TestOutput;
-use crate::agent::ToolContext;
 use crate::sandbox::{shell_command_captured, EffectiveMode, NetworkPolicy, SandboxManager};
+use crate::tools::context::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 
 pub struct RunTestTool {

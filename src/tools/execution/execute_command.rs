@@ -1,7 +1,7 @@
 //! Execute Command Tool — runs shell commands with sandbox isolation.
 
-use crate::agent::ToolContext;
 use crate::sandbox::{shell_command_captured, EffectiveMode, SandboxManager};
+use crate::tools::context::ToolContext;
 use crate::tools::execution::sandbox_exec::{
     resolve_for_context, sandbox_infra_tool_error, sandbox_metadata, should_degrade_to_direct,
 };
@@ -228,7 +228,7 @@ impl ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentExecutionContext, SessionId, ToolInvocationId};
+    use crate::tools::context::{AgentExecutionContext, SessionId, ToolInvocationId};
     use serde_json::json;
 
     #[tokio::test]

@@ -5,8 +5,8 @@
 //! Spawns go through the same mode-linked sandbox policy as foreground
 //! shell tools (HardFail vs DegradeWithMark).
 
-use crate::agent::ToolContext;
 use crate::sandbox::{shell_command_captured, EffectiveMode, SandboxManager, SandboxOutput};
+use crate::tools::context::ToolContext;
 use crate::tools::execution::sandbox_exec::{
     resolve_for_context, sandbox_infra_tool_error, sandbox_metadata, should_degrade_to_direct,
 };
@@ -548,7 +548,7 @@ impl BackgroundTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentExecutionContext, SessionId, ToolInvocationId};
+    use crate::tools::context::{AgentExecutionContext, SessionId, ToolInvocationId};
     use serde_json::json;
 
     async fn wait_for_result(manager: &BackgroundManager) -> BackgroundResult {

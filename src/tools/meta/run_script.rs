@@ -4,11 +4,12 @@
 //! through a sandboxed Rhai scripting engine. Exposes key agent APIs as Rhai
 //! functions: `task`, `grep`, `read`, `exec`, `log`.
 
-use crate::agent::{AgentCoordinator, ToolContext};
+use crate::agent::AgentCoordinator;
 use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
+use crate::tools::context::ToolContext;
 use crate::tools::meta::task::transcript::{new_transcript_id, save_minimal_transcript};
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 use crate::transcript::SubagentTranscriptStore;
