@@ -242,17 +242,16 @@ impl DaemonToolPort {
 impl ToolPort for DaemonToolPort {
     async fn execute(&self, req: ToolRequest) -> ToolResponse {
         // Guardian: critical-risk shell commands never reach the daemon.
-        if req.name == "execute_command" || req.name == "exec_command" {
-            if let Some(cmd) = req.arguments.get("command").and_then(|v| v.as_str()) {
-                let risk = classify_risk(cmd);
-                if risk >= crate::runtime::guardian::RiskLevel::Critical {
-                    let msg = format!("GUARDIAN BLOCK: critical-risk command rejected. {}", cmd);
-                    tracing::warn!("{}", msg);
-                    return ToolResponse {
-                        content: format!(r#"{{"success":false,"error":"{}"}}"#, msg),
-                        success: false,
-                    };
-                }
+        if let Some(cmd) = crate::runtime::guardian::shell_text_for_tool(&req.name, &req.arguments)
+        {
+            let risk = classify_risk(cmd);
+            if risk >= crate::runtime::guardian::RiskLevel::Critical {
+                let msg = format!("GUARDIAN BLOCK: critical-risk command rejected. {}", cmd);
+                tracing::warn!("{}", msg);
+                return ToolResponse {
+                    content: format!(r#"{{"success":false,"error":"{}"}}"#, msg),
+                    success: false,
+                };
             }
         }
 

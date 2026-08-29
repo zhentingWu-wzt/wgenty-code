@@ -255,10 +255,7 @@ impl<'a> GuardingToolPort<'a> {
     }
 
     fn guardian_block(&self, tool_name: &str, args: &serde_json::Value) -> Option<ToolResponse> {
-        if tool_name != "execute_command" && tool_name != "exec_command" {
-            return None;
-        }
-        let cmd = args.get("command").and_then(|v| v.as_str())?;
+        let cmd = crate::runtime::guardian::shell_text_for_tool(tool_name, args)?;
         let decision = self.permission.guardian.check(tool_name, cmd);
         if !decision.allowed {
             return Some(Self::fail(

@@ -1,8 +1,8 @@
-use crate::tools::context::ToolContext;
 use crate::api::ChatMessage;
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::runtime::guardian::{Guardian, GuardianDecision};
 use crate::runtime::hooks::{HookEvent, HookManager};
+use crate::tools::context::ToolContext;
 use crate::tools::ToolRegistry;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -57,6 +57,13 @@ impl ToolExecutor {
 
     pub fn with_hooks(mut self, hook_manager: Arc<HookManager>) -> Self {
         self.hook_manager = hook_manager;
+        self
+    }
+
+    /// Install a Guardian built from user settings
+    /// (`integrations.guardian`); the default is used otherwise.
+    pub fn with_guardian(mut self, guardian: Guardian) -> Self {
+        self.guardian = guardian;
         self
     }
 
@@ -119,18 +126,15 @@ impl ToolExecutor {
         self.session_rules.write().await.remove(rule);
     }
 
-    /// Execute a tool call directly (policy already passed).
-    /// Run a guardian security check before executing a high-risk tool.
+    /// Run a guardian security check before executing a command tool
+    /// (execute_command/exec_command/background, plus write_stdin payloads).
     /// Returns Some(decision) if the tool was blocked by guardian.
     pub fn guardian_check(
         &self,
         tool_name: &str,
         input: &serde_json::Value,
     ) -> Option<GuardianDecision> {
-        if tool_name != "execute_command" && tool_name != "exec_command" {
-            return None;
-        }
-        if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+        if let Some(cmd) = crate::runtime::guardian::shell_text_for_tool(tool_name, input) {
             let decision = self.guardian.check(tool_name, cmd);
             if !decision.allowed {
                 return Some(decision);
