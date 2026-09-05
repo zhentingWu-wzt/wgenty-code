@@ -401,10 +401,10 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         } else {
             None
         };
-        let max_tokens = if stream_style.pass_max_tokens {
-            Some(config.max_tokens)
-        } else {
-            None
+        // 0 = "omit" (provider default output limit); never forward Some(0).
+        let max_tokens = match (stream_style.pass_max_tokens, config.max_tokens) {
+            (true, limit) if limit > 0 => Some(limit),
+            _ => None,
         };
         let plan_mode = if stream_style.pass_plan_mode && config.plan_mode {
             Some(true)

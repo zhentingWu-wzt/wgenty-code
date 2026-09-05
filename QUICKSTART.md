@@ -189,7 +189,7 @@ $env:ANTHROPIC_API_KEY="sk-ant-..."
 | `models.main.api_key` | string | — | API 密钥（推荐用环境变量） |
 | `models.main.base_url` | string | `https://api.anthropic.com` | API 端点 |
 | `models.small` | object | — | 子代理专用小模型 |
-| `models.transport.max_tokens` | number | 4096 | 单次请求最大 token |
+| `models.transport.max_tokens` | number | 4096 | 单次请求最大输出 token;`0` = 不发送该字段,使用 provider 默认输出上限 |
 | `models.transport.timeout` | number | 120 | 请求超时（秒） |
 | `agent.plan_mode` | bool | false | Plan 模式开关 |
 | `agent.subagent.max_depth` | number | 1 | 子代理最大嵌套深度 |

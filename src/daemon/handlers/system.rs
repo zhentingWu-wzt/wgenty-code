@@ -56,10 +56,9 @@ pub async fn update_config(
         .expect("lock poisoned: settings")
         .clone();
 
+    // 0 = omit `max_tokens` from provider requests (provider default output
+    // limit); any positive value caps output explicitly.
     if let Some(mt) = body.max_tokens {
-        if mt == 0 {
-            return Err((StatusCode::BAD_REQUEST, "max_tokens must be > 0".into()));
-        }
         settings.models.transport.max_tokens = mt;
     }
     if let Some(t) = body.timeout {

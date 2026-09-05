@@ -159,7 +159,7 @@ docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code:latest repl
 | `models.main.name` | `sonnet` | 主模型别名（自动映射） |
 | `models.small.name` | *(无)* | 委托子任务的小型/廉价模型 |
 | `models.planner.name` | *(无)* | 生成计划专用模型 |
-| `models.transport.max_tokens` | `4096` | 单次请求最大 token |
+| `models.transport.max_tokens` | `4096` | 单次请求最大输出 token;`0` = 不发送该字段,使用 provider 默认输出上限 |
 | `agent.plan_mode` | `false` | 启用先计划后执行模式 |
 | `agent.subagent.max_depth` | `1` | 嵌套子 agent 最大深度（1 = 子代理不能再派生子代理；调大以允许递归） |
 | `agent.subagent.max_concurrent` | `5` | 并行子 agent 最大数量 |

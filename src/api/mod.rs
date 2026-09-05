@@ -31,6 +31,10 @@ use anthropic::{
 // `crate::api::format_api_error` call site in `daemon/handlers.rs`.
 use provider::Provider;
 
+/// Anthropic requires an explicit `max_tokens`; when `transport.max_tokens = 0`
+/// ("omit the field" on OpenAI-compatible APIs), send this fallback instead.
+const ANTHROPIC_MAX_TOKENS_FALLBACK: usize = 8192;
+
 /// Sanitize tool-call arguments before replaying a conversation to the API.
 ///
 /// When the model generates a tool call with very long arguments (e.g. a large
@@ -292,6 +296,14 @@ impl ApiClient {
         &self.settings.models.main.name
     }
 
+    /// `transport.max_tokens = 0` means "omit the field" so the provider's
+    /// default output limit applies (same omit pattern as `temperature`).
+    /// Any positive value is sent verbatim as an explicit output cap.
+    fn request_max_tokens(&self) -> Option<usize> {
+        let limit = self.settings.models.transport.max_tokens;
+        (limit > 0).then_some(limit)
+    }
+
     pub async fn chat(
         &self,
         mut messages: Vec<ChatMessage>,
@@ -320,7 +332,7 @@ impl ApiClient {
                 .provider
                 .resolve_model_id(&self.settings.models.main.name),
             messages,
-            max_tokens: self.settings.models.transport.max_tokens,
+            max_tokens: self.request_max_tokens(),
             stream: false,
             temperature: self.settings.models.main.temperature,
             tools,
@@ -391,7 +403,12 @@ impl ApiClient {
                 .provider
                 .resolve_model_id(&self.settings.models.main.name),
             messages: anthropic_msgs,
-            max_tokens: self.settings.models.transport.max_tokens,
+            max_tokens: self
+                .settings
+                .models
+                .transport
+                .max_tokens
+                .max(ANTHROPIC_MAX_TOKENS_FALLBACK),
             system: system_prompt,
             tools: anthropic_tools,
             stream: false,
@@ -467,7 +484,7 @@ impl ApiClient {
                 .provider
                 .resolve_model_id(&self.settings.models.main.name),
             messages,
-            max_tokens: self.settings.models.transport.max_tokens,
+            max_tokens: self.request_max_tokens(),
             stream: true,
             temperature: self.settings.models.main.temperature,
             tools,
@@ -531,7 +548,12 @@ impl ApiClient {
                 .provider
                 .resolve_model_id(&self.settings.models.main.name),
             messages: anthropic_msgs,
-            max_tokens: self.settings.models.transport.max_tokens,
+            max_tokens: self
+                .settings
+                .models
+                .transport
+                .max_tokens
+                .max(ANTHROPIC_MAX_TOKENS_FALLBACK),
             system: system_prompt,
             tools: anthropic_tools,
             stream: true,

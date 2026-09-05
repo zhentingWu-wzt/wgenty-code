@@ -105,11 +105,14 @@ export function ConfigPanel({ client }: { client: DaemonClient }) {
         <label className="text-[11px] text-muted-foreground">Max Tokens</label>
         <input
           type="number"
-          min={1}
+          min={0}
           value={maxTokens}
           onChange={(e) => setMaxTokens(e.target.value)}
           className="rounded-sm border border-border bg-background px-2 py-1 text-[13px] outline-none focus:border-primary"
         />
+        <span className="text-[11px] text-muted-foreground">
+          0 = 不发送该字段,使用 provider 默认输出上限
+        </span>
       </div>
 
       {/* Timeout */}
