@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, memo, useEffect, useRef } from "react";
 import type { ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -98,6 +98,105 @@ function ToolEntry({ m }: { m: DisplayMessage }) {
   return null;
 }
 
+/** Reasoning trace block. The trace lives in its own scroll area
+ * (`max-h-96`), so the timeline's stick-to-bottom cannot reveal new text —
+ * while the message streams, this block keeps itself pinned to its own
+ * bottom instead. Scrolling up inside the block pauses the follow (same
+ * contract as the outer stick-to-bottom); it stays put once streaming ends. */
+function ReasoningBlock({ text, live }: { text: string; live: boolean }) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const pinnedRef = useRef(true);
+  useEffect(() => {
+    const el = preRef.current;
+    if (el && live && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [text, live]);
+  return (
+    <div className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
+      <div className="px-2 py-1 font-medium">reasoning</div>
+      <pre
+        ref={preRef}
+        onScroll={() => {
+          const el = preRef.current;
+          if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+        className="max-h-96 overflow-y-auto px-2 pb-2 whitespace-pre-wrap"
+      >
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+/** One timeline row, memoized: streamed deltas rebuild the `messages` array
+ * but keep untouched message identities (sessionStore.appendAssistant), so a
+ * per-frame commit re-renders ONLY the streaming bubble — completed bubbles
+ * skip their ReactMarkdown re-parse and shiki re-highlight entirely. Without
+ * this, long turns froze the UI (design D3). */
+const MessageRow = memo(function MessageRow({
+  m,
+  showDivider,
+}: {
+  m: DisplayMessage;
+  showDivider: boolean;
+}) {
+  return (
+    <Fragment>
+      {showDivider && <div className="my-2 border-t border-border" />}
+      <div
+        className={cn("flex flex-col gap-1 px-2 py-2 sm:px-4", m.role === "user" && "items-end")}
+      >
+        {m.role === "tool" ? (
+          <ToolEntry m={m} />
+        ) : (
+          <>
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
+                )}
+              />
+              {m.role}
+              {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
+              {m.streaming ? " · …" : ""}
+            </div>
+            {/* Reasoning is a streaming-time affordance only (TUI parity:
+                reasoning never lands in the chat area): visible while the
+                round streams so the user can watch progress, hidden once the
+                round finalizes so long traces don't bury the answer. The text
+                stays on the message for inspector/debug views. */}
+            {m.streaming && m.reasoning && <ReasoningBlock text={m.reasoning} live />}
+            {!m.streaming && m.role === "assistant" && !m.content && m.reasoning && (
+              <div className="px-1 text-[11px] italic text-muted-foreground/70">
+                reasoning only — no content this round
+              </div>
+            )}
+            {m.content && (
+              <div
+                className={cn(
+                  "rounded-lg px-3 py-2 text-[13px]",
+                  m.role === "user" ? "max-w-[85%] bg-primary/10 whitespace-pre-wrap" : "bg-card",
+                )}
+              >
+                {m.role === "assistant" ? (
+                  <>
+                    <Markdown>{m.content}</Markdown>
+                    {m.streaming && (
+                      <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
+                    )}
+                  </>
+                ) : (
+                  m.content
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </Fragment>
+  );
+});
+
 /** Scrolling message list with stick-to-bottom auto-scroll.
  *
  * While streaming, `messages` changes every token batch. Naively calling
@@ -117,6 +216,7 @@ export function ChatView() {
   const scrollerRef = useRef<HTMLElement | null>(null);
   const pinnedRef = useRef(true);
   const PIN_THRESHOLD = 80;
+  const hasMessages = messages.length > 0;
 
   // (Re)discover the scroll container when the sentinel mounts (the empty
   // state renders no sentinel, so discovery must retry once messages exist).
@@ -129,7 +229,7 @@ export function ChatView() {
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [messages.length > 0]);
+  }, [hasMessages]);
 
   useEffect(() => {
     // A fresh user message means a new turn is starting — re-pin so the
@@ -154,65 +254,7 @@ export function ChatView() {
   return (
     <div className="mx-auto flex max-w-[1100px] flex-col gap-2 px-3 pt-4 sm:px-6 sm:pt-6">
       {messages.map((m, i) => (
-        <Fragment key={m.id}>
-          {m.role === "user" && i > 0 && <div className="my-2 border-t border-border" />}
-          <div
-            className={cn(
-              "flex flex-col gap-1 px-2 py-2 sm:px-4",
-              m.role === "user" && "items-end",
-            )}
-          >
-            {m.role === "tool" ? (
-              <ToolEntry m={m} />
-            ) : (
-              <>
-                <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 rounded-full",
-                      m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
-                    )}
-                  />
-                  {m.role}
-                  {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
-                  {m.streaming ? " · …" : ""}
-                </div>
-                {m.reasoning && (
-                  // Default-open reasoning (no <details> collapse): shown
-                  // live while streaming and fully readable afterwards. The
-                  // bordered block keeps it visually distinct from content.
-                  <div className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
-                    <div className="px-2 py-1 font-medium">reasoning</div>
-                    <pre className="max-h-96 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
-                      {m.reasoning}
-                    </pre>
-                  </div>
-                )}
-                {m.content && (
-                  <div
-                    className={cn(
-                      "rounded-lg px-3 py-2 text-[13px]",
-                      m.role === "user"
-                        ? "max-w-[85%] bg-primary/10 whitespace-pre-wrap"
-                        : "bg-card",
-                    )}
-                  >
-                    {m.role === "assistant" ? (
-                      <>
-                        <Markdown>{m.content}</Markdown>
-                        {m.streaming && (
-                          <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
-                        )}
-                      </>
-                    ) : (
-                      m.content
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </Fragment>
+        <MessageRow key={m.id} m={m} showDivider={m.role === "user" && i > 0} />
       ))}
       {lastError && (
         <div className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger/10 px-3 py-2 font-mono text-[13px] whitespace-pre-wrap text-danger">

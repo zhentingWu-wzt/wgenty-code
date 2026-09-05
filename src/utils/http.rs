@@ -50,14 +50,14 @@ pub fn default_client() -> reqwest::Client {
         .clone()
 }
 
-/// Return the shared web-search client with a browser-like user-agent, Accept
-/// headers, and a 30-second total timeout.
+/// Return a web-search client variant that does NOT follow redirects, used to
+/// resolve search-engine redirect wrappers (e.g. `baidu.com/link?url=...`)
+/// to their real target URLs via the `Location` header.
 ///
-/// DuckDuckGo (and other search engines) require browser-like Accept /
-/// Accept-Language headers to avoid serving a CAPTCHA page. Without them, the
-/// server classifies the request as bot traffic even when the user-agent string
-/// looks legitimate.
-pub fn web_search_client() -> reqwest::Client {
+/// Shares the browser-like header set of [`web_search_client`] (Baidu serves
+/// a bot-check page to requests without it) but uses a short timeout: a
+/// resolution hop should cost a few hundred milliseconds, not seconds.
+pub fn web_search_resolve_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
@@ -72,9 +72,45 @@ pub fn web_search_client() -> reqwest::Client {
                 reqwest::header::ACCEPT_LANGUAGE,
                 reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"),
             );
+
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .user_agent(WEB_SEARCH_UA)
+                .default_headers(headers)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
+/// Return the shared web-search client with a browser-like user-agent, Accept
+/// headers, and a 30-second total timeout.
+///
+/// DuckDuckGo (and other search engines) require browser-like Accept /
+/// Accept-Language headers to avoid serving a CAPTCHA page. Without them, the
+/// server classifies the request as bot traffic even when the user-agent string
+/// looks legitimate.
+///
+/// NOTE: no `Accept-Encoding` header may be set here. The reqwest build has no
+/// compression features enabled (`default-features = false`), so it cannot
+/// decompress gzip/deflate/brotli — advertising them would make servers return
+/// compressed bodies that `.text()` fails to decode ("error decoding response
+/// body"). Requests are sent without the header, so servers respond plain.
+pub fn web_search_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            let mut headers = reqwest::header::HeaderMap::new();
             headers.insert(
-                reqwest::header::ACCEPT_ENCODING,
-                reqwest::header::HeaderValue::from_static("gzip, deflate, br"),
+                reqwest::header::ACCEPT,
+                reqwest::header::HeaderValue::from_static(
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                ),
+            );
+            headers.insert(
+                reqwest::header::ACCEPT_LANGUAGE,
+                reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"),
             );
             headers.insert(
                 reqwest::header::DNT,

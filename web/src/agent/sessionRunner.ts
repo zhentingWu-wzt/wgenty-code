@@ -582,13 +582,12 @@ function handleEvent(
         // Tools are about to execute (TUI PreparingTools).
         s.setAgentPhase({ phase: "preparing_tools" });
       } else if (finishReason === "length" || finishReason === "max_tokens") {
-        // The provider hit the token budget — with reasoning models the
-        // budget is often consumed by reasoning_content first, so the answer
-        // can come back empty ("long reasoning, then nothing happens").
-        // Surface it instead of ending the turn silently.
+        // The provider hit the token budget and the daemon's auto-continue
+        // retries (bounded) could not complete the answer either. Surface it
+        // instead of ending the turn silently.
         toast.warning("Response truncated — max tokens reached", {
           description:
-            "The token budget ran out (often from long reasoning). Resend, or raise max_tokens.",
+            "The token budget ran out even after automatic retries (often from long reasoning). Resend, or raise max_tokens.",
         });
       }
       break; // finalization handled by the finally block
