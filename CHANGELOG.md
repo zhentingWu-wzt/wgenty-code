@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (Tools)
+
+- **`web_search` 全 provider 可用**：`ToolRegistry::with_settings` 此前对
+  Anthropic 等"自带搜索"的 provider 直接移除本地 `web_search` 工具，但
+  Anthropic 服务端 `web_search_20250305` 只有在工具列表存在 `web_search`
+  条目时才会由 `convert_tools_to_anthropic` 注入——移除导致该路径下搜索
+  能力完全消失。现在本地工具对所有 provider 保持注册（Anthropic 路径由
+  请求层自动转换为服务端工具）。
+- **国内网络搜索不可用**：新增免 key 的 Bing RSS 兜底后端
+  （`www.bing.com/search?q=...&format=rss`），搜索链路变为
+  DuckDuckGo → Bing → Tavily；DuckDuckGo/Bing 单请求超时收紧为 10s，
+  避免被墙网络下每次搜索空等满 30s 才走兜底。
+- **rustls 指纹被限流时的搜索兜底**：国内网络对 reqwest(rustls) 的
+  TLS 指纹做了限流，Bing/Brave/Ecosia 直接超时（同一网络 curl 可通）。
+  新增第三级免 key 后端 Baidu HTML（唯一稳定可达的引擎），自然结果的
+  `baidu.com/link?url=…` 跳转包装经 `Location` 头并行解析为真实 URL。
+  最终链路：DuckDuckGo → Bing → Baidu → Tavily。
+- **搜索响应解码失败**：`web_search_client` 此前手动发送
+  `Accept-Encoding: gzip, deflate, br`，但 reqwest 构建未启用压缩 feature、
+  无法解压，导致遵守该头的后端（如 Bing）返回压缩体后 `.text()` 解码失败
+  （"error decoding response body"）。现移除该头，请求以明文拉取。
+  另：`cn.bing.com`（国内地理重定向目标）经 HTTP/2 常在发完完整 body 后
+  不干净地重置流，reqwest 同样报解码错误——Bing 后端现改为手工累积分块
+  并容忍尾部断流（收满 `Content-Length` 即视为完整）。
+
 ### Fixed (Security)
 
 - **`integrations.guardian` 配置生效**：daemon 的 `ToolExecutor` 与子代理

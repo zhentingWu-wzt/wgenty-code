@@ -80,6 +80,42 @@ impl StreamStyle {
 /// Recoverable lenient-parse cases (some fields extracted) do not count.
 pub const MAX_CONSECUTIVE_PARSE_ERRORS: usize = 3;
 
+/// Max auto-continuation rounds when the provider reports output-token
+/// exhaustion (`finish_reason` "length"/"max_tokens"). Each continuation asks
+/// the model to pick up exactly where it stopped; past this cap the turn ends
+/// truncated (terminal `StreamDone{length}`) so frontends can surface it.
+pub const MAX_LENGTH_CONTINUATIONS: usize = 3;
+
+/// True when a finish reason means "the output-token budget ran out" — the
+/// response was cut mid-generation and can be continued, not an error.
+/// Anthropic "max_tokens" is normalized to "length" in `src/api`, but accept
+/// both spellings for OpenAI-compatible providers that emit the raw form.
+fn is_length_reason(reason: &str) -> bool {
+    matches!(reason, "length" | "max_tokens")
+}
+
+/// Withholds round-level `StreamDone` events that signal output-token
+/// exhaustion. The loop decides after the round whether the truncation is
+/// terminal (re-emits the event itself) or whether it auto-continues (event
+/// stays suppressed), so downstream sinks — notably the daemon's
+/// `DaemonEventSink`, which publishes a terminal `TurnDone` on the first
+/// non-tool-calls `StreamDone` — never end the turn while continuation rounds
+/// are still streaming. All other events pass through untouched.
+struct LengthGateSink<'a> {
+    inner: &'a dyn EventSink,
+}
+
+impl EventSink for LengthGateSink<'_> {
+    fn emit(&self, event: RuntimeEvent) {
+        if let RuntimeEvent::StreamDone { ref finish_reason } = event {
+            if is_length_reason(finish_reason) {
+                return;
+            }
+        }
+        self.inner.emit(event);
+    }
+}
+
 /// Mutable flags for one turn of the shared loop.
 #[derive(Debug, Default)]
 pub struct LoopTurnState {
@@ -117,6 +153,10 @@ pub struct LoopTurnState {
     /// been attempted this turn, a second payload-too-large error aborts
     /// instead of retrying.
     pub micro_compact_attempted: bool,
+    /// Auto-continuation rounds issued because the provider hit the
+    /// output-token limit (`finish_reason` length/max_tokens). Capped by
+    /// [`MAX_LENGTH_CONTINUATIONS`].
+    pub length_continuations: usize,
 }
 
 /// Optional capabilities wired by each frontend.
@@ -193,6 +233,13 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         system_messages,
     } = args;
     let mut llm_rounds = 0usize;
+    // Text streamed by rounds that hit the output-token limit and were
+    // auto-continued; concatenated with the terminal round's content for the
+    // turn's return value so callers see the complete answer.
+    let mut accumulated = String::new();
+    // Round-level length/max_tokens StreamDone events are gated: the loop
+    // re-emits the event only when the truncation is actually terminal.
+    let gated_events = LengthGateSink { inner: events };
     let max_rounds = config.max_rounds;
     // `Some(0)` configs resolve to usize::MAX ("unlimited"); the *8/10 would
     // overflow there, and the warning would never fire anyway.
@@ -416,7 +463,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         // was assembled above; a compaction that triggered `continue` rebuilds
         // it on the next iteration, so no second fetch is needed here.
         let result = if stream_style.prefer_non_stream {
-            match complete_non_stream(llm, events, &messages, tool_defs).await {
+            match complete_non_stream(llm, &gated_events, &messages, tool_defs).await {
                 Ok(r) => r,
                 Err(e) => {
                     if is_payload_too_large_error(&e.to_string())
@@ -441,7 +488,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         } else {
             match stream_with_retry(
                 llm,
-                events,
+                &gated_events,
                 StreamRetryOpts {
                     messages: &messages,
                     tools: tool_defs,
@@ -993,6 +1040,33 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                 .await;
         }
 
+        // Output-token budget exhausted (`finish_reason` length/max_tokens):
+        // the answer is incomplete — reasoning models can burn the entire
+        // budget on reasoning_content and stream little or no visible text.
+        // Instead of ending the turn truncated, ask the model to pick up
+        // exactly where it stopped and keep streaming. The round-level
+        // StreamDone was already gated above, so frontends still see one
+        // uninterrupted stream. Bounded by MAX_LENGTH_CONTINUATIONS; past the
+        // cap the terminal StreamDone below reports `length` so clients can
+        // surface the truncation.
+        if is_length_reason(&result.finish_reason)
+            && state.length_continuations < MAX_LENGTH_CONTINUATIONS
+        {
+            state.length_continuations += 1;
+            accumulated.push_str(&result.content);
+            tracing::info!(
+                attempt = state.length_continuations,
+                "finish_reason=length; auto-continuing the truncated response"
+            );
+            history
+                .push(ChatMessage::user(
+                    "Your previous response was cut off at the output token limit. Continue exactly where it stopped: do not repeat or rephrase text you already produced, do not re-plan, and output only the remaining part of the answer.".to_string(),
+                ))
+                .await;
+            events.emit(RuntimeEvent::SaveSession);
+            continue;
+        }
+
         // Non-root subagent synthesis barrier: inject child results and continue.
         if let Some(synth) = hooks.synthesis {
             match synth.on_candidate_final(&result.content).await {
@@ -1015,6 +1089,11 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             }
         }
 
+        let final_content = if accumulated.is_empty() {
+            result.content
+        } else {
+            format!("{accumulated}{}", result.content)
+        };
         events.emit(RuntimeEvent::StreamDone {
             finish_reason: result.finish_reason,
         });
@@ -1023,7 +1102,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             let msgs = history.get().await;
             obs.on_completed(llm_rounds, &msgs);
         }
-        return Ok(result.content);
+        return Ok(final_content);
     }
 }
 

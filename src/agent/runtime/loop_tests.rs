@@ -176,6 +176,14 @@ fn text_response(text: &str) -> ChatCompletion {
     }
 }
 
+fn length_response(text: &str) -> ChatCompletion {
+    ChatCompletion {
+        message: ChatMessage::assistant(text),
+        finish_reason: "length".to_string(),
+        usage: None,
+    }
+}
+
 fn tool_call_response(id: &str, name: &str, args: &str) -> ChatCompletion {
     ChatCompletion {
         message: ChatMessage {
@@ -260,6 +268,125 @@ async fn final_text_turn_emits_content_and_save() {
     assert!(snap.iter().any(|s| s == "delta:done"));
     assert!(snap.iter().any(|s| s == "save"));
     assert_eq!(tools.recorded().len(), 0);
+}
+
+#[tokio::test]
+async fn length_finish_auto_continues_and_concatenates() {
+    // finish_reason "length" = output-token budget exhausted. The loop must
+    // NOT end the turn: it injects a continuation instruction, reruns the
+    // model, and returns the concatenated answer. The round-level
+    // StreamDone{length} is gated so frontends see one uninterrupted stream
+    // (no premature "turn done").
+    let llm = ScriptedLlm::new(vec![
+        length_response("part one, "),
+        text_response("part two"),
+    ]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
+
+    let mut state = LoopTurnState::default();
+    let out = run(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(out, "part one, part two");
+    assert_eq!(llm.call_count(), 2);
+    assert_eq!(state.length_continuations, 1);
+    // A continuation instruction was injected between the two rounds.
+    let hist = history.get().await;
+    assert!(hist
+        .iter()
+        .any(|m| { m.role == "user" && m.content.as_deref().unwrap_or("").contains("cut off") }));
+    // No round-level done:length leaked; exactly one terminal done:stop from
+    // the loop plus the gated stream's own done:stop round event.
+    let snap = events.snapshot();
+    assert!(
+        !snap.iter().any(|s| s == "done:length"),
+        "round-level length StreamDone must be gated: {snap:?}"
+    );
+    assert!(snap.iter().any(|s| s == "done:stop"));
+}
+
+#[tokio::test]
+async fn length_continuations_capped_ends_truncated() {
+    // Every round hits the budget: after MAX_LENGTH_CONTINUATIONS the loop
+    // stops retrying and ends the turn truncated — terminal done:length is
+    // emitted exactly once so clients can surface the truncation.
+    let mut responses = Vec::new();
+    for i in 0..(super::MAX_LENGTH_CONTINUATIONS + 1) {
+        responses.push(length_response(&format!("chunk{i} ")));
+    }
+    let llm = ScriptedLlm::new(responses);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
+
+    let mut state = LoopTurnState::default();
+    let out = run(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(llm.call_count(), super::MAX_LENGTH_CONTINUATIONS + 1);
+    assert_eq!(state.length_continuations, super::MAX_LENGTH_CONTINUATIONS);
+    let expected = (0..=super::MAX_LENGTH_CONTINUATIONS)
+        .map(|i| format!("chunk{i} "))
+        .collect::<String>();
+    assert_eq!(out, expected);
+    let snap = events.snapshot();
+    assert_eq!(
+        snap.iter().filter(|s| **s == "done:length").count(),
+        1,
+        "terminal done:length exactly once: {snap:?}"
+    );
+}
+
+#[tokio::test]
+async fn length_with_empty_content_recovers() {
+    // Reasoning models can burn the whole budget on reasoning_content and
+    // return NO visible text with finish_reason "length" ("long reasoning,
+    // then nothing happens"). The continuation round gives the model a fresh
+    // budget to produce the actual answer.
+    let mut burned = length_response("");
+    burned.message.reasoning_content = Some("very long thinking".to_string());
+    let llm = ScriptedLlm::new(vec![burned, text_response("the answer")]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
+
+    let mut state = LoopTurnState::default();
+    let out = run(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(out, "the answer");
+    assert_eq!(llm.call_count(), 2);
+    // The reasoning-only assistant message was still persisted.
+    let hist = history.get().await;
+    assert!(hist
+        .iter()
+        .any(|m| m.reasoning_content.as_deref() == Some("very long thinking")));
 }
 
 #[tokio::test]

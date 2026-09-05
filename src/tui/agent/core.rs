@@ -66,6 +66,7 @@ impl AgentLoop {
             last_measured_prompt_tokens: None,
             last_request_chars: None,
             micro_compact_attempted: false,
+            length_continuations: 0,
         };
 
         let planner_ref = planner

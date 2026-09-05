@@ -313,39 +313,24 @@ impl ToolRegistry {
 
     /// Apply provider-aware configuration after construction.
     ///
-    /// Nearly all major providers now ship with built-in web search:
-    /// Anthropic (web_search_20250305), OpenAI, 百度/文心, 千问/通义,
-    /// Kimi/月之暗面, 豆包, 腾讯元宝, Gemini, etc.
+    /// The local `web_search` tool stays registered for every provider:
     ///
-    /// Only register a local web_search tool for providers that explicitly
-    /// lack native search capability (DeepSeek, self-hosted Ollama/vLLM).
-    /// The local tool uses DuckDuckGo by default (zero-config), with optional
-    /// Tavily fallback.
+    /// - `anthropic`: the request layer rewrites the `web_search` entry into
+    ///   the server-side `web_search_20250305` tool (see
+    ///   `convert_tools_to_anthropic`), so the model uses Anthropic's native
+    ///   search. Removing the local entry here would disable search entirely —
+    ///   the server-side tool is only injected by converting this exact entry.
+    /// - `openai`-compat / `deepseek`: the entry executes locally
+    ///   (DuckDuckGo → keyless Bing fallback → optional Tavily).
     pub fn with_settings(self, settings: &crate::config::Settings) -> Self {
         let provider = crate::api::provider::resolve_provider(
             &settings.models.main.endpoint_base_url(),
             settings.models.main.provider.as_deref(),
         );
-
-        // Whitelist: only these providers lack built-in web search.
-        const PROVIDERS_WITHOUT_BUILTIN_SEARCH: &[&str] = &["deepseek", "openai"];
-
-        // Note: "openai" here refers to the catch-all OpenAI-compatible path
-        // (Ollama, vLLM, local models, etc.) — the default fallback provider.
-        // The "openai" provider maps to unknown/self-hosted endpoints that
-        // typically don't have built-in search.
-
-        if !PROVIDERS_WITHOUT_BUILTIN_SEARCH.contains(&provider.name()) {
-            self.tools
-                .write()
-                .expect("lock poisoned: tools")
-                .remove("web_search");
-            tracing::info!(
-                "web_search tool skipped: {} has built-in search capability",
-                provider.name()
-            );
-        }
-
+        tracing::debug!(
+            provider = provider.name(),
+            "web_search stays registered for all providers"
+        );
         self
     }
 
