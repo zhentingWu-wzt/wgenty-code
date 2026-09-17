@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (Agent)
+
+- **流中断错误只显示外层 kind、无法定位根因**：reqwest 错误的 `Display`
+  只打印 "error decoding response body" 一类的外壳，真正原因（连接重置 /
+  提前 EOF / HTTP/2 RST_STREAM / 超时）藏在 `Error::source()` 里被丢弃，
+  于是 "Stream error, retrying... (error decoding response body)" 无法
+  区分网络抖动与网关断流。`format_error_chain`（新增 anyhow 变体）从
+  daemon handlers 提升为共享工具（`utils::http`），`ApiLlmPort` /
+  `DaemonLlmPort` 的流打开与 chunk 错误映射、daemon `/chat/stream` 的
+  发送阶段错误现在全部输出完整原因链；链中出现 timed out 时也会被
+  `from_stream_failure` 正确归类为超时类。
+
 ### Fixed (Tools)
 
 - **`web_search` 全 provider 可用**：`ToolRegistry::with_settings` 此前对

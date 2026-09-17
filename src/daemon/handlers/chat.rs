@@ -40,7 +40,9 @@ pub async fn chat_stream(
         let response = match client.chat_stream(messages, tools).await {
             Ok(r) => r,
             Err(e) => {
-                let error_json = serde_json::json!({"error": e.to_string()}).to_string();
+                let error_json =
+                    serde_json::json!({"error": crate::utils::http::format_anyhow_error_chain(&e)})
+                        .to_string();
                 let _ = tx.send(Ok(Event::default().data(error_json)));
                 return;
             }
