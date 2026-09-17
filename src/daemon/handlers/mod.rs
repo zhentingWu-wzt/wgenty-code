@@ -35,27 +35,10 @@ fn debug_log(msg: &str) {
     tracing::debug!("{}", msg);
 }
 
-/// Format an error with its full cause chain.
-///
-/// reqwest's `Display` only prints the outer kind (e.g. "error decoding
-/// response body") and silently drops the actual cause - timeout vs.
-/// connection reset vs. HTTP/2 stream error - which lives in
-/// `std::error::Error::source()`. This walks the chain so the real reason a
-/// stream was interrupted is visible in logs and in the error payload sent to
-/// the client.
-fn format_error_chain(e: &dyn std::error::Error) -> String {
-    let mut s = e.to_string();
-    let mut current = e.source();
-    while let Some(cause) = current {
-        let cause_str = cause.to_string();
-        if !cause_str.is_empty() {
-            s.push_str(": ");
-            s.push_str(&cause_str);
-        }
-        current = cause.source();
-    }
-    s
-}
+// `format_error_chain` lives in `crate::utils::http` so every reqwest error
+// mapping site (agent runtime adapters, daemon SSE proxy) shares one
+// cause-chain expander. Re-exported here for the handler submodules.
+use crate::utils::http::format_error_chain;
 
 mod agents;
 mod chat;

@@ -144,3 +144,88 @@ pub fn web_search_client() -> reqwest::Client {
         })
         .clone()
 }
+
+// ── Error cause-chain formatting ─────────────────────────────────────────────
+
+/// Format an error with its full cause chain.
+///
+/// reqwest's `Display` only prints the outer kind (e.g. "error decoding
+/// response body") and silently drops the actual cause - timeout vs.
+/// connection reset vs. HTTP/2 stream error - which lives in
+/// `std::error::Error::source()`. This walks the chain so the real reason a
+/// request or stream was interrupted is visible in logs and error payloads.
+pub fn format_error_chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut current = e.source();
+    while let Some(cause) = current {
+        let cause_str = cause.to_string();
+        if !cause_str.is_empty() {
+            s.push_str(": ");
+            s.push_str(&cause_str);
+        }
+        current = cause.source();
+    }
+    s
+}
+
+/// Format an `anyhow::Error` with its full cause chain: anyhow contexts first,
+/// then the `std::error::Error::source()` chain below the root cause.
+pub fn format_anyhow_error_chain(e: &anyhow::Error) -> String {
+    let mut s = String::new();
+    for cause in e.chain() {
+        let part = cause.to_string();
+        if part.is_empty() {
+            continue;
+        }
+        if !s.is_empty() {
+            s.push_str(": ");
+        }
+        s.push_str(&part);
+    }
+    let mut current = e.root_cause().source();
+    while let Some(cause) = current {
+        let part = cause.to_string();
+        if !part.is_empty() {
+            s.push_str(": ");
+            s.push_str(&part);
+        }
+        current = cause.source();
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("outer failure")]
+    struct OuterError(#[source] InnerError);
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("root cause: connection reset by peer")]
+    struct InnerError;
+
+    #[test]
+    fn error_chain_includes_all_causes() {
+        let err = OuterError(InnerError);
+        assert_eq!(
+            format_error_chain(&err),
+            "outer failure: root cause: connection reset by peer"
+        );
+    }
+
+    #[test]
+    fn anyhow_chain_includes_contexts_and_sources() {
+        let err = anyhow::Error::new(OuterError(InnerError)).context("while streaming");
+        let chain = format_anyhow_error_chain(&err);
+        assert!(
+            chain.starts_with("while streaming: outer failure"),
+            "{chain}"
+        );
+        assert!(
+            chain.ends_with("root cause: connection reset by peer"),
+            "{chain}"
+        );
+    }
+}

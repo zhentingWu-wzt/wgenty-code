@@ -3,6 +3,7 @@
 use crate::agent::runtime::error::RuntimeError;
 use crate::agent::runtime::ports::{ChatCompletion, LlmPort};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
+use crate::utils::http::{format_anyhow_error_chain, format_error_chain};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
@@ -37,7 +38,7 @@ impl LlmPort for ApiLlmPort {
             .client
             .chat_stream(messages, tools)
             .await
-            .map_err(|e| RuntimeError::from_stream_failure(e.to_string()))?;
+            .map_err(|e| RuntimeError::from_stream_failure(format_anyhow_error_chain(&e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -48,9 +49,9 @@ impl LlmPort for ApiLlmPort {
             )));
         }
 
-        let stream = response
-            .bytes_stream()
-            .map(|item| item.map_err(|e| RuntimeError::from_stream_failure(e.to_string())));
+        let stream = response.bytes_stream().map(|item| {
+            item.map_err(|e| RuntimeError::from_stream_failure(format_error_chain(&e)))
+        });
         Ok(Box::pin(stream))
     }
 

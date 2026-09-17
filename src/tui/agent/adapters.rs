@@ -14,6 +14,7 @@ use crate::runtime::guardian::classify_risk;
 use crate::runtime::hooks::HookManager;
 use crate::tui::app::{AppEvent, QuestionOption};
 use crate::tui::client::DaemonClient;
+use crate::utils::http::{format_anyhow_error_chain, format_error_chain};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
@@ -102,11 +103,11 @@ impl LlmPort for DaemonLlmPort {
             .client
             .chat_stream_with_plan(messages, max_tokens, plan_mode)
             .await
-            .map_err(|e| RuntimeError::from_stream_failure(e.to_string()))?;
+            .map_err(|e| RuntimeError::from_stream_failure(format_anyhow_error_chain(&e)))?;
 
-        let stream = response
-            .bytes_stream()
-            .map(|item| item.map_err(|e| RuntimeError::from_stream_failure(e.to_string())));
+        let stream = response.bytes_stream().map(|item| {
+            item.map_err(|e| RuntimeError::from_stream_failure(format_error_chain(&e)))
+        });
         Ok(Box::pin(stream))
     }
 }
