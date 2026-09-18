@@ -91,6 +91,29 @@ Background results are retained (capacity 256) and `GET
 /api/v1/background/results` returns a snapshot without draining, so every
 client can query results produced while it was offline.
 
+### Playgrounds (scratch workspaces)
+
+`GET/POST/DELETE /api/v1/playgrounds` manage playgrounds: scratch
+workspaces decoupled from every project, aimed at the web UI's playground
+plaza. `POST` takes no body — the daemon creates a fresh
+`wgenty-playground-<uuid>` directory under the OS temp dir and registers it
+(persisted at `~/.wgenty-code/playgrounds.json`; entries whose directory
+vanished are pruned on load, mirroring the project registry).
+
+A playground root is accepted by `POST /api/v1/sessions` `project_path`, and
+everything a session touches stays inside it: sessions
+(`<playground>/.wgenty-code/sessions/`), memory, checkpoints, and tasks all
+route by the session's effective working root. `GET /api/v1/sessions`
+aggregates playground stores with the root tagged in `project_path`, and
+workspace file browsing (`/api/v1/fs/entries`, `/api/v1/fs/file`) resolves
+playground roots like project roots.
+
+`DELETE ?path=<abs>` unregisters the playground and, when (and only when)
+the directory is a daemon-owned auto-created temp dir — directly under the
+canonicalized OS temp dir with the `wgenty-playground-` prefix — deletes it
+recursively together with everything inside. Anything else (moved, renamed,
+hand-registered) keeps its directory; the OS cleans its temp dir eventually.
+
 ### Session versioning
 
 `PUT /api/v1/sessions/:id` accepts an optional `expected_version` (optimistic

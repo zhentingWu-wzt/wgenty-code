@@ -36,6 +36,7 @@ import type {
   MemoryStatus,
   PruneResult,
   ProjectInfo,
+  PlaygroundInfo,
   RunResponse,
   SessionRunStatus,
   SessionInfo,
@@ -642,6 +643,32 @@ export class DaemonClient {
   async removeProject(path: string): Promise<void> {
     await jsonOrThrow(
       await this.authedFetch(`${this.base}/projects?path=${encodeURIComponent(path)}`, {
+        method: "DELETE",
+      }),
+    );
+  }
+
+  /** List registered playgrounds (scratch tmp-dir workspaces). */
+  async listPlaygrounds(): Promise<PlaygroundInfo[]> {
+    return jsonOrThrow(await this.authedFetch(`${this.base}/playgrounds`));
+  }
+
+  /** Create a fresh playground: a new `wgenty-playground-<id>` directory
+   *  under the OS temp dir, registered daemon-side. */
+  async createPlayground(): Promise<PlaygroundInfo> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/playgrounds`, {
+        method: "POST",
+      }),
+    );
+  }
+
+  /** Unregister a playground. The daemon deletes the directory (and every
+   *  session/memory/checkpoint inside it) when it is an owned auto-created
+   *  temp dir; otherwise only the registry entry is removed. */
+  async removePlayground(path: string): Promise<void> {
+    await jsonOrThrow(
+      await this.authedFetch(`${this.base}/playgrounds?path=${encodeURIComponent(path)}`, {
         method: "DELETE",
       }),
     );

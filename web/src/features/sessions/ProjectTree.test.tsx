@@ -17,6 +17,14 @@ const PROJECTS = [
   },
 ];
 
+const PLAYGROUNDS = [
+  {
+    path: "/tmp/wgenty-playground-abc123",
+    name: "wgenty-playground-abc123",
+    created_at: "2026-09-18",
+  },
+];
+
 const OTHER_PROJECT = {
   path: "/repo/docs",
   name: "docs",
@@ -40,8 +48,71 @@ function stubFetch(projects: unknown[] = PROJECTS) {
     if (url === "/api/v1/worktrees" && method === "POST")
       return new Response(null, { status: 201 });
     if (url === "/api/v1/sessions" && method === "GET") return json([]);
+    if (url === "/api/v1/playgrounds" && method === "GET") return json([]);
     if (method === "PUT" || method === "DELETE") return new Response(null, { status: 204 });
     return new Response("not found", { status: 404 });
+  });
+
+  it("playground section lists sandboxes and groups their sessions", async () => {
+    const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const json = (p: unknown, status = 200) =>
+        new Response(JSON.stringify(p), { status });
+      if (url === "/api/v1/projects" && method === "GET") return json(PROJECTS);
+      if (url.startsWith("/api/v1/worktrees") && method === "GET") return json(WORKTREES);
+      if (url === "/api/v1/playgrounds" && method === "GET") return json(PLAYGROUNDS);
+      if (method === "PUT" || method === "DELETE") return new Response(null, { status: 204 });
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", spy);
+    const m = useSessionManager.getState();
+    // A daemon session living inside the playground groups under it.
+    m.createLocalSession("scratch it", {
+      id: "pg1",
+      daemonId: "pg1",
+      projectPath: "/tmp/wgenty-playground-abc123",
+    });
+    render(<ProjectTree client={client} />);
+
+    expect(
+      await screen.findByText("wgenty-playground-abc123"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("scratch it")).toBeInTheDocument();
+  });
+
+  it("+ playground creates a sandbox via POST and refreshes", async () => {
+    let created = false;
+    const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const json = (p: unknown, status = 200) =>
+        new Response(JSON.stringify(p), { status });
+      if (url === "/api/v1/projects" && method === "GET") return json(PROJECTS);
+      if (url.startsWith("/api/v1/worktrees") && method === "GET") return json(WORKTREES);
+      // First list is empty; after the POST the refresh sees one playground.
+      if (url === "/api/v1/playgrounds" && method === "GET") {
+        return json(created ? PLAYGROUNDS : []);
+      }
+      if (url === "/api/v1/playgrounds" && method === "POST") {
+        created = true;
+        return json(PLAYGROUNDS[0], 201);
+      }
+      if (method === "PUT" || method === "DELETE") return new Response(null, { status: 204 });
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", spy);
+    const user = userEvent.setup();
+    render(<ProjectTree client={client} />);
+
+    await user.click(await screen.findByRole("button", { name: /new playground/i }));
+    expect(
+      await screen.findByText("wgenty-playground-abc123"),
+    ).toBeInTheDocument();
+    const post = spy.mock.calls.find(
+      ([u, i]) => String(u) === "/api/v1/playgrounds" && i?.method === "POST",
+    );
+    expect(post).toBeTruthy();
   });
 }
 

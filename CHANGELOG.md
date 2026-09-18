@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added (Web / Daemon)
+
+- **Web 端 Playground 广场**：项目树下方新增 Playgrounds 分区，一键在
+  系统 tmp 目录创建独立沙盒（`wgenty-playground-<uuid>`），不绑定任何
+  project。daemon 新增 `GET/POST/DELETE /api/v1/playgrounds`（注册表持久
+  化于 `~/.wgenty-code/playgrounds.json`，目录失效自动剪除）；
+  `POST /api/v1/sessions` 的 `project_path` 接受 playground 根，会话的
+  会话数据 / memory / checkpoint / tasks 全部自包含在沙盒目录内——删除
+  playground 即连同目录递归清理（仅限 daemon 自建的 temp 目录，判定条件
+  为规范路径直接位于 OS tmp 下且带 `wgenty-playground-` 前缀）。文件
+  面板（`/fs/entries`、`/fs/file`）与 `GET /sessions` 同步纳入
+  playground 根。
+
 ### Fixed (Config)
 
 - **`models.profiles` 含 null 条目不再阻断启动**：profiles 改为唯一数据

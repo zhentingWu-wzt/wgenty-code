@@ -507,6 +507,17 @@ export interface ProjectInfo {
   added_at: string;
 }
 
+/** Mirrors the daemon's playground registry entry (GET /api/v1/playgrounds).
+ *  A playground is an auto-created scratch dir under the OS temp dir, not
+ *  bound to any project; its sessions/memory/checkpoints live inside it and
+ *  vanish when the directory is deleted. */
+export interface PlaygroundInfo {
+  /** Canonical absolute path — the registry key. */
+  path: string;
+  name: string;
+  created_at: string;
+}
+
 export interface WorktreeInfo {
   path: string;
   head: string;

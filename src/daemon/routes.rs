@@ -7,6 +7,7 @@ use crate::daemon::auth;
 use crate::daemon::fs;
 use crate::daemon::global_events;
 use crate::daemon::handlers;
+use crate::daemon::playgrounds;
 use crate::daemon::projects;
 use crate::daemon::run_loop;
 use crate::daemon::session_admin;
@@ -194,6 +195,13 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             get(projects::list_projects)
                 .post(projects::add_project)
                 .delete(projects::remove_project),
+        )
+        // Playgrounds (scratch tmp-dir workspaces, not bound to any project)
+        .route(
+            "/api/v1/playgrounds",
+            get(playgrounds::list_playgrounds)
+                .post(playgrounds::create_playground)
+                .delete(playgrounds::remove_playground),
         )
         // Worktrees (web command center)
         .route(

@@ -64,6 +64,34 @@ describe("DaemonClient command-center endpoints", () => {
   });
 });
 
+describe("DaemonClient playground endpoints", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const client = new DaemonClient();
+
+  it("listPlaygrounds GETs /playgrounds", async () => {
+    mockFetch([{ path: "/tmp/wgenty-playground-x", name: "wgenty-playground-x", created_at: "2026-09-18" }]);
+    const pgs = await client.listPlaygrounds();
+    expect(pgs[0].name).toBe("wgenty-playground-x");
+  });
+
+  it("createPlayground POSTs without a body", async () => {
+    const spy = mockFetch({ path: "/tmp/wgenty-playground-x", name: "wgenty-playground-x", created_at: "2026-09-18" }, 201);
+    const pg = await client.createPlayground();
+    const [url, init] = apiCall(spy);
+    expect(url).toBe("/api/v1/playgrounds");
+    expect(init.method).toBe("POST");
+    expect(pg.path).toBe("/tmp/wgenty-playground-x");
+  });
+
+  it("removePlayground DELETEs with ?path= query", async () => {
+    const spy = mockFetch(undefined, 204);
+    await client.removePlayground("/tmp/wgenty-playground-x");
+    const [url, init] = apiCall(spy);
+    expect(url).toBe(`/api/v1/playgrounds?path=${encodeURIComponent("/tmp/wgenty-playground-x")}`);
+    expect(init.method).toBe("DELETE");
+  });
+});
+
 describe("DaemonClient permission-mode endpoints", () => {
   afterEach(() => vi.unstubAllGlobals());
   const client = new DaemonClient();

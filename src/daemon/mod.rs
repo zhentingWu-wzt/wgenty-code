@@ -17,6 +17,7 @@ pub mod handlers;
 pub mod interaction_bridge;
 pub mod memory_router;
 pub mod models;
+pub mod playgrounds;
 pub mod projects;
 pub mod routes;
 pub mod run_loop;

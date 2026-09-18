@@ -7,6 +7,7 @@
 
 use crate::context::consolidation::MemoryReviewLlm;
 use crate::context::{MemoryManager, MemoryResolver};
+use crate::daemon::playgrounds::PlaygroundRegistry;
 use crate::daemon::projects::ProjectRegistry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ use tokio::sync::RwLock;
 pub struct MemoryRouter {
     settings: crate::config::Settings,
     registry: ProjectRegistry,
+    playgrounds: PlaygroundRegistry,
     main: Arc<MemoryManager>,
     managers: RwLock<HashMap<PathBuf, Arc<MemoryManager>>>,
     review_llm: RwLock<Option<Arc<dyn MemoryReviewLlm>>>,
@@ -25,11 +27,13 @@ impl MemoryRouter {
     pub fn new(
         settings: crate::config::Settings,
         registry: ProjectRegistry,
+        playgrounds: PlaygroundRegistry,
         main: Arc<MemoryManager>,
     ) -> Self {
         Self {
             settings,
             registry,
+            playgrounds,
             main,
             managers: RwLock::new(HashMap::new()),
             review_llm: RwLock::new(None),
@@ -88,17 +92,20 @@ impl MemoryRouter {
 impl MemoryResolver for MemoryRouter {
     /// Route a tool invocation to its project's pool: the longest known
     /// project root containing the workdir wins (so a session bound to a
-    /// worktree writes to the worktree's project, not a worktree-local pool);
-    /// unknown roots fall back to the main project.
+    /// worktree writes to the worktree's project, not a worktree-local pool).
+    /// Playground roots are known too — playground memory stays inside the
+    /// playground dir instead of contaminating the main project. Unknown
+    /// roots fall back to the main project.
     async fn resolve(&self, workdir: Option<&Path>) -> Arc<MemoryManager> {
         let Some(wd) = workdir else {
             return self.main.clone();
         };
         let wd = wd.canonicalize().unwrap_or_else(|_| wd.to_path_buf());
         let mut best: Option<PathBuf> = None;
-        for root in
-            std::iter::once(self.registry.main_root()).chain(self.registry.registered_roots())
-        {
+        let roots = std::iter::once(self.registry.main_root())
+            .chain(self.registry.registered_roots())
+            .chain(self.playgrounds.roots());
+        for root in roots {
             let longer = best
                 .as_ref()
                 .is_none_or(|b| root.as_os_str().len() > b.as_os_str().len());
@@ -124,9 +131,10 @@ mod tests {
             main_dir.path().to_path_buf(),
             store.path().join("projects.json"),
         );
+        let playgrounds = PlaygroundRegistry::load(store.path().join("playgrounds.json"));
         let settings = crate::config::Settings::default();
         let main = Arc::new(MemoryManager::new(main_dir.path().to_path_buf()));
-        let router = MemoryRouter::new(settings, registry, main);
+        let router = MemoryRouter::new(settings, registry, playgrounds, main);
         (main_dir, store, router)
     }
 
