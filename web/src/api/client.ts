@@ -201,10 +201,22 @@ export class DaemonClient {
     return this.viewerPromise;
   }
 
-  /** Headers carrying the viewer token, awaited once per request. */
-  private async agentHeaders(): Promise<Record<string, string>> {
-    const token = await this.ensureViewer();
-    return { "x-wgenty-viewer-token": token };
+  /** Scoped-agent request with stale-viewer recovery (mirrors the TUI's
+   *  `send_scoped_request`): a 401/404 on a viewer-authed call almost always
+   *  means the daemon restarted with a fresh viewer registry, invalidating the
+   *  cached token. Re-create the viewer once and retry; a genuine not-found
+   *  simply comes back as the same status on the retry. Without this, the
+   *  subagents panel polls 404 forever after any daemon restart. */
+  private async scopedFetch(url: string, init?: RequestInit): Promise<Response> {
+    const attempt = async (): Promise<Response> => {
+      const headers = new Headers(init?.headers);
+      headers.set("x-wgenty-viewer-token", await this.ensureViewer());
+      return this.authedFetch(url, { ...init, headers });
+    };
+    const first = await attempt();
+    if (first.status !== 401 && first.status !== 404) return first;
+    this.viewerToken = null; // force ensureViewer() to mint a fresh token
+    return attempt();
   }
 
   // ── Health / config ────────────────────────────────────────────────────────
@@ -557,27 +569,17 @@ export class DaemonClient {
   /** `GET /agents/self?session_id=<id>` -- root local view (self + direct
    *  children, each with a fresh navigation capability). */
   async getAgentSelf(sessionId: string): Promise<LocalAgentViewResponse> {
-    const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await this.authedFetch(
-        `${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`,
-        {
-          headers,
-        },
-      ),
+      await this.scopedFetch(`${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`),
     );
   }
 
   /** `GET /agents/directory?session_id=<id>` -- full recursive subagent tree
    *  for the session (root agent plus nested children, with depth). */
   async getAgentDirectory(sessionId: string): Promise<AgentDirectoryResponse> {
-    const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await this.authedFetch(
+      await this.scopedFetch(
         `${this.base}/agents/directory?session_id=${encodeURIComponent(sessionId)}`,
-        {
-          headers,
-        },
       ),
     );
   }
@@ -585,11 +587,9 @@ export class DaemonClient {
   /** `GET /agents/children/:capability?session_id=<id>` -- navigate one level
    *  into the child bound by `capability`; returns that child's local view. */
   async navigateAgentView(sessionId: string, capability: string): Promise<LocalAgentViewResponse> {
-    const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await this.authedFetch(
+      await this.scopedFetch(
         `${this.base}/agents/children/${encodeURIComponent(capability)}?session_id=${encodeURIComponent(sessionId)}`,
-        { headers },
       ),
     );
   }
@@ -600,11 +600,9 @@ export class DaemonClient {
     sessionId: string,
     capability: string,
   ): Promise<{ transcript: unknown }> {
-    const headers = await this.agentHeaders();
     return jsonOrThrow(
-      await this.authedFetch(
+      await this.scopedFetch(
         `${this.base}/agents/children/${encodeURIComponent(capability)}/transcript?session_id=${encodeURIComponent(sessionId)}`,
-        { headers },
       ),
     );
   }
@@ -612,10 +610,9 @@ export class DaemonClient {
   /** `POST /agents/children/:capability/cancel?session_id=<id>` -- cancel the
    *  direct child bound by `capability`. Returns true on 204. */
   async cancelChild(sessionId: string, capability: string): Promise<void> {
-    const headers = await this.agentHeaders();
-    const res = await this.authedFetch(
+    const res = await this.scopedFetch(
       `${this.base}/agents/children/${encodeURIComponent(capability)}/cancel?session_id=${encodeURIComponent(sessionId)}`,
-      { method: "POST", headers },
+      { method: "POST" },
     );
     if (!res.ok) {
       throw new DaemonError(
