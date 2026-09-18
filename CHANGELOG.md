@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed (Prompts)
+
+- **跨会话记忆召回移至 user 消息尾部 `<system-reminder>`**：此前
+  `assemble_instructions` 把逐轮变化的记忆召回写成 system 级 Layer 5b
+  `<relevant_memories>`，位于请求最前缀，导致 GLM/z.ai 等 OpenAI 兼容端点
+  的隐式前缀缓存逐轮失效。现在召回结果经 `build_user_turn_reminder` 挂在
+  user 消息尾部（hooks 之后、仅模型可见，Inspector 仍走 recalled_memories
+  展示），system 级联跨 turn 逐字节稳定；Layer 5c 全局记忆保留不动。
+
+### Added (API)
+
+- **Prompt 缓存命中可观测**：解析 OpenAI 兼容响应的
+  `usage.prompt_tokens_details.cached_tokens` 与 Anthropic
+  `cache_read_input_tokens`，贯通 TokenCounter → daemon turn_context →
+  web StatusBar `cache NN%` 徽标与 Inspector TokensTab。
+- **OpenAI 兼容请求默认剥离历史 `reasoning_content`**：GLM/OpenAI/自建
+  网关无需 echo-back，避免逐轮重复计费；DeepSeek 保留（官方要求 echo-back）。
+  新增 `models.transport.strip_reasoning_content`（`Option<bool>`）覆盖开关，
+  缺省按 provider 规则，`false` 强制保留、`true` 强制剥离。仅请求边界生效，
+  磁盘会话与回放不受影响。
+
 ### Fixed (Config)
 
 - **`models.profiles` 含 null 条目不再阻断启动**：profiles 改为唯一数据

@@ -24,5 +24,5 @@
 
 ## 4. 收尾
 
-- [ ] 4.1 全量验证：`cargo test --lib`、web `typecheck` + `npm test`
-- [ ] 4.2 CHANGELOG.md Unreleased 增补条目；Inspector 截图核对缓存占比展示
+- [x] 4.1 全量验证：`cargo test --lib`、web `typecheck` + `npm test`
+- [x] 4.2 CHANGELOG.md Unreleased 增补条目；Inspector 截图核对缓存占比展示（有值/null 两态由 web vitest 覆盖：`usage_update carries the cache hit; null clears the badge`）
