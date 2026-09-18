@@ -600,6 +600,10 @@ pub struct DaemonState {
     /// project; registered projects are arbitrary directories (git optional)
     /// persisted at `~/.wgenty-code/projects.json`.
     pub projects: crate::daemon::projects::ProjectRegistry,
+    /// Playground registry: scratch tmp-dir workspaces decoupled from every
+    /// project (web "playground plaza"), persisted at
+    /// `~/.wgenty-code/playgrounds.json` and pruned of vanished dirs.
+    pub playgrounds: crate::daemon::playgrounds::PlaygroundRegistry,
     /// Per-project memory routing (`memory_add` tool, memory HTTP handlers,
     /// AutoDream fan-out). `memory_manager` above remains the main project's
     /// manager.
@@ -876,9 +880,11 @@ impl DaemonState {
         let projects = crate::daemon::projects::ProjectRegistry::load_default(
             app_state.settings.storage.working_dir.clone(),
         );
+        let playgrounds = crate::daemon::playgrounds::PlaygroundRegistry::load_default();
         let memory_router = Arc::new(crate::daemon::memory_router::MemoryRouter::new(
             app_state.settings.clone(),
             projects.clone(),
+            playgrounds.clone(),
             memory_manager.clone(),
         ));
 
@@ -1188,6 +1194,7 @@ impl DaemonState {
             root_contexts: Arc::new(RwLock::new(HashMap::new())),
             session_workdirs: Arc::new(std::sync::RwLock::new(HashMap::new())),
             projects,
+            playgrounds,
             memory_router,
             project_session_managers: Arc::new(RwLock::new(HashMap::new())),
             project_checkpoints: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -1977,6 +1984,12 @@ impl DaemonState {
             return Some((self.session_manager.clone(), s));
         }
         for root in self.projects.registered_roots() {
+            let mgr = self.session_manager_for_project(&root).await;
+            if let Ok(Some(s)) = mgr.load(session_id).await {
+                return Some((mgr, s));
+            }
+        }
+        for root in self.playgrounds.roots() {
             let mgr = self.session_manager_for_project(&root).await;
             if let Ok(Some(s)) = mgr.load(session_id).await {
                 return Some((mgr, s));

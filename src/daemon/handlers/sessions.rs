@@ -53,6 +53,17 @@ pub async fn list_sessions(
         fill_project(&root, &mut project_sessions);
         sessions.extend(project_sessions);
     }
+    // Playgrounds: sessions stored inside each playground directory group
+    // under it the same way (and vanish with the directory).
+    for root in state.playgrounds.roots() {
+        let mgr = state.session_manager_for_project(&root).await;
+        let mut playground_sessions = mgr
+            .list()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        fill_project(&root, &mut playground_sessions);
+        sessions.extend(playground_sessions);
+    }
 
     Ok(Json(
         sessions.into_iter().map(session_info_response).collect(),
@@ -64,11 +75,17 @@ pub async fn create_session(
     Json(body): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionResponse>, (StatusCode, String)> {
     // Route to the owning project's session store (default: main project).
+    // A registered playground root is accepted as the project path —
+    // playground sessions live entirely inside the playground directory.
     let root = match &body.project_path {
-        Some(p) => state.projects.resolve(p).ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("not a registered project: {p}"),
-        ))?,
+        Some(p) => state
+            .projects
+            .resolve(p)
+            .or_else(|| state.playgrounds.resolve(p))
+            .ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project or playground: {p}"),
+            ))?,
         None => state.projects.main_root(),
     };
     let mgr = state.session_manager_for_project(&root).await;

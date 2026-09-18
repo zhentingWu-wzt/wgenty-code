@@ -11,7 +11,9 @@ type Mode = "main" | "existing" | "new";
  *  tree node (e.g. a worktree's "+ session" button). `project` is the owning
  *  project's canonical path — all daemon calls are scoped to it. */
 export type NewSessionPreset =
-  | { mode: "main"; project: string }
+  /** `bare` (playgrounds): the session runs directly in the given root and
+   *  worktree options are hidden — the root is not a git project. */
+  | { mode: "main"; project: string; bare?: boolean }
   | { mode: "existing"; project: string; path: string; branch: string };
 
 /**
@@ -34,6 +36,7 @@ export function NewSessionModal({
   const [name, setName] = useState("");
   const [mode, setMode] = useState<Mode>(preset?.mode ?? "main");
   const project = preset?.project;
+  const bare = preset?.mode === "main" && preset.bare === true;
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [selectedPath, setSelectedPath] = useState(
     preset?.mode === "existing" ? preset.path : "",
@@ -43,6 +46,7 @@ export function NewSessionModal({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (bare) return; // no worktree features for bare roots (playgrounds)
     // Scoped to the preset's project; non-git projects 400 here and simply
     // end up with an empty dropdown.
     client
@@ -53,7 +57,7 @@ export function NewSessionModal({
         if (linked.length > 0) setSelectedPath((p) => p || linked[0].path);
       })
       .catch(() => setWorktrees([]));
-  }, [client, project]);
+  }, [client, project, bare]);
 
   const create = async () => {
     setBusy(true);
@@ -134,7 +138,8 @@ export function NewSessionModal({
           />
         </label>
 
-        <div className="flex flex-col gap-1" role="radiogroup" aria-label="Workspace">
+        {!bare && (
+          <div className="flex flex-col gap-1" role="radiogroup" aria-label="Workspace">
           <label className="flex items-center gap-1.5 text-[13px]">
             <input
               type="radio"
@@ -162,7 +167,8 @@ export function NewSessionModal({
             />
             New worktree
           </label>
-        </div>
+          </div>
+        )}
 
         {mode === "existing" && (
           <select
