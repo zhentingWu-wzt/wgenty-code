@@ -30,3 +30,7 @@ z.ai GLM 走隐式自动前缀缓存：命中部分折扣计费，命中数在 `
 - reminder 变大（记忆多时）使每轮 user 消息膨胀——既有 `to_model` 通道本就承载 hook 注入，且 TF-IDF 召回有 top_n 上限，可接受。
 - cached_tokens 字段各家网关命名不一——以 OpenAI `prompt_tokens_details.cached_tokens` 与 Anthropic `cache_read_input_tokens` 两个已知形态为准，其余静默为 null。
 - 剥离 reasoning 后若某网关实际要求 echo-back（未知网关），表现为模型行为轻微退化而非报错——通过 provider 白名单（默认剥、DeepSeek 留）+ 可配置开关兜底（settings 加 `strip_reasoning_replay`，默认 auto）。
+
+## Implementation Divergence
+
+- **settings 键名**：Risks 节所述兜底键 `strip_reasoning_replay` 实际实现为 `models.transport.strip_reasoning_content`（`Option<bool>`：缺省按 provider 规则、`false` 强制保留、`true` 强制剥离），与 Superpowers Design Doc D3 一致。三态语义等价于"默认 auto"，仅键名与挂载位置不同（归入既有 `models.transport` 传输层配置而非顶层新键）。验证阶段确认偏差可接受，特此记录。
