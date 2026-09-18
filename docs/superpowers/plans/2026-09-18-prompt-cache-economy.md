@@ -33,8 +33,8 @@ base-ref: ab0a20d3cdccdd282b1486d3df90b747e23e0825
 
 ## 4. 收尾
 
-- [ ] 4.1 全量：`cargo test --lib`、web typecheck + vitest
-- [ ] 4.2 CHANGELOG Unreleased 条目；勾选 tasks.md；comet-build 退出守卫
+- [x] 4.1 全量：`cargo test --lib`、web typecheck + vitest
+- [x] 4.2 CHANGELOG Unreleased 条目；勾选 tasks.md；comet-build 退出守卫
 
 ## 验证命令（每任务组后运行）
 
