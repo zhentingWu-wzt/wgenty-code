@@ -44,6 +44,12 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
     activeStore?.subscribe ?? noopSubscribe,
     () => activeStore?.getState().contextTokens ?? null,
   );
+  // Prompt-cache hit of the last LLM call (turn_context snapshot + live
+  // usage_update events). Null = gateway doesn't report it → hide the badge.
+  const cachedTokens = useSyncExternalStore(
+    activeStore?.subscribe ?? noopSubscribe,
+    () => activeStore?.getState().cachedTokens ?? null,
+  );
 
   const statusText =
     connection === "connected"
@@ -120,6 +126,16 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
           <span className="tabular-nums">
             {Math.round(Math.min(contextTokens / contextWindow, 1) * 100)}%
           </span>
+        </span>
+      )}
+      {/* Cache-hit badge — provider prompt-cache % of the last LLM call
+          (cached / prompt tokens). Hidden until the gateway reports it. */}
+      {cachedTokens !== null && contextTokens !== null && contextTokens > 0 && (
+        <span
+          className="shrink-0 rounded-sm bg-success/15 px-1 tabular-nums text-success"
+          title={`cache ${cachedTokens.toLocaleString()} / ${contextTokens.toLocaleString()} tokens served from prompt cache`}
+        >
+          cache {Math.round(Math.min(cachedTokens / contextTokens, 1) * 100)}%
         </span>
       )}
       {/* Permission mode picker (normal / accept edits / yolo) */}

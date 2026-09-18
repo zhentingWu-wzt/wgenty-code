@@ -68,6 +68,9 @@ export interface TurnContextUsage {
   /** Context-window occupancy at the last API call (newer daemons; the
    *  TUI context bar renders the same measure). */
   context_tokens?: number;
+  /** Provider prompt-cache hit of the last call (newer daemons; null when
+   *  the gateway doesn't report cache hits). */
+  cached_tokens?: number | null;
 }
 export interface TurnContextData {
   layers: TurnContextLayer[];
@@ -140,6 +143,9 @@ export interface SessionState {
    * updated live by `usage_update` events mid-turn and by the turn-end
    * `turn_context` snapshot. Null until the first update arrives. */
   contextTokens: number | null;
+  /** Provider prompt-cache hit of the last LLM call (tokens); null when the
+   *  gateway doesn't report it. Drives the StatusBar cache badge. */
+  cachedTokens: number | null;
   /** Fine-grained turn phase (TUI-aligned), derived from SessionEvents by
    *  sessionRunner. Null when no turn is active. */
   agentPhase: AgentPhaseInfo | null;
@@ -173,6 +179,8 @@ export interface SessionState {
   setTurnContext: (data: TurnContextData) => void;
   /** Live context-occupancy setter (usage_update events). */
   setContextTokens: (n: number) => void;
+  /** Live cache-hit setter (usage_update events + turn_context sync). */
+  setCachedTokens: (n: number | null) => void;
   /** Turn phase setter (sessionRunner derives from SessionEvents). */
   setAgentPhase: (p: AgentPhaseInfo | null) => void;
   /** Turn start timestamp setter (paired with agentPhase). */
@@ -269,6 +277,7 @@ export function createSessionStore() {
       pendingQuestion: null,
       turnContext: null,
       contextTokens: null,
+      cachedTokens: null,
       agentPhase: null,
       turnStartedAt: null,
 
@@ -356,8 +365,10 @@ export function createSessionStore() {
           // The turn-end snapshot is authoritative for the same measure the
           // live usage_update events carry.
           contextTokens: data.usage.context_tokens ?? get().contextTokens,
+          cachedTokens: data.usage.cached_tokens ?? null,
         }),
       setContextTokens: (n) => set({ contextTokens: n }),
+      setCachedTokens: (n) => set({ cachedTokens: n }),
       setAgentPhase: (p) => {
         // Delta handlers re-set "streaming" on every chunk; skip identical
         // values so phase subscribers don't re-render per token batch.

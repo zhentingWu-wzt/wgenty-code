@@ -298,6 +298,19 @@ pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
     pub total_tokens: usize,
+    /// OpenAI-compatible cache reporting: `usage.prompt_tokens_details.cached_tokens`.
+    /// Absent on gateways that don't report cache hits (serde default keeps
+    /// legacy payloads parsing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+/// Subset of OpenAI `prompt_tokens_details` we consume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    /// Tokens served from the provider's prompt cache (billed at a discount).
+    #[serde(default)]
+    pub cached_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,6 +376,29 @@ pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_parses_prompt_tokens_details_cached_tokens() {
+        // z.ai / OpenAI gateways report cache hits here; the field is optional
+        // so legacy payloads without it keep parsing to None.
+        let with_cache: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":15000,"completion_tokens":300,"total_tokens":15300,
+                "prompt_tokens_details":{"cached_tokens":12000}}"#,
+        )
+        .expect("parse usage with cache details");
+        assert_eq!(
+            with_cache
+                .prompt_tokens_details
+                .and_then(|d| d.cached_tokens),
+            Some(12000)
+        );
+
+        let without_cache: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}"#,
+        )
+        .expect("parse usage without cache details");
+        assert!(without_cache.prompt_tokens_details.is_none());
+    }
 
     #[test]
     fn test_chat_request_temperature_omitted_when_unset() {

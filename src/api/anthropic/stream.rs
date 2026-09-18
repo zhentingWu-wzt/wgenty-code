@@ -52,6 +52,7 @@ impl AnthropicStreamState {
                     self.usage = Some(AnthropicUsage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
+                        cache_read_input_tokens: usage.cache_read_input_tokens,
                     });
                 }
             }
@@ -176,6 +177,12 @@ impl AnthropicStreamState {
                     self.usage = Some(AnthropicUsage {
                         input_tokens: self.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
                         output_tokens: u.output_tokens,
+                        // MessageDelta usage omits cache fields; carry the
+                        // message_start value forward (matches billing truth).
+                        cache_read_input_tokens: self
+                            .usage
+                            .as_ref()
+                            .and_then(|u| u.cache_read_input_tokens),
                     });
                 }
 
@@ -207,6 +214,9 @@ impl AnthropicStreamState {
                         prompt_tokens: u.input_tokens,
                         completion_tokens: u.output_tokens,
                         total_tokens: u.input_tokens + u.output_tokens,
+                        prompt_tokens_details: Some(crate::api::PromptTokensDetails {
+                            cached_tokens: u.cache_read_input_tokens,
+                        }),
                     }),
                 };
                 sse_events.push(format!(
@@ -441,6 +451,7 @@ mod tests {
             usage: AnthropicUsage {
                 input_tokens: 10,
                 output_tokens: 5,
+                cache_read_input_tokens: None,
             },
         };
         let chat_resp = convert_anthropic_response(&resp);
@@ -472,6 +483,7 @@ mod tests {
             usage: AnthropicUsage {
                 input_tokens: 10,
                 output_tokens: 5,
+                cache_read_input_tokens: None,
             },
         };
         let chat_resp = convert_anthropic_response(&resp);

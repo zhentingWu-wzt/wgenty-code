@@ -602,14 +602,21 @@ function handleEvent(
     case "turn_context": {
       // Inspector data for the completed turn — store for InspectorPanel.
       s.setTurnContext(ev.data as unknown as import("../state/sessionStore").TurnContextData);
+      // Sync the live cache-hit badge with the authoritative turn-end usage.
+      const turnCached = (ev.data as { usage?: { cached_tokens?: number | null } }).usage
+        ?.cached_tokens;
+      s.setCachedTokens(typeof turnCached === "number" ? turnCached : null);
       break;
     }
     case "usage_update": {
-      // Live context-occupancy feed (prompt tokens of the last LLM call).
+      // Live context-occupancy feed (prompt tokens of the last LLM call) +
+      // the same call's prompt-cache hit for the StatusBar badge.
       const promptTokens = Number(ev.data.prompt_tokens);
       if (Number.isFinite(promptTokens) && promptTokens >= 0) {
         s.setContextTokens(promptTokens);
       }
+      const cached = ev.data.cached_tokens;
+      s.setCachedTokens(typeof cached === "number" ? cached : null);
       break;
     }
     case "save":

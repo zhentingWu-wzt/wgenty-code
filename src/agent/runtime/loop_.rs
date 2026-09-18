@@ -397,6 +397,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         }
                         events.emit(RuntimeEvent::UsageUpdate {
                             prompt_tokens: post_compact_prompt_tokens,
+                            cached_tokens: None,
                         });
                         events.emit(RuntimeEvent::ContextCompacted {
                             summary_chars: summary.chars().count(),
@@ -538,10 +539,15 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             // far too early).
             state.last_measured_prompt_tokens = Some(usage.prompt_tokens);
             state.last_request_chars = Some(request_size_chars(&messages) + fixed_overhead_chars);
+            let usage_cached = usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens);
             if let Some(counter) = hooks.token_counter {
                 counter.add(usage.total_tokens);
                 counter.add_output(usage.completion_tokens);
                 counter.set_prompt_tokens(usage.prompt_tokens);
+                counter.set_cached_tokens(usage_cached);
             }
             // Live context-occupancy feed: the same value the TUI context bar
             // renders (token_counter.last_prompt_tokens), pushed to observing
@@ -549,6 +555,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             // bar climbing in real time.
             events.emit(RuntimeEvent::UsageUpdate {
                 prompt_tokens: usage.prompt_tokens,
+                cached_tokens: usage_cached,
             });
             if let Some(obs) = hooks.observer {
                 obs.on_usage(usage.total_tokens);
@@ -575,6 +582,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             // push the same chars/4 estimate already used for cost counting.
             events.emit(RuntimeEvent::UsageUpdate {
                 prompt_tokens: input_est,
+                cached_tokens: None,
             });
         }
 

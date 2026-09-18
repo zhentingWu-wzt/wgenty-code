@@ -321,10 +321,16 @@ impl EventSink for DaemonEventSink {
                     serde_json::json!({ "message": message }),
                 );
             }
-            RuntimeEvent::UsageUpdate { prompt_tokens } => {
+            RuntimeEvent::UsageUpdate {
+                prompt_tokens,
+                cached_tokens,
+            } => {
                 self.publish(
                     SessionEventKind::UsageUpdate,
-                    serde_json::json!({ "prompt_tokens": prompt_tokens }),
+                    serde_json::json!({
+                        "prompt_tokens": prompt_tokens,
+                        "cached_tokens": cached_tokens,
+                    }),
                 );
             }
             RuntimeEvent::SaveSession => {
@@ -2209,6 +2215,9 @@ async fn run_session_turn(
         // the TUI context bar renders (drops after auto-compaction). Unlike
         // prompt_tokens (a per-turn sum over rounds) this is not additive.
         "context_tokens": token_counter.last_prompt_tokens(),
+        // Provider prompt-cache hit of the last call; null when the gateway
+        // doesn't report it (web shows "—").
+        "cached_tokens": token_counter.last_cached_tokens(),
     });
     sink.publish(
         SessionEventKind::TurnContext,

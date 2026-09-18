@@ -495,6 +495,36 @@ describe("runSessionTurn (server-side observer)", () => {
     const store = useSessionManager.getState().entries[id].store.getState();
     expect(store.contextTokens).toBe(4321);
   });
+
+  it("usage_update carries the cache hit; null clears the badge", async () => {
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "usage_update", { prompt_tokens: 10000, cached_tokens: 8000 }),
+        makeEvent(2, "usage_update", { prompt_tokens: 11000, cached_tokens: null }),
+        makeEvent(3, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.contextTokens).toBe(11000);
+    expect(store.cachedTokens).toBeNull();
+
+    // Missing field (older daemons) also collapses to null.
+    const client2 = fakeClient({
+      events: [
+        makeEvent(1, "usage_update", { prompt_tokens: 5000, cached_tokens: 4000 }),
+        makeEvent(2, "usage_update", { prompt_tokens: 5500 }),
+        makeEvent(3, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id2 = useSessionManager.getState().createLocalSession("s2");
+    await runSessionTurn(client2 as unknown as DaemonClient, id2, "y");
+    expect(
+      useSessionManager.getState().entries[id2].store.getState().cachedTokens,
+    ).toBeNull();
+  });
 });
 
 // ── awaitTurnOverWs state machine (injected seams) ──────────────────────────
