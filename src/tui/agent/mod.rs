@@ -321,7 +321,8 @@ impl AgentLoop {
         // 1b. Collect injected fragments from hook outcomes.
         let injections = crate::runtime::hooks::collect_injections(&outcomes);
 
-        // 2. Build per-turn `<system-reminder>` from hook injections only.
+        // 2. Build per-turn `<system-reminder>` from hook injections and the
+        // turn's recalled memories (read from prompt_context by the builder).
         // Static WGENTY/AGENTS live in assembled_system_messages (system cascade).
         let reminder =
             crate::prompts::build_user_turn_reminder(self.prompt_context.as_ref(), &injections);

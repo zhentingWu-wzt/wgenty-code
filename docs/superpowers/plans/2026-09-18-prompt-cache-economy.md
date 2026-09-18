@@ -1,7 +1,7 @@
 ---
 change: prompt-cache-economy
 design-doc: docs/superpowers/specs/2026-09-18-prompt-cache-economy-design.md
-base-ref: ab0a20d3cdccdd282b1486d3df90b747e23e0825
+base-ref: b6d837484a92c1589f338ea67cae3757ae7f4da7
 ---
 
 # Implementation Plan: prompt-cache-economy
