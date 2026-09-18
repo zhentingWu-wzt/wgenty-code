@@ -267,6 +267,9 @@ pub fn convert_anthropic_response(resp: &AnthropicResponse) -> ChatResponse {
             prompt_tokens: resp.usage.input_tokens,
             completion_tokens: resp.usage.output_tokens,
             total_tokens: resp.usage.input_tokens + resp.usage.output_tokens,
+            prompt_tokens_details: Some(crate::api::PromptTokensDetails {
+                cached_tokens: resp.usage.cache_read_input_tokens,
+            }),
         }),
     }
 }

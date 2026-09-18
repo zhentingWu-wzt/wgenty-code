@@ -149,7 +149,7 @@ impl VecSink {
                 RuntimeEvent::StreamError(m) => format!("error:{m}"),
                 RuntimeEvent::StreamDone { finish_reason } => format!("done:{finish_reason}"),
                 RuntimeEvent::SaveSession => "save".to_string(),
-                RuntimeEvent::UsageUpdate { prompt_tokens } => format!("usage:{prompt_tokens}"),
+                RuntimeEvent::UsageUpdate { prompt_tokens, .. } => format!("usage:{prompt_tokens}"),
                 _ => "?".to_string(),
             })
             .collect()
@@ -172,6 +172,7 @@ fn text_response(text: &str) -> ChatCompletion {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            prompt_tokens_details: None,
         }),
     }
 }
@@ -795,6 +796,7 @@ async fn usage_update_reports_exact_prompt_tokens_per_call() {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                prompt_tokens_details: None,
             }),
         },
         ChatCompletion {
@@ -804,6 +806,7 @@ async fn usage_update_reports_exact_prompt_tokens_per_call() {
                 prompt_tokens: 25,
                 completion_tokens: 5,
                 total_tokens: 30,
+                prompt_tokens_details: None,
             }),
         },
     ]);

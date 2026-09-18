@@ -20,7 +20,12 @@ pub enum RuntimeEvent {
     /// LLM call (exact after a response reports usage, estimated right after
     /// auto-compaction). Frontends with a context bar (web StatusBar) render
     /// this live, mid-turn, instead of waiting for the turn-end snapshot.
-    UsageUpdate { prompt_tokens: usize },
+    /// `cached_tokens` carries the provider prompt-cache hit of that call
+    /// (None when the gateway doesn't report it or the value is an estimate).
+    UsageUpdate {
+        prompt_tokens: usize,
+        cached_tokens: Option<usize>,
+    },
     /// Recoverable or terminal stream error message for display.
     StreamError(String),
     /// Auto / manual compaction started.
