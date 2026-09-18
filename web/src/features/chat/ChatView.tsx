@@ -99,14 +99,28 @@ function ToolEntry({ m }: { m: DisplayMessage }) {
   return null;
 }
 
+/** Last non-empty line of the reasoning trace (the "live tail" the collapsed
+ *  header shows). `lastIndexOf` walk instead of split — deltas arrive at
+ *  token frequency and traces can be tens of KB. */
+function lastNonEmptyLine(text: string): string {
+  let end = text.length;
+  while (end > 0) {
+    const start = text.lastIndexOf("\n", end - 1) + 1;
+    const line = text.slice(start, end).trim();
+    if (line) return line;
+    end = start - 1;
+  }
+  return "";
+}
+
 /** Reasoning trace block. Thinking models stream long traces every round, so
- *  the block defaults to collapsed: the header row shows the char count (and
- *  a live "thinking" pulse while streaming); clicking toggles the trace.
- *  The expanded trace lives in its own scroll area (`max-h-96`), so the
- *  timeline's stick-to-bottom cannot reveal new text — while the message
- *  streams, this block keeps itself pinned to its own bottom instead.
- *  Scrolling up inside the block pauses the follow (same contract as the
- *  outer stick-to-bottom); it stays put once streaming ends. */
+ *  the block defaults to collapsed: the header row shows the latest reasoning
+ *  line (a live tail while streaming) + a thinking pulse; clicking toggles
+ *  the full trace. The expanded trace lives in its own scroll area
+ *  (`max-h-96`), so the timeline's stick-to-bottom cannot reveal new text —
+ *  while the message streams, this block keeps itself pinned to its own
+ *  bottom instead. Scrolling up inside the block pauses the follow (same
+ *  contract as the outer stick-to-bottom); it stays put once streaming ends. */
 export function ReasoningBlock({ text, live }: { text: string; live: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
@@ -125,11 +139,13 @@ export function ReasoningBlock({ text, live }: { text: string; live: boolean }) 
       >
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         reasoning
-        <span className="font-normal text-muted-foreground/70">
-          · {text.length.toLocaleString()} chars
-        </span>
+        {!expanded && (
+          <span className="min-w-0 flex-1 truncate font-normal text-muted-foreground/70">
+            {lastNonEmptyLine(text)}
+          </span>
+        )}
         {live && (
-          <span className="ml-auto flex items-center gap-1 text-[10px]">
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px]">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
             thinking
           </span>

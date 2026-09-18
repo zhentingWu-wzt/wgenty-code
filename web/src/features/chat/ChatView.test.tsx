@@ -4,24 +4,28 @@ import { describe, expect, it } from "vitest";
 import { ReasoningBlock } from "./ChatView";
 
 describe("ReasoningBlock", () => {
-  it("collapses long reasoning by default and expands on click", async () => {
-    render(<ReasoningBlock text={"very long hidden trace"} live={false} />);
+  it("collapsed header shows only the latest reasoning line", async () => {
+    render(<ReasoningBlock text={"earlier thought\nlatest thought"} live={false} />);
 
-    // Header shows the label + char count; the trace itself is hidden.
+    // Latest line is visible as the live tail; earlier lines stay hidden.
+    expect(screen.getByText("latest thought")).toBeInTheDocument();
+    expect(screen.queryByText("earlier thought")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reasoning/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
-    expect(screen.getByText(/\d+ chars/)).toBeInTheDocument();
-    expect(screen.queryByText("very long hidden trace")).not.toBeInTheDocument();
 
-    // Expand reveals the trace.
+    // Expand reveals the full trace (single <pre> text node).
     await userEvent.click(screen.getByRole("button"));
-    expect(screen.getByRole("button", { name: /reasoning/ })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
-    expect(screen.getByText("very long hidden trace")).toBeInTheDocument();
+    const pre = document.querySelector("pre");
+    expect(pre).not.toBeNull();
+    expect(pre).toHaveTextContent("earlier thought");
+    expect(pre).toHaveTextContent("latest thought");
+  });
+
+  it("tolerates trailing newlines when picking the tail line", () => {
+    render(<ReasoningBlock text={"a thought\n\n"} live={false} />);
+    expect(screen.getByText("a thought")).toBeInTheDocument();
   });
 
   it("shows the live thinking pulse while streaming", () => {
