@@ -181,6 +181,12 @@ pub struct TransportConfig {
     pub timeout: u64,
     pub streaming: bool,
     pub beta_headers: Vec<String>,
+    /// Override for replay-time `reasoning_content` stripping on
+    /// OpenAI-compatible requests: `None` follows the provider rule
+    /// (strip, except DeepSeek echo-back), `Some(false)` forces keeping,
+    /// `Some(true)` forces stripping.
+    #[serde(default)]
+    pub strip_reasoning_content: Option<bool>,
 }
 
 impl Default for TransportConfig {
@@ -190,6 +196,7 @@ impl Default for TransportConfig {
             timeout: 120,
             streaming: true,
             beta_headers: vec![],
+            strip_reasoning_content: None,
         }
     }
 }

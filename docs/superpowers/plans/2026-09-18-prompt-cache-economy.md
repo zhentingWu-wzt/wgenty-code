@@ -27,9 +27,9 @@ base-ref: ab0a20d3cdccdd282b1486d3df90b747e23e0825
 
 ## 3. reasoning_content 剥离（默认剥离 + DeepSeek 例外）
 
-- [ ] 3.1 `src/api/mod.rs`：`strip_reasoning_content_for_replay(messages, provider)`，挂 `sanitize_tool_call_args_for_replay` 同一序列；settings `models.transport.strip_reasoning_content`（Option<bool>）兜底
-- [ ] 3.2 测试：GLM(OpenAI 兼容) 请求 JSON 无该字段；DeepSeek 保留；settings 覆盖生效
-- [ ] 3.3 验证：`cargo test --lib api` + clippy + fmt
+- [x] 3.1 `src/api/mod.rs`：`strip_reasoning_content_for_replay(messages, provider)`，挂 `sanitize_tool_call_args_for_replay` 同一序列；settings `models.transport.strip_reasoning_content`（Option<bool>）兜底
+- [x] 3.2 测试：GLM(OpenAI 兼容) 请求 JSON 无该字段；DeepSeek 保留；settings 覆盖生效
+- [x] 3.3 验证：`cargo test --lib api` + clippy + fmt
 
 ## 4. 收尾
 

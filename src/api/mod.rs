@@ -86,6 +86,34 @@ fn sanitize_tool_call_args_for_replay(messages: &mut [ChatMessage]) {
     }
 }
 
+/// Strip `reasoning_content` from replayed history at the request boundary.
+///
+/// Most OpenAI-compatible providers (GLM/z.ai, OpenAI, self-hosted gateways)
+/// don't need historical reasoning echoed back — resending it re-bills those
+/// tokens on every turn. DeepSeek is the documented exception that requires
+/// echo-back. `override_setting` (`models.transport.strip_reasoning_content`)
+/// wins over the provider rule: `Some(true)` forces stripping, `Some(false)`
+/// forces keeping, `None` follows the provider default.
+///
+/// Request boundary only: on-disk sessions, local replay and the compactor
+/// keep their reasoning content untouched.
+fn strip_reasoning_content_for_replay(
+    messages: &mut [ChatMessage],
+    provider: &dyn Provider,
+    override_setting: Option<bool>,
+) {
+    if !provider.is_openai_compat() {
+        return;
+    }
+    let strip = override_setting.unwrap_or_else(|| !provider.echoes_reasoning_content());
+    if !strip {
+        return;
+    }
+    for msg in messages.iter_mut() {
+        msg.reasoning_content = None;
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiClient {
     settings: Settings,
@@ -310,6 +338,11 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<ChatResponse> {
         sanitize_tool_call_args_for_replay(&mut messages);
+        strip_reasoning_content_for_replay(
+            &mut messages,
+            self.provider.as_ref(),
+            self.settings.models.transport.strip_reasoning_content,
+        );
         let api_key = self
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
@@ -461,6 +494,11 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
         sanitize_tool_call_args_for_replay(&mut messages);
+        strip_reasoning_content_for_replay(
+            &mut messages,
+            self.provider.as_ref(),
+            self.settings.models.transport.strip_reasoning_content,
+        );
         let api_key = self
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
@@ -728,5 +766,58 @@ mod tests {
             Some(r#"{"not":"json but user role"}"#)
         );
         assert_eq!(msgs[2].content.as_deref(), Some(r#"{"success":true}"#));
+    }
+
+    fn asst_with_reasoning(reasoning: &str) -> ChatMessage {
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: Some("answer".to_string()),
+            reasoning_content: Some(reasoning.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    #[test]
+    fn strip_reasoning_openai_compat_removes_field_from_request_json() {
+        // GLM/z.ai and other OpenAI-compatible endpoints don't need the
+        // reasoning echo; the serialized request must not carry the field.
+        let mut msgs = vec![asst_with_reasoning("thinking...")];
+        strip_reasoning_content_for_replay(&mut msgs, &provider::OpenAIProvider, None);
+        assert_eq!(msgs[0].reasoning_content, None);
+        let json = serde_json::to_string(&msgs[0]).unwrap();
+        assert!(!json.contains(r#""reasoning_content""#), "got: {json}");
+        // Content survives; only reasoning is stripped.
+        assert_eq!(msgs[0].content.as_deref(), Some("answer"));
+    }
+
+    #[test]
+    fn strip_reasoning_deepseek_keeps_echo_back() {
+        // DeepSeek officially requires reasoning_content echo-back.
+        let mut msgs = vec![asst_with_reasoning("thinking...")];
+        strip_reasoning_content_for_replay(&mut msgs, &provider::DeepSeekProvider, None);
+        assert_eq!(msgs[0].reasoning_content.as_deref(), Some("thinking..."));
+    }
+
+    #[test]
+    fn strip_reasoning_settings_override_wins_over_provider_rule() {
+        // Some(false) forces keeping even on a strip-by-default provider.
+        let mut msgs = vec![asst_with_reasoning("thinking...")];
+        strip_reasoning_content_for_replay(&mut msgs, &provider::OpenAIProvider, Some(false));
+        assert_eq!(msgs[0].reasoning_content.as_deref(), Some("thinking..."));
+
+        // Some(true) forces stripping even on DeepSeek.
+        let mut msgs = vec![asst_with_reasoning("thinking...")];
+        strip_reasoning_content_for_replay(&mut msgs, &provider::DeepSeekProvider, Some(true));
+        assert_eq!(msgs[0].reasoning_content, None);
+    }
+
+    #[test]
+    fn strip_reasoning_skips_anthropic_path() {
+        // Anthropic requests go through convert_messages_to_anthropic, not
+        // ChatMessage serde — the strip must not touch this path.
+        let mut msgs = vec![asst_with_reasoning("thinking...")];
+        strip_reasoning_content_for_replay(&mut msgs, &provider::AnthropicProvider, None);
+        assert_eq!(msgs[0].reasoning_content.as_deref(), Some("thinking..."));
     }
 }
