@@ -2,6 +2,8 @@
 comet_change: prompt-cache-economy
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-18-prompt-cache-economy
+status: final
 ---
 
 # Technical Design: prompt-cache-economy
