@@ -120,6 +120,8 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // Tasks
         .route("/api/v1/tasks", get(handlers::list_tasks))
         .route("/api/v1/tasks/progress", get(handlers::task_progress))
+        // Work-Graph visualization (read-only snapshots for the web panel)
+        .route("/api/v1/workgraph", get(handlers::get_work_graph))
         // Todos (s03 TodoWrite state)
         .route("/api/v1/todos", get(handlers::get_todos))
         // Global cross-project event stream (SSE, live-only v1)

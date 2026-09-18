@@ -14,6 +14,7 @@ export type RightPanelId =
   | "memory"
   | "checkpoints"
   | "tasks"
+  | "workgraph"
   | "config"
   | "mcp"
   | "subagents"

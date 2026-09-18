@@ -701,3 +701,96 @@ export interface FileDiff {
   truncated: boolean;
   lines: DiffLine[];
 }
+// ── Work-Graph visualization (GET /api/v1/workgraph) ─────────────────────────
+//
+// Mirrors src/org_graph/snapshot.rs. NodeType serializes PascalCase; audit
+// kinds/routes/phases serialize snake_case (serde rename_all).
+
+export interface WorkGraphPlanNodeDto {
+  id: string;
+  role: string;
+}
+
+export interface WorkGraphPlanEdgeDto {
+  from: string;
+  to: string;
+}
+
+export interface WorkGraphPlanDto {
+  template_id: string;
+  nodes: WorkGraphPlanNodeDto[];
+  edges: WorkGraphPlanEdgeDto[];
+  /** Anchor phases this plan routes through ("compile_anchor" | "test_anchor" | "verify_gate"). */
+  phases: string[];
+  revision: number;
+}
+
+export interface WorkGraphNodeChainDto {
+  id: string;
+  goal: string;
+  /** "pending" | "running" | "verifying" | "verified" | "failed" */
+  status: string;
+  retry_count: number;
+  start_turn_id: string;
+  created_at: string;
+}
+
+export interface WorkGraphUnitDto {
+  unit_id: string;
+  goal: string;
+  plan: WorkGraphPlanDto;
+  outcome: { passed: boolean; attempts_used: number; summary: string } | null;
+}
+
+export interface WorkGraphAuditEventDto {
+  node_id: string;
+  attempt: number;
+  kind:
+    | "profile_resolved"
+    | "anchor_completed"
+    | "route_selected"
+    | "adapted"
+    | "decomposed";
+  anchor: "compile" | "test" | "verify" | null;
+  route: string | null;
+  /** Verification profile label ("rust" | "python" | …), snake_case. */
+  profile: string | null;
+  commands: { command: string; exit_code: number | null; stderr: string }[];
+  adapted: {
+    reason: Record<string, { consecutive_failures?: number }> | null;
+    revision_from: number;
+    revision_to: number;
+  } | null;
+  parent_node_id: string | null;
+  timestamp: string;
+}
+
+export interface WorkGraphAuditSummaryDto {
+  profiles_resolved: number;
+  anchors_completed: number;
+  compile_failures: number;
+  test_failures: number;
+  verify_failures: number;
+  root_cause_routes: number;
+  implement_routes: number;
+  completed_routes: number;
+  escalated_routes: number;
+  plan_adaptations: number;
+  decompositions: number;
+}
+
+/** One session's read-only Work-Graph snapshot (mirrors SessionGraphSnapshot). */
+export interface WorkGraphSessionSnapshot {
+  session_id: string;
+  graph_depth: number;
+  plan: WorkGraphPlanDto | null;
+  nodes: WorkGraphNodeChainDto[];
+  units: WorkGraphUnitDto[];
+  audit_summary: WorkGraphAuditSummaryDto;
+  recent_events: WorkGraphAuditEventDto[];
+}
+
+/** Response of GET /api/v1/workgraph. */
+export interface WorkGraphResponse {
+  sessions: WorkGraphSessionSnapshot[];
+}

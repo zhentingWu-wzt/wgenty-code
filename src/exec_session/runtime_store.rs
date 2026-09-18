@@ -9,15 +9,19 @@ use serde_json::json;
 
 use crate::agent::SessionId;
 use crate::org_graph::{
-    GraphAuditEvent, GraphAuditKind, GraphAuditRoute, GraphChildBinding, HumanReview, NodeType,
-    SpecialistReport,
+    build_session_snapshot, GraphAuditEvent, GraphAuditKind, GraphAuditRoute, GraphChildBinding,
+    HumanReview, NodeChainEntry, NodeType, SpecialistReport, WorkGraphSnapshotResponse,
 };
 use crate::tools::checkpoint_store::CheckpointStore;
 
 use super::{
-    next_step, NodeRuntime, ProcessCommandExecutor, SessionCoordinator, SessionSource, VerifyGate,
-    WorkGraphStep,
+    next_step, NodeRuntime, NodeStatus, ProcessCommandExecutor, SessionCoordinator, SessionSource,
+    VerifyGate, WorkGraphStep,
 };
+
+/// Per-session snapshot payload bound: the web panel renders the newest audit
+/// tail; full histories stay on disk in the checkpoint store.
+const SNAPSHOT_RECENT_EVENTS: usize = 50;
 
 #[derive(Clone)]
 struct RuntimeEntry {
@@ -112,6 +116,47 @@ impl ExecutionSessionRuntimeStore {
     /// scoped runtime when necessary.
     pub fn gate_for(&self, session_id: &SessionId) -> Result<Arc<VerifyGate>> {
         Ok(self.entry_for(session_id)?.gate)
+    }
+
+    /// Read-only Work-Graph snapshots for every session in the store, ordered
+    /// by session id for stable output. Consumed by the daemon's
+    /// `GET /api/v1/workgraph` visualization endpoint; never accepts a
+    /// client-supplied session identifier.
+    pub fn snapshots(&self) -> Result<WorkGraphSnapshotResponse> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|error| anyhow::anyhow!("execution-session store lock: {error}"))?;
+        let mut sessions = Vec::with_capacity(entries.len());
+        for (session_id, entry) in entries.iter() {
+            let coordinator = entry.coordinator.read().map_err(|error| {
+                anyhow::anyhow!("execution-session coordinator read lock: {error}")
+            })?;
+            let work_state = coordinator.work_state();
+            let nodes = coordinator
+                .node_states()
+                .iter()
+                .map(|node| NodeChainEntry {
+                    id: node.id.clone(),
+                    goal: node.contract.goal.clone(),
+                    status: node_status_label(&node.status).to_string(),
+                    retry_count: node.retry_count,
+                    start_turn_id: node.start_turn_id.clone(),
+                    created_at: node.created_at.clone(),
+                })
+                .collect();
+            sessions.push(build_session_snapshot(
+                session_id.as_str().to_string(),
+                work_state.graph_depth(),
+                work_state.selected_work_graph(),
+                nodes,
+                work_state.decomposed_units(),
+                work_state.graph_audit(),
+                SNAPSHOT_RECENT_EVENTS,
+            ));
+        }
+        sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        Ok(WorkGraphSnapshotResponse { sessions })
     }
 
     /// Records an authenticated human decision for the session's current
@@ -718,6 +763,18 @@ fn latest_root_cause_route(
         .context("root-cause report requires the current graph route to be RootCause")
 }
 
+/// snake_case label for a node-chain status (wire format for the web panel;
+/// mirrors `NodeStatus`' serde representation).
+fn node_status_label(status: &NodeStatus) -> &'static str {
+    match status {
+        NodeStatus::Pending => "pending",
+        NodeStatus::Running => "running",
+        NodeStatus::Verifying => "verifying",
+        NodeStatus::Verified => "verified",
+        NodeStatus::Failed => "failed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -768,6 +825,41 @@ mod tests {
             .expect("reuse active graph turn");
 
         assert_eq!(store.turn_count_for_test(&session_id), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshots_expose_plan_node_chain_and_audit_tail() {
+        let dir = TempDir::new().expect("create tempdir");
+        let store = test_store(&dir);
+        let session_id = SessionId::new("viz-session");
+        store.ensure_turn(&session_id).expect("start graph turn");
+        store
+            .runtime_for(&session_id)
+            .expect("resolve runtime")
+            .begin_node("viz goal".into(), vec!["echo ok".into()], Vec::new())
+            .await
+            .expect("start graph node");
+
+        let response = store.snapshots().expect("build snapshots");
+        assert_eq!(response.sessions.len(), 1);
+        let snapshot = &response.sessions[0];
+        assert_eq!(snapshot.session_id, "viz-session");
+        assert!(snapshot.plan.is_some(), "begin_node composes a plan");
+        assert_eq!(snapshot.nodes.len(), 1);
+        assert_eq!(snapshot.nodes[0].status, "running");
+        assert_eq!(snapshot.nodes[0].goal, "viz goal");
+        assert!(
+            snapshot.audit_summary.profiles_resolved >= 1,
+            "begin_node appends a profile_resolved audit event"
+        );
+        assert!(!snapshot.recent_events.is_empty());
+
+        // Empty store serializes to an empty envelope.
+        let other = test_store(&TempDir::new().expect("create tempdir"));
+        assert_eq!(
+            other.snapshots().expect("empty snapshots").sessions.len(),
+            0
+        );
     }
 
     #[tokio::test]
