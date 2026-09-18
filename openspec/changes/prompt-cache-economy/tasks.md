@@ -3,7 +3,7 @@
 ## 1. 记忆召回迁移到 user reminder（跨 turn 缓存解锁）
 
 - [x] 1.1 `src/prompts/mod.rs`：`build_user_turn_reminder` 新增 memories section（`<relevant_memories>` 块，含 to_model/to_transcript 语义与 dump 支持）
-- [x] 1.2 `src/daemon/run_loop.rs`：`run_session_turn` 记忆召回结果改走 reminder 通道，移除 `prompt_ctx.memories` 写入与 Layer 5b 依赖；TurnContext 的 recalled_memories 展示保持不变
+- [x] 1.2 `src/daemon/run_loop.rs`：`run_session_turn` 记忆召回结果改走 reminder 通道，移除 `prompt_ctx.memories` 写入与 Layer 5b 依赖；TurnContext 的 recalled_memories 展示保持不变（实现注记：改动收敛在 `prompts/mod.rs`——run_loop/TUI 已把 `prompt_ctx` 传入 `build_user_turn_reminder`，`ctx.memories` 写入保留为 reminder 与 Inspector 展示的共同数据源，Layer 5b 依赖已移除）
 - [x] 1.3 TUI 侧对应注入点（`src/tui` turn 注入）同步迁移，保持双端口径一致
 - [x] 1.4 测试：新增「连续两 turn system 消息逐字节一致」断言（mock 两次不同召回）；无召回时 reminder 为 None 的退化断言；既有 Layer 5b 相关测试更新
 - [x] 1.5 验证：`cargo test --lib prompts`、`cargo test --lib daemon`、TUI 相关测试

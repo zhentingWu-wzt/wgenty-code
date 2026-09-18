@@ -214,8 +214,10 @@ impl AnthropicStreamState {
                         prompt_tokens: u.input_tokens,
                         completion_tokens: u.output_tokens,
                         total_tokens: u.input_tokens + u.output_tokens,
-                        prompt_tokens_details: Some(crate::api::PromptTokensDetails {
-                            cached_tokens: u.cache_read_input_tokens,
+                        prompt_tokens_details: u.cache_read_input_tokens.map(|cached| {
+                            crate::api::PromptTokensDetails {
+                                cached_tokens: Some(cached),
+                            }
                         }),
                     }),
                 };
