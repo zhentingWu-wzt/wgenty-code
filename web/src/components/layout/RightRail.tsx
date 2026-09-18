@@ -10,6 +10,7 @@ import {
   Settings,
   Sparkles,
   Undo2,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { DaemonClient } from "../../api/client";
@@ -20,6 +21,7 @@ import { MemoryPanel } from "../../features/panels/MemoryPanel";
 import { CheckpointsPanel } from "../../features/panels/CheckpointsPanel";
 import { SessionsPanel } from "../../features/panels/SessionsPanel";
 import { TasksPanel } from "../../features/panels/TasksPanel";
+import { WorkGraphPanel } from "../../features/panels/WorkGraphPanel";
 import { ConfigPanel } from "../../features/panels/ConfigPanel";
 import { McpPanel } from "../../features/panels/McpPanel";
 import { SubagentTreePanel } from "../../features/panels/SubagentTreePanel";
@@ -35,6 +37,7 @@ const ITEMS: { id: RightPanelId; icon: LucideIcon; label: string }[] = [
   { id: "memory", icon: Brain, label: "Memory" },
   { id: "checkpoints", icon: Undo2, label: "Checkpoints" },
   { id: "tasks", icon: ListTodo, label: "Tasks" },
+  { id: "workgraph", icon: Workflow, label: "Work Graph" },
   { id: "subagents", icon: Network, label: "Subagents" },
   { id: "inspector", icon: Eye, label: "Inspector" },
   { id: "mcp", icon: Plug, label: "MCP Servers" },
@@ -49,6 +52,7 @@ const PANEL_TITLE: Record<RightPanelId, string> = {
   memory: "Memory",
   checkpoints: "Checkpoints",
   tasks: "Tasks",
+  workgraph: "Work Graph",
   subagents: "Subagents",
   inspector: "Inspector",
   mcp: "MCP Servers",
@@ -83,6 +87,7 @@ export function RightRail({ client }: { client: DaemonClient }) {
             {rightPanel === "memory" && <MemoryPanel client={client} />}
             {rightPanel === "checkpoints" && <CheckpointsPanel client={client} />}
             {rightPanel === "tasks" && <TasksPanel client={client} />}
+            {rightPanel === "workgraph" && <WorkGraphPanel client={client} />}
             {rightPanel === "mcp" && <McpPanel client={client} />}
             {rightPanel === "config" && <ConfigPanel client={client} />}
             {rightPanel === "subagents" && <SubagentTreePanel />}

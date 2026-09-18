@@ -4,6 +4,7 @@ pub mod audit;
 pub mod contract;
 pub mod registry;
 pub mod render;
+pub mod snapshot;
 pub mod work_graph_plan;
 pub mod work_state;
 
@@ -13,6 +14,9 @@ pub use contract::{
     ResourceBudget,
 };
 pub use registry::NodeRegistry;
+pub use snapshot::{
+    build_session_snapshot, NodeChainEntry, SessionGraphSnapshot, WorkGraphSnapshotResponse,
+};
 pub use work_graph_plan::{
     adapt_work_graph, compose_work_graph, consecutive_test_anchor_failures, select_work_graph,
     validate_composition, Adaptation, AdaptationOutcome, AdaptationReason, GraphTemplate,

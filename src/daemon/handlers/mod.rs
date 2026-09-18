@@ -50,6 +50,7 @@ mod sessions;
 mod system;
 mod tasks;
 mod tools;
+mod workgraph;
 
 pub use agents::*;
 pub use chat::*;
@@ -61,6 +62,7 @@ pub use sessions::*;
 pub use system::*;
 pub use tasks::*;
 pub use tools::*;
+pub use workgraph::*;
 
 #[cfg(test)]
 mod tests;
