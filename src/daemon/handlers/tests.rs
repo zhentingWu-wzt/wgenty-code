@@ -1637,6 +1637,107 @@ async fn switch_model_broadcasts_model_changed() {
     run
 }
 
+/// `/model` picker semantics post-refactor: `active` comes from the
+/// persisted `active_profile` key (not name-matching heuristics), and a
+/// switch is non-destructive — switching away and back restores the original
+/// endpoint. Persists to `~/.wgenty-code/settings.json`, so scopes a fake
+/// `$HOME` (serial), mirroring the test above.
+#[tokio::test]
+#[serial_test::serial]
+async fn list_models_marks_active_profile_and_switch_round_trips() {
+    use axum::extract::State;
+    use axum::Json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let mk = |name: &str| crate::config::models::ModelEndpoint {
+        name: name.to_string(),
+        ..Default::default()
+    };
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    settings
+        .models
+        .profiles
+        .insert("alpha".to_string(), mk("alpha-model"));
+    settings
+        .models
+        .profiles
+        .insert("beta".to_string(), mk("beta-model"));
+    settings.models.active_profile = Some("alpha".to_string());
+    settings.models.main = mk("alpha-model");
+
+    // Pre-seed the on-disk settings (new format: profiles + active_profile)
+    // so switch_model's load-disk → switch → save path is hermetic.
+    let cfg_dir = fake_home.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("settings.json"),
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+
+    let prev_wgenty_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+    let run = async {
+        let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+
+        // ── list_models: active follows `active_profile` ──────────────────
+        let axum::Json(list) = list_models(State(state.clone())).await;
+        assert_eq!(list.profiles.len(), 2);
+        let alpha = list.profiles.iter().find(|p| p.key == "alpha").unwrap();
+        let beta = list.profiles.iter().find(|p| p.key == "beta").unwrap();
+        assert!(alpha.active, "active_profile=alpha must be marked");
+        assert!(!beta.active);
+
+        // ── switch to beta ────────────────────────────────────────────────
+        let resp = switch_model(
+            State(state.clone()),
+            Json(SwitchModelRequest {
+                profile: "beta".to_string(),
+            }),
+        )
+        .await
+        .expect("switch to beta");
+        assert_eq!(resp.model_name, "beta-model");
+        {
+            let s = state.settings_handle.read().expect("lock poisoned");
+            assert_eq!(s.models.main.name, "beta-model");
+            assert_eq!(s.models.active_profile.as_deref(), Some("beta"));
+        }
+
+        // ── switch back to alpha: original endpoint restored ─────────────
+        let resp = switch_model(
+            State(state.clone()),
+            Json(SwitchModelRequest {
+                profile: "alpha".to_string(),
+            }),
+        )
+        .await
+        .expect("switch back to alpha");
+        assert_eq!(resp.model_name, "alpha-model");
+        {
+            let s = state.settings_handle.read().expect("lock poisoned");
+            assert_eq!(s.models.main.name, "alpha-model");
+        }
+
+        // ── persisted disk state stays in the new format ──────────────────
+        let disk_raw =
+            std::fs::read_to_string(fake_home.path().join(".wgenty-code/settings.json")).unwrap();
+        let disk: serde_json::Value = serde_json::from_str(&disk_raw).unwrap();
+        assert!(
+            disk["models"].get("main").is_none(),
+            "legacy main must not be serialized"
+        );
+        assert_eq!(disk["models"]["active_profile"], "alpha");
+    }
+    .await;
+    match prev_wgenty_home {
+        Some(v) => std::env::set_var("WGENTY_HOME", v),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    run
+}
 #[tokio::test]
 async fn claim_task_group_broadcasts_task_group_result() {
     use axum::extract::State;

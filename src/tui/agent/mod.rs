@@ -87,6 +87,8 @@ pub struct AgentLoop {
     pub(super) max_rounds: usize,
     /// Mid-stream retry budget from settings.agent.stream_max_retries.
     pub(super) stream_max_retries: u32,
+    /// SSE idle-stall timeout from settings.agent.stream_idle_timeout_secs.
+    pub(super) stream_idle_timeout_secs: u64,
     pub(super) stuck_detector: StuckDetector,
     pub(super) token_counter: crate::api::token_counter::TokenCounter,
     pub(super) plan_mode: bool,
@@ -136,6 +138,7 @@ impl AgentLoop {
         planner_client: Option<crate::api::ApiClient>,
         max_rounds: usize,
         stream_max_retries: u32,
+        stream_idle_timeout_secs: u64,
         token_counter: crate::api::token_counter::TokenCounter,
         hook_manager: std::sync::Arc<HookManager>,
         prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
@@ -159,6 +162,7 @@ impl AgentLoop {
             preparing_tools_fired: false,
             max_rounds,
             stream_max_retries,
+            stream_idle_timeout_secs,
             stuck_detector: StuckDetector::new(),
             token_counter,
             session_id,
@@ -416,6 +420,7 @@ mod tests {
             None,
             crate::config::DEFAULT_MAX_ROUNDS,
             crate::config::DEFAULT_STREAM_MAX_RETRIES,
+            crate::config::DEFAULT_STREAM_IDLE_TIMEOUT_SECS,
             crate::api::token_counter::TokenCounter::new(),
             std::sync::Arc::new(HookManager::default()),
             std::sync::Arc::new(crate::prompts::PromptContext::new()),

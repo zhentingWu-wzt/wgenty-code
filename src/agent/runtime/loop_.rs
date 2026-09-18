@@ -494,6 +494,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                     tools: tool_defs,
                     preparing_tools_fired: &mut state.preparing_tools_fired,
                     max_retries: config.stream_max_retries,
+                    idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs),
                     max_tokens,
                     plan_mode,
                 },

@@ -83,13 +83,59 @@ impl Settings {
     ///
     /// No backward-compatibility migration: an old settings.json containing
     /// flat fields will fail to deserialize.
+    ///
+    /// Model config IS migrated: legacy `models.main` / `models.small` /
+    /// `models.planner` are normalized into `models.profiles` +
+    /// `models.active_profile` + `models.roles` (see
+    /// [`crate::config::models::ModelsConfig::migrate_legacy`]). A subsequent
+    /// save upgrades the file to the new format (the legacy keys are no
+    /// longer serialized).
     pub fn load_from_disk() -> anyhow::Result<Self> {
         let path = Self::config_path();
         if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .context(format!("Failed to read config file: {}", path.display()))?;
-            serde_json::from_str(&content)
-                .context(format!("Failed to parse config file: {}", path.display()))
+            let mut value: serde_json::Value = serde_json::from_str(&content)
+                .context(format!("Failed to parse config file: {}", path.display()))?;
+            // Detect legacy model fields by presence BEFORE deserializing —
+            // `migrate_legacy` needs to know whether `main` was explicit
+            // (old format: main is authoritative) or absent (new format:
+            // profiles + active_profile are the only truth).
+            let legacy = value
+                .get_mut("models")
+                .and_then(|m| m.as_object_mut())
+                .map(|m| (m.remove("main"), m.remove("small"), m.remove("planner")));
+            let mut settings: Self = serde_json::from_value(value)
+                .context(format!("Failed to parse config file: {}", path.display()))?;
+            match legacy {
+                Some((main, small, planner)) => {
+                    if let Some(m) = main {
+                        settings.models.main = serde_json::from_value(m).context(format!(
+                            "Failed to parse models.main in config file: {}",
+                            path.display()
+                        ))?;
+                    }
+                    if let Some(s) = small {
+                        settings.models.small =
+                            Some(serde_json::from_value(s).context(format!(
+                                "Failed to parse models.small in config file: {}",
+                                path.display()
+                            ))?);
+                    }
+                    if let Some(p) = planner {
+                        settings.models.planner =
+                            Some(serde_json::from_value(p).context(format!(
+                                "Failed to parse models.planner in config file: {}",
+                                path.display()
+                            ))?);
+                    }
+                    settings.models.migrate_legacy(true);
+                }
+                None => {
+                    settings.models.migrate_legacy(false);
+                }
+            }
+            Ok(settings)
         } else {
             let s = Settings::default();
             s.save()?;
@@ -170,32 +216,48 @@ impl Settings {
         Self::load()
     }
 
-    /// Build a Settings clone configured for the small model.
-    /// If `models.small` is None, returns a clone of self (no-op).
-    /// If `models.small` is Some, overrides `models.main` name/base_url/api_key/appkey
-    /// from the small endpoint where present. `transport.max_tokens` is inherited
-    /// from the shared transport config (no longer forced to 2048), so subagents
-    /// get the same output budget as the main model - a small max_tokens would
+    /// Build a Settings clone configured for the light-tier model (the
+    /// cheap-model role: subagent clients and the routing classifier).
+    ///
+    /// Resolution follows [`crate::config::models::ModelsConfig::endpoint_for_tier`]
+    /// (light-tier profile → legacy `models.small` → main), so this is a no-op
+    /// clone when no light endpoint is distinct from main. The resolved
+    /// endpoint replaces `models.main` wholesale, so per-endpoint overrides
+    /// (`context_window`, `temperature`) apply. `transport.max_tokens` is
+    /// inherited from the shared transport config — a small max_tokens would
     /// truncate large tool-call arguments just like the main-model bug.
-    /// (`appkey` if present overrides `api_key` — preserves prior behavior.)
     pub fn small_model_settings(&self) -> Self {
         let mut s = self.clone();
-        if let Some(small) = &self.models.small {
-            s.models.main.name = small.name.clone();
-            if let Some(url) = &small.base_url {
-                s.models.main.base_url = Some(url.clone());
-            }
-            if let Some(key) = &small.api_key {
-                s.models.main.api_key = Some(key.clone());
-            }
-            if let Some(ak) = &small.appkey {
-                s.models.main.api_key = Some(ak.clone());
-            }
-            if let Some(p) = &small.provider {
-                s.models.main.provider = Some(p.clone());
-            }
-        }
+        s.models.main = self
+            .models
+            .endpoint_for_tier(crate::config::models::ModelTier::Light);
         s
+    }
+
+    /// Build a Settings clone for plan-mode generation. `None` when no planner
+    /// role is bound (use the active model). Resolution: `models.roles.planner`
+    /// profile key → legacy in-memory `models.planner` endpoint → `None`.
+    pub fn planner_settings(&self) -> Option<Self> {
+        if let Some(key) = &self.models.roles.planner {
+            if let Some(ep) = self.models.profiles.get(key) {
+                let mut s = self.clone();
+                s.models.main = ep.clone();
+                return Some(s);
+            }
+            tracing::warn!(
+                key = %key,
+                "models.roles.planner points at an unknown profile; falling back to main"
+            );
+        }
+        if let Some(pm) = &self.models.planner {
+            let mut s = self.clone();
+            // Legacy slot: `None` fields inherit from main (documented
+            // contract) — same overlay the load-time migration applies when
+            // converting `planner` into a profile.
+            s.models.main = crate::config::models::overlay_endpoint(&self.models.main, pm);
+            return Some(s);
+        }
+        None
     }
 
     /// Build a Settings clone where `models.main.name` is overridden by the
@@ -209,8 +271,9 @@ impl Settings {
         s
     }
 
-    /// Activate a named profile in place: copy the profile's full
-    /// [`ModelEndpoint`] into `models.main` and record `active_profile`.
+    /// Activate a named profile in place: record `active_profile` and sync
+    /// the `models.main` runtime cache. Non-destructive — the previously
+    /// active model always remains available as its profile.
     /// Returns `Err` if the profile key is not in `models.profiles`, with the
     /// list of available keys for actionable feedback.
     ///
@@ -222,8 +285,8 @@ impl Settings {
     pub fn switch_to_profile(&mut self, profile: &str) -> anyhow::Result<()> {
         match self.models.profiles.get(profile) {
             Some(endpoint) => {
-                self.models.main = endpoint.clone();
                 self.models.active_profile = Some(profile.to_string());
+                self.models.main = endpoint.clone();
                 Ok(())
             }
             None => {
@@ -275,10 +338,13 @@ impl Settings {
 
     /// Set a configuration value via dotted path.
     /// Examples:
-    ///   set("models.main.name", "sonnet")
+    ///   set("models.profiles.<key>.name", "sonnet")
     ///   set("agent.subagent.max_depth", "7")
     ///   set("prompt.include.skills", "false")
     ///   set("plugins.enabled_map.foo@bar", "true")
+    /// Legacy model paths (`models.main.*`, `models.small.*`,
+    /// `models.planner.*`) are transparently remapped onto their profiles
+    /// equivalents (see [`Self::remap_legacy_models_key`]).
     /// Values are parsed as JSON literals first (so "true"/"42"/"3.14" become bool/number);
     /// on parse failure, the value is treated as a string.
     /// Type validation happens at deserialize time — invalid paths/types return Err
@@ -287,6 +353,8 @@ impl Settings {
         use serde_json::Value;
         // Load disk form so runtime-resolved absolute working_dir is not written back.
         let settings = Self::load_from_disk()?;
+        let remapped = Self::remap_legacy_models_key(&settings.models, key);
+        let key = remapped.as_str();
         let mut json = serde_json::to_value(&settings)?;
 
         let parsed: Value =
@@ -330,8 +398,12 @@ impl Settings {
 
         set_at(&mut json, &parts, parsed.clone())?;
 
-        let new_settings: Settings = serde_json::from_value(json)
+        let mut new_settings: Settings = serde_json::from_value(json)
             .map_err(|e| anyhow::anyhow!("invalid setting at '{}': {}", key, e))?;
+        // A legacy `models.small.*` set may create/update the "small"
+        // profile without a tier — keep it serving the light role so the
+        // old key's meaning survives the remap.
+        new_settings.models.ensure_small_profile_tier();
         // Unknown keys are silently DROPPED by serde's default (ignore
         // unknown fields) — the incident where a top-level `exec_session.*`
         // write happily "succeeded" while the real key lived under
@@ -357,6 +429,46 @@ impl Settings {
         }
         new_settings.save()?;
         Ok(())
+    }
+
+    /// Translate legacy `models.main` / `models.small` / `models.planner`
+    /// keys onto their profiles equivalents. The remapped path patches the
+    /// existing profile object in the JSON view, so `models.main.name = X`
+    /// no longer risks clobbering sibling fields (the legacy path replaced
+    /// the whole `main` object whenever it was absent from the view).
+    fn remap_legacy_models_key(models: &crate::config::models::ModelsConfig, key: &str) -> String {
+        use crate::config::models::ModelTier;
+        let candidates = [
+            (
+                "models.main",
+                models
+                    .active_profile
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string()),
+            ),
+            (
+                "models.small",
+                models
+                    .tier_profile_key(ModelTier::Light)
+                    .cloned()
+                    .unwrap_or_else(|| "small".to_string()),
+            ),
+            (
+                "models.planner",
+                models
+                    .roles
+                    .planner
+                    .clone()
+                    .unwrap_or_else(|| "planner".to_string()),
+            ),
+        ];
+        for (prefix, target) in candidates {
+            if key == prefix || key.starts_with(&format!("{prefix}.")) {
+                let rest = &key[prefix.len()..];
+                return format!("models.profiles.{target}{rest}");
+            }
+        }
+        key.to_string()
     }
 
     /// Reset settings to defaults

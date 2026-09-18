@@ -126,29 +126,26 @@ pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListMode
         .read()
         .expect("lock poisoned: settings");
 
-    // The active profile is whichever profile is currently installed in
-    // `models.main` (`switch_to_profile` copies a profile's full endpoint into
-    // `main`). Matching by model name -- rather than the persisted
-    // `active_profile` key -- keeps the picker correct when `main` was changed
-    // out-of-band (manual config edit, env override, or a fresh config where
-    // `active_profile` is still `None` but `main` already matches a profile).
-    // When several profiles share the same model name, the persisted
-    // `active_profile` key disambiguates.
+    // The active profile is the persisted `active_profile` key — the single
+    // source of truth since profiles stopped being destructively copied into
+    // `models.main`. Fall back to a name-match against the `main` runtime
+    // cache only for hand-constructed in-memory state that never passed
+    // through the load/migrate path (tests, embedders).
     let main_name = s.models.main.name.as_str();
-    let active_profile_key = s.models.active_profile.as_deref();
-    let matching: Vec<&String> = s
+    let active_key: Option<&str> = match s
         .models
-        .profiles
-        .iter()
-        .filter(|(_, ep)| ep.name == main_name)
-        .map(|(k, _)| k)
-        .collect();
-    let active_key: Option<&str> = match matching.len() {
-        0 => None,
-        1 => Some(matching[0].as_str()),
-        _ => active_profile_key
-            .filter(|k| matching.iter().any(|m| m.as_str() == *k))
-            .or_else(|| matching.first().map(|k| k.as_str())),
+        .active_profile
+        .as_deref()
+        .filter(|k| s.models.profiles.contains_key(*k))
+    {
+        Some(key) => Some(key),
+        None => s
+            .models
+            .profiles
+            .iter()
+            .filter(|(_, ep)| ep.name == main_name)
+            .map(|(k, _)| k.as_str())
+            .min(),
     };
 
     let mut profiles: Vec<ModelProfileInfo> = s
@@ -176,9 +173,11 @@ pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListMode
     Json(ListModelsResponse { profiles })
 }
 
-/// POST /api/v1/model/switch - activate a named profile. Copies the profile
-/// endpoint into `models.main`, records `active_profile`, persists to disk,
-/// and updates the live handle so the next chat turn uses the new model.
+/// POST /api/v1/model/switch - activate a named profile. Sets
+/// `models.active_profile` (the persisted source of truth), syncs the
+/// `models.main` runtime cache, and persists to disk so the next chat turn
+/// uses the new model. Non-destructive: the previously active model remains
+/// switchable as its own profile.
 ///
 /// Returns 400 with an actionable message (listing available profiles) when
 /// the profile key is unknown.
