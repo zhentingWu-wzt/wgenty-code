@@ -334,6 +334,84 @@ async fn multi_project_session_routing() {
 }
 
 #[tokio::test]
+async fn playground_sessions_route_to_their_playground_root() {
+    use crate::config::Settings;
+    use crate::daemon::models::CreateSessionRequest;
+    use crate::daemon::playgrounds::PlaygroundRegistry;
+    use crate::state::AppState;
+    use axum::extract::State;
+    use axum::Json;
+
+    let main = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.storage.working_dir = main.path().to_path_buf();
+    let mut state = DaemonState::new(AppState::new(settings)).await;
+    // Isolate the playground registry from the developer's real
+    // playgrounds.json (same pattern as the project registry test above).
+    let reg_store = tempfile::tempdir().unwrap();
+    state.playgrounds = PlaygroundRegistry::load(reg_store.path().join("playgrounds.json"));
+    let state = Arc::new(state);
+
+    // Auto-create a playground under a test-owned base dir.
+    let base = tempfile::tempdir().unwrap();
+    let pg = state.playgrounds.create(Some(base.path())).unwrap();
+
+    // A session bound to the playground root lives inside it.
+    let Json(created) = create_session(
+        State(state.clone()),
+        Json(CreateSessionRequest {
+            name: Some("scratch".to_string()),
+            project_path: Some(pg.path.to_string_lossy().to_string()),
+        }),
+    )
+    .await
+    .expect("create_session into playground");
+    let sid = created.id;
+    assert!(crate::utils::project_sessions_dir(&pg.path)
+        .join(format!("{sid}.json"))
+        .is_file());
+
+    // list_sessions aggregates playground stores with the root tagged.
+    let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
+    let entry = listed.iter().find(|s| s.id == sid).expect("listed");
+    assert_eq!(
+        entry.project_path.as_deref(),
+        Some(pg.path.to_string_lossy().as_ref())
+    );
+
+    // Session resolution + effective working root span playgrounds.
+    assert!(state.resolve_session(&sid).await.is_some());
+    assert_eq!(state.effective_session_root(&sid).await, pg.path.clone());
+
+    // Unregistered tmp dirs stay rejected (whitelist preserved).
+    let stranger = tempfile::tempdir().unwrap();
+    let rejected = create_session(
+        State(state.clone()),
+        Json(CreateSessionRequest {
+            name: None,
+            project_path: Some(stranger.path().to_string_lossy().to_string()),
+        }),
+    )
+    .await;
+    assert!(rejected.is_err());
+
+    // Workspace fs browsing (web files panel) resolves the playground root.
+    std::fs::write(pg.path.join("hello.txt"), "hi").unwrap();
+    let roots = crate::daemon::workspace_files::resolve_workspace_roots(&state).await;
+    assert!(roots.contains(&pg.path));
+
+    // Removing the playground unregisters it and deletes the dir when owned.
+    // The dir is not under the OS temp dir here, so it must be left alone.
+    let owned = state
+        .playgrounds
+        .remove(pg.path.to_string_lossy().as_ref())
+        .unwrap();
+    assert_eq!(owned, None);
+    assert!(pg.path.is_dir());
+    assert!(state.resolve_session(&sid).await.is_none());
+}
+
+#[tokio::test]
 async fn update_session_upsert_preserves_path_id_across_saves() {
     use crate::config::Settings;
     use crate::daemon::models::{SessionResponse, UpdateSessionRequest};

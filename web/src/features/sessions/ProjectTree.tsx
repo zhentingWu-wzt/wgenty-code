@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  FlaskConical,
   FolderGit2,
   FolderMinus,
   GitBranchPlus,
@@ -12,7 +13,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { DaemonClient } from "../../api/client";
-import type { ProjectInfo, SessionInfo, WorktreeInfo } from "../../api/types";
+import type { PlaygroundInfo, ProjectInfo, SessionInfo, WorktreeInfo } from "../../api/types";
 import { cn } from "../../lib/utils";
 import { useSessionManager, type SessionEntry } from "../../state/sessionManager";
 import { NewSessionModal, type NewSessionPreset } from "./NewSessionModal";
@@ -166,6 +167,7 @@ export function ProjectTree({
   const activeId = useSessionManager((s) => s.activeId);
 
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null);
+  const [playgrounds, setPlaygrounds] = useState<PlaygroundInfo[] | null>(null);
   const [worktreesByProject, setWorktreesByProject] = useState<Record<string, WorktreeInfo[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [newSession, setNewSession] = useState<{ preset?: NewSessionPreset } | null>(null);
@@ -190,6 +192,10 @@ export function ProjectTree({
         setWorktreesByProject(Object.fromEntries(results));
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    // Playground registry is independent of projects — fetch in parallel.
+    // Failures stay silent (older daemons lack the endpoint): the section
+    // simply renders empty rather than erroring the whole tree.
+    client.listPlaygrounds().then(setPlaygrounds).catch(() => setPlaygrounds([]));
   }, [client]);
 
   useEffect(refresh, [refresh, refreshKey]);
@@ -206,6 +212,12 @@ export function ProjectTree({
         return e.worktree && (e.worktree.branch === wt.branch || e.worktree.path === wt.path);
       });
 
+  // Playground sessions group under their playground (explicit projectPath —
+  // they can never collide with a project node, which also matches null →
+  // main). Worktree bindings don't exist for playgrounds; ignore any.
+  const sessionsInPlayground = (pg: PlaygroundInfo): SessionEntry[] =>
+    order.map((id) => entries[id]).filter((e) => e.projectPath === pg.path && !e.worktree);
+
   // ── Session actions ────────────────────────────────────────────────────────
   const archiveSession = async (e: SessionEntry) => {
     try {
@@ -213,6 +225,44 @@ export function ProjectTree({
       useSessionManager.getState().removeSession(e.id);
     } catch (err) {
       toast.error(`Archive failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // ── Playground actions ─────────────────────────────────────────────────────
+  // One click: the daemon creates a fresh sandbox dir under the OS temp dir.
+  const createPlayground = async () => {
+    try {
+      const info = await client.createPlayground();
+      toast.success(`Playground ${info.name} created`);
+      refresh();
+    } catch (e) {
+      toast.error(
+        `Create playground failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
+  // Removing a playground deletes its directory together with every session,
+  // memory entry, and checkpoint inside it (fully self-contained sandbox).
+  const removePlaygroundAction = async (pg: PlaygroundInfo) => {
+    const count = sessionsInPlayground(pg).length;
+    const msg =
+      count > 0
+        ? `Playground ${pg.name} has ${count} session(s). Deleting it removes the directory and ALL data inside (sessions, memory, checkpoints). Remove?`
+        : `Remove playground ${pg.name}? Its directory on disk is deleted.`;
+    if (!window.confirm(msg)) return;
+    try {
+      await client.removePlayground(pg.path);
+      // The sessions lived inside the deleted dir — drop local entries so
+      // they don't strand invisible (same pruning as removeProject).
+      const m = useSessionManager.getState();
+      for (const e of Object.values(m.entries)) {
+        if (e.projectPath === pg.path) m.removeSession(e.id);
+      }
+      toast.success(`Playground ${pg.name} removed`);
+      refresh();
+    } catch (e) {
+      toast.error(`Remove failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -403,6 +453,60 @@ export function ProjectTree({
           </TreeNode>
         );
       })}
+
+      {/* Playground 广场: scratch tmp-dir workspaces, not bound to any
+          project. One click creates a sandbox; its sessions live entirely
+          inside it and vanish with the directory. */}
+      <div className="mt-2 flex h-6 items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Playgrounds
+        </span>
+        <button
+          type="button"
+          title="New playground (tmp sandbox)"
+          className={TREE_ACTION_BTN}
+          onClick={() => void createPlayground()}
+        >
+          <FlaskConical size={12} />
+        </button>
+      </div>
+      {(playgrounds ?? []).length === 0 && (
+        <div className="px-1 py-0.5 text-[11px] text-muted-foreground">
+          No playgrounds — click + for a one-click tmp sandbox.
+        </div>
+      )}
+      {(playgrounds ?? []).map((pg) => (
+        <TreeNode
+          key={pg.path}
+          icon={<FlaskConical size={13} className="text-primary" />}
+          title={pg.name}
+          count={sessionsInPlayground(pg).length}
+          actions={
+            <>
+              <button
+                type="button"
+                className={TREE_ACTION_BTN}
+                title={`New session in ${pg.name}`}
+                onClick={() =>
+                  setNewSession({ preset: { mode: "main", project: pg.path, bare: true } })
+                }
+              >
+                <MessageSquarePlus size={12} />
+              </button>
+              <button
+                type="button"
+                className={cn(TREE_ACTION_BTN, "hover:text-danger")}
+                title={`Remove playground ${pg.name}`}
+                onClick={() => void removePlaygroundAction(pg)}
+              >
+                <Trash2 size={11} />
+              </button>
+            </>
+          }
+        >
+          {renderSessions(sessionsInPlayground(pg))}
+        </TreeNode>
+      ))}
       {newSession && (
         <NewSessionModal
           client={client}

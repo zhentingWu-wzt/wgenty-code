@@ -210,6 +210,9 @@ pub(crate) async fn resolve_workspace_roots(state: &DaemonState) -> Vec<PathBuf>
     let repos = {
         let mut repos = vec![state.projects.main_root()];
         repos.extend(state.projects.registered_roots());
+        // Playgrounds are browsable like projects (a `git worktree list` on
+        // a non-git playground simply contributes nothing).
+        repos.extend(state.playgrounds.roots());
         repos
     };
 
