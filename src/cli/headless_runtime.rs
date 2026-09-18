@@ -474,6 +474,7 @@ pub async fn run_oneshot(
         turn_id: Some(turn_id),
         agent_generation: 0,
         stream_max_retries: settings.agent.stream_max_retries,
+        stream_idle_timeout_secs: settings.agent.effective_stream_idle_timeout_secs(),
     };
 
     let mut stuck_detector = crate::utils::stuck_detector::StuckDetector::new();

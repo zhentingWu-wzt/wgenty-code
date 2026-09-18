@@ -1315,6 +1315,7 @@ pub async fn run_subagent_loop_with_permissions(
         turn_id: Some(loop_turn_id),
         agent_generation: 0,
         stream_max_retries: 0,
+        stream_idle_timeout_secs: crate::config::DEFAULT_STREAM_IDLE_TIMEOUT_SECS,
     };
 
     // s09/s10: open this subagent's team mailbox (best-effort). The shared

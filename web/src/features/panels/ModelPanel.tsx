@@ -8,6 +8,9 @@ import { cn } from "../../lib/utils";
  *  Rendered inside the `/model` command modal. */
 export function ModelPanel({ client }: { client: DaemonClient }) {
   const [models, setModels] = useState<ModelOption[]>([]);
+  // Distinguishes "fetch in flight" from "loaded, zero profiles declared" —
+  // an empty list must show the configure hint, not a forever "Loading".
+  const [loading, setLoading] = useState(true);
   const setModelName = useSessionManager((s) => s.setModelName);
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -19,7 +22,8 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
         setModels(res.profiles);
         setError(null);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
   }, [client]);
 
   useEffect(refresh, [refresh]);
@@ -40,7 +44,31 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
   };
 
   if (models.length === 0) {
-    return <div className="p-2 text-[12px] text-muted-foreground">{error ?? "Loading models…"}</div>;
+    if (error) {
+      return <div className="p-2 text-[12px] text-danger">{error}</div>;
+    }
+    if (loading) {
+      return <div className="p-2 text-[12px] text-muted-foreground">Loading models…</div>;
+    }
+    // Loaded but `models.profiles` is empty — mirror the TUI picker's hint so
+    // the modal explains itself instead of spinning forever.
+    return (
+      <div className="flex flex-col gap-2 p-2 text-[12px] text-muted-foreground">
+        <div>
+          No model profiles configured. Add{" "}
+          <span className="font-mono text-foreground">models.profiles</span> in{" "}
+          <span className="font-mono text-foreground">~/.wgenty-code/settings.json</span> to enable
+          switching, e.g.:
+        </div>
+        <pre className="overflow-x-auto rounded-md border border-border bg-background p-2 font-mono text-[11px] text-foreground">{`"models": {
+  "profiles": {
+    "glm":  { "name": "glm-5.3",  "display_name": "GLM 5.3",
+              "base_url": "https://…", "provider": "openai" },
+    "fast": { "name": "deepseek-chat", "tier": "light" }
+  }
+}`}</pre>
+      </div>
+    );
   }
 
   return (

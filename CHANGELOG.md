@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (Config)
+
+- **`models.profiles` 含 null 条目不再阻断启动**：profiles 改为唯一数据
+  源的过渡期构建曾把角色绑定写成 null profile 条目（如 `"planner": null`），
+  当前 schema（`HashMap<String, ModelEndpoint>`）解析即报
+  `invalid type: null, expected struct ModelEndpoint` 并退出。现在反序列化
+  跳过 null 条目并记 warn；指向被丢弃条目的 `active_profile` 由
+  `migrate_legacy` 恢复为真实 profile，角色绑定在解析处回退 main。
+
+### Added (Config)
+
+- **新增 `agent.stream_idle_timeout_secs` 配置**（默认 60）：SSE 流空闲
+  （无任何字节到达）多久判定为 stall。此前硬编码 60s，推理模型在屏幕无
+  输出的静默阶段（隐藏 reasoning、工具参数生成）若遇上游/中转缓冲超过
+  60s 会被误杀并触发 "Stream stalled" 重试。现在可在 settings.json 中
+  调大（如 180）；`0` 视为默认值。
+
 ### Fixed (Agent)
 
 - **流中断错误只显示外层 kind、无法定位根因**：reqwest 错误的 `Display`

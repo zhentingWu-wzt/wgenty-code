@@ -10,6 +10,12 @@ pub const DEFAULT_MAX_ROUNDS: usize = 100;
 /// retries live in the API client, not here).
 pub const DEFAULT_STREAM_MAX_RETRIES: u32 = 2;
 
+/// Default idle gap between SSE chunks before a stream is considered stalled,
+/// in seconds. Raise via `agent.stream_idle_timeout_secs` when an endpoint or
+/// proxy buffers during silent phases (e.g. hidden reasoning, tool-call
+/// argument generation) and sends no bytes for over a minute.
+pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
+
 /// Default subagent wall-clock timeout, in seconds.
 pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 1800;
 
@@ -280,6 +286,12 @@ pub struct AgentConfig {
     /// those live in ApiClient). Default: [`DEFAULT_STREAM_MAX_RETRIES`].
     #[serde(default = "default_stream_max_retries")]
     pub stream_max_retries: u32,
+    /// Idle gap between SSE chunks before a stream is considered stalled, in
+    /// seconds. Any received chunk (delta or keep-alive) resets the timer.
+    /// Default: [`DEFAULT_STREAM_IDLE_TIMEOUT_SECS`]. `0` is not allowed and
+    /// resolves to the default.
+    #[serde(default = "default_stream_idle_timeout_secs")]
+    pub stream_idle_timeout_secs: u64,
     #[serde(default)]
     pub token_budget: TokenBudget,
     #[serde(default)]
@@ -304,12 +316,17 @@ fn default_stream_max_retries() -> u32 {
     DEFAULT_STREAM_MAX_RETRIES
 }
 
+fn default_stream_idle_timeout_secs() -> u64 {
+    DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             plan_mode: false,
             max_rounds: None,
             stream_max_retries: default_stream_max_retries(),
+            stream_idle_timeout_secs: default_stream_idle_timeout_secs(),
             token_budget: TokenBudget::default(),
             subagent: SubagentLimits::default(),
             rlm: RlmSettings::default(),
@@ -324,6 +341,15 @@ impl AgentConfig {
     /// Effective main-agent LLM round cap (`Some(0)` = unlimited).
     pub fn effective_max_rounds(&self) -> usize {
         resolve_max_rounds(self.max_rounds)
+    }
+
+    /// Effective SSE idle-stall timeout in seconds (`0` → default).
+    pub fn effective_stream_idle_timeout_secs(&self) -> u64 {
+        if self.stream_idle_timeout_secs == 0 {
+            DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+        } else {
+            self.stream_idle_timeout_secs
+        }
     }
 }
 

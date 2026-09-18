@@ -2091,6 +2091,7 @@ async fn run_session_turn(
         turn_id: Some(Uuid::new_v4().to_string()),
         agent_generation: 0,
         stream_max_retries: settings.agent.stream_max_retries,
+        stream_idle_timeout_secs: settings.agent.effective_stream_idle_timeout_secs(),
     };
     let store = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
     let history_handle = store.handle();

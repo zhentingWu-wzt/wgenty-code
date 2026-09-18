@@ -201,29 +201,19 @@ impl App {
             planner_client,
             max_rounds,
             stream_max_retries,
+            stream_idle_timeout_secs,
             subagent_timeout_secs,
             context_window,
             max_tokens,
             debug_dump_reminder,
         ) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
-            let planner = if let Some(ref pm) = s.models.planner {
-                let mut planner_settings = s.clone();
-                planner_settings.models.main.name = pm.name.clone();
-                if let Some(ref url) = pm.base_url {
-                    planner_settings.models.main.base_url = Some(url.clone());
-                }
-                if let Some(ref key) = pm.api_key {
-                    planner_settings.models.main.api_key = Some(key.clone());
-                }
-                Some(crate::api::ApiClient::new(planner_settings))
-            } else {
-                None
-            };
+            let planner = s.planner_settings().map(crate::api::ApiClient::new);
             (
                 planner,
                 s.agent.effective_max_rounds(),
                 s.agent.stream_max_retries,
+                s.agent.effective_stream_idle_timeout_secs(),
                 s.agent.subagent.timeout_secs,
                 resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
@@ -305,6 +295,7 @@ impl App {
                 planner_client,
                 max_rounds,
                 stream_max_retries,
+                stream_idle_timeout_secs,
                 token_counter,
                 hook_manager,
                 prompt_context,
@@ -380,29 +371,19 @@ impl App {
             planner_client,
             max_rounds,
             stream_max_retries,
+            stream_idle_timeout_secs,
             subagent_timeout_secs,
             context_window,
             max_tokens,
             debug_dump_reminder,
         ) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
-            let planner = if let Some(ref pm) = s.models.planner {
-                let mut planner_settings = s.clone();
-                planner_settings.models.main.name = pm.name.clone();
-                if let Some(ref url) = pm.base_url {
-                    planner_settings.models.main.base_url = Some(url.clone());
-                }
-                if let Some(ref key) = pm.api_key {
-                    planner_settings.models.main.api_key = Some(key.clone());
-                }
-                Some(crate::api::ApiClient::new(planner_settings))
-            } else {
-                None
-            };
+            let planner = s.planner_settings().map(crate::api::ApiClient::new);
             (
                 planner,
                 s.agent.effective_max_rounds(),
                 s.agent.stream_max_retries,
+                s.agent.effective_stream_idle_timeout_secs(),
                 s.agent.subagent.timeout_secs,
                 resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
@@ -429,6 +410,7 @@ impl App {
                 planner_client,
                 max_rounds,
                 stream_max_retries,
+                stream_idle_timeout_secs,
                 token_counter,
                 hook_manager,
                 prompt_context,
@@ -472,11 +454,19 @@ impl App {
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
-        let (max_rounds, stream_max_retries, subagent_timeout_secs, context_window, max_tokens) = {
+        let (
+            max_rounds,
+            stream_max_retries,
+            stream_idle_timeout_secs,
+            subagent_timeout_secs,
+            context_window,
+            max_tokens,
+        ) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
             (
                 s.agent.effective_max_rounds(),
                 s.agent.stream_max_retries,
+                s.agent.effective_stream_idle_timeout_secs(),
                 s.agent.subagent.timeout_secs,
                 resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
@@ -510,6 +500,7 @@ impl App {
                 None,
                 max_rounds,
                 stream_max_retries,
+                stream_idle_timeout_secs,
                 token_counter,
                 hook_manager,
                 prompt_context,

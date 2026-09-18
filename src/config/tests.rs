@@ -12,6 +12,7 @@ fn test_rlm_settings_default_all_enabled() {
 }
 
 #[test]
+#[serial_test::serial]
 fn set_rejects_keys_outside_the_settings_schema() {
     // serde silently drops unknown fields, so a typo'd path must be caught
     // by the round-trip check instead of "succeeding" while the real key
@@ -27,6 +28,110 @@ fn set_rejects_keys_outside_the_settings_schema() {
     Settings::set("agent.exec_session.auto_retry_max", "5")
         .expect("the real nested path must keep working");
     std::env::remove_var("WGENTY_HOME");
+}
+
+/// Write an old-format (legacy `main`/`small`/`planner`) settings.json under
+/// a fake home and return its path-bearing dir. Caller must clean up
+/// `WGENTY_HOME` afterwards.
+fn seed_legacy_settings_home() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    std::fs::write(
+        cfg_dir.join("settings.json"),
+        r#"{
+            "models": {
+                "main": {"name": "glm-5.3", "base_url": "https://relay.example", "api_key": "k-main"},
+                "small": {"name": "haiku"},
+                "planner": {"name": "planner-x", "base_url": "https://planner.example"}
+            }
+        }"#,
+    )
+    .expect("seed settings");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    dir
+}
+
+/// Restore the pre-test `WGENTY_HOME` (None → remove). Tests mutating the
+/// global must run `#[serial_test::serial]` — the env var is process-wide.
+fn restore_wgenty_home(prev: Option<std::ffi::OsString>) {
+    match prev {
+        Some(v) => std::env::set_var("WGENTY_HOME", v),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn load_from_disk_migrates_legacy_model_fields() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+    let s = Settings::load_from_disk().expect("load");
+
+    // main → synthesized "main" profile, active.
+    assert_eq!(s.models.active_profile.as_deref(), Some("main"));
+    assert_eq!(s.models.profiles["main"].name, "glm-5.3");
+    assert_eq!(s.models.main.name, "glm-5.3", "runtime cache resynced");
+
+    // small → light-tier profile inheriting main's base_url.
+    let small = &s.models.profiles["small"];
+    assert_eq!(small.name, "haiku");
+    assert_eq!(small.tier, Some(crate::config::models::ModelTier::Light));
+    assert_eq!(small.base_url.as_deref(), Some("https://relay.example"));
+    assert_eq!(small.api_key.as_deref(), Some("k-main"));
+
+    // planner → profile + role ref.
+    assert_eq!(s.models.roles.planner.as_deref(), Some("planner"));
+    assert_eq!(s.models.profiles["planner"].name, "planner-x");
+    assert_eq!(
+        s.models.profiles["planner"].base_url.as_deref(),
+        Some("https://planner.example")
+    );
+
+    // Legacy slots consumed; save→reload round-trips the new format.
+    assert!(s.models.small.is_none() && s.models.planner.is_none());
+    s.save().expect("save");
+    let re = Settings::load_from_disk().expect("reload");
+    assert_eq!(re.models.active_profile.as_deref(), Some("main"));
+    assert!(re.models.profiles.contains_key("small"));
+    assert!(re.models.profiles.contains_key("planner"));
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn set_models_main_name_remaps_onto_active_profile_without_clobber() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+
+    // Legacy path: must patch the migrated "main" profile object — keeping
+    // sibling fields like base_url — instead of replacing `models.main`.
+    Settings::set("models.main.name", "\"glm-5.2\"").expect("set");
+
+    let s = Settings::load_from_disk().expect("reload");
+    let main_profile = s.models.profiles.get("main").expect("main profile exists");
+    assert_eq!(main_profile.name, "glm-5.2");
+    assert_eq!(
+        main_profile.base_url.as_deref(),
+        Some("https://relay.example"),
+        "sibling fields survive the legacy-path set"
+    );
+    assert_eq!(s.models.active_profile.as_deref(), Some("main"));
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn set_models_small_name_keeps_light_role() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+    // "small" light profile already exists post-migration → set targets it.
+    Settings::set("models.small.name", "\"haiku-2\"").expect("set");
+    let s = Settings::load_from_disk().expect("reload");
+    let small = &s.models.profiles["small"];
+    assert_eq!(small.name, "haiku-2");
+    assert_eq!(small.tier, Some(crate::config::models::ModelTier::Light));
+    restore_wgenty_home(prev);
 }
 
 #[test]
@@ -233,6 +338,33 @@ fn test_agent_stream_max_retries_default_and_serde() {
     s.agent.stream_max_retries = 5;
     let round: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
     assert_eq!(round.agent.stream_max_retries, 5);
+}
+
+#[test]
+fn test_agent_stream_idle_timeout_default_and_serde() {
+    // Programmatic default.
+    assert_eq!(
+        Settings::default().agent.stream_idle_timeout_secs,
+        DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+    );
+    // Missing field in settings.json → serde default (not 0).
+    let json = r#"{"plan_mode": false}"#;
+    let cfg: AgentConfig = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(
+        cfg.stream_idle_timeout_secs,
+        DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+    );
+    // Explicit value round-trips.
+    let mut s = Settings::default();
+    s.agent.stream_idle_timeout_secs = 180;
+    let round: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(round.agent.stream_idle_timeout_secs, 180);
+    // `0` resolves to the default via the effective accessor.
+    s.agent.stream_idle_timeout_secs = 0;
+    assert_eq!(
+        s.agent.effective_stream_idle_timeout_secs(),
+        DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+    );
 }
 
 #[test]

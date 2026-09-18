@@ -51,6 +51,7 @@ impl AgentLoop {
             turn_id: self.turn_id.clone(),
             agent_generation: self.agent_generation,
             stream_max_retries: self.stream_max_retries,
+            stream_idle_timeout_secs: self.stream_idle_timeout_secs,
         };
 
         let mut state = LoopTurnState {
