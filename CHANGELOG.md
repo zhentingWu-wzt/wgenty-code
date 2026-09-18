@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added (Web / Daemon)
+
+- **Web 端 Work-Graph 可视化面板**：右栏新增 Work Graph 入口，2s 轮询
+  daemon 快照端点 `GET /api/v1/workgraph`（枚举所有受信会话的运行时，
+  不接受客户端传入 session id），渲染任务图全貌与演进过程——SVG 分层
+  DAG 展示选中 plan 的节点/边（按角色着色，当前 route stage 高亮脉冲，
+  compile/test/verify 锚点相位勾选）、节点链状态时间线（running/verifying/
+  verified/failed + 重试计数）、分解子单元终态、以及审计尾部事件流
+  （锚点成败、路由选择、plan 适配 rev 迁移、分解）。后端新增
+  `org_graph::snapshot` 纯函数快照投影与
+  `ExecutionSessionRuntimeStore::snapshots()` 聚合，含单元测试。
+
 ### Fixed (Config)
 
 - **`models.profiles` 含 null 条目不再阻断启动**：profiles 改为唯一数据

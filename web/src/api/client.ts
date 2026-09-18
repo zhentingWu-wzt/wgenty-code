@@ -46,6 +46,7 @@ import type {
   TaskProgressResponse,
   TraceEvent,
   UndoTurnResult,
+  WorkGraphResponse,
   WorktreeBinding,
   WorktreeInfo,
   DirListing,
@@ -402,6 +403,13 @@ export class DaemonClient {
 
   async taskProgress(): Promise<TaskProgressResponse> {
     return jsonOrThrow(await this.authedFetch(`${this.base}/tasks/progress`));
+  }
+
+  /** GET /workgraph - read-only Work-Graph snapshots for every runtime the
+   *  daemon owns (selected plan, node chain, decomposition units, audit tail).
+   *  Consumed by the WorkGraphPanel's 2s poller. */
+  async getWorkGraph(): Promise<WorkGraphResponse> {
+    return jsonOrThrow(await this.authedFetch(`${this.base}/workgraph`));
   }
 
   // ── Memory (Tier 2 ops-panel-api) ──────────────────────────────────────────
