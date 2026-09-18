@@ -18,9 +18,9 @@
 
 ## 3. OpenAI 兼容路径剥离 reasoning_content
 
-- [ ] 3.1 `src/api/mod.rs`：新增 `strip_reasoning_content_for_replay(messages, provider)`，挂接到 OpenAI 兼容请求组装；DeepSeek provider 保留；settings 增加覆盖开关（默认 auto）
-- [ ] 3.2 测试：GLM/OpenAI 兼容序列化输出无 `reasoning_content` 字段；DeepSeek 保留；磁盘会话消息不受影响（仅请求边界剥离）
-- [ ] 3.3 验证：`cargo test --lib api`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt -- --check`
+- [x] 3.1 `src/api/mod.rs`：新增 `strip_reasoning_content_for_replay(messages, provider)`，挂接到 OpenAI 兼容请求组装；DeepSeek provider 保留；settings 增加覆盖开关（默认 auto）
+- [x] 3.2 测试：GLM/OpenAI 兼容序列化输出无 `reasoning_content` 字段；DeepSeek 保留；磁盘会话消息不受影响（仅请求边界剥离）
+- [x] 3.3 验证：`cargo test --lib api`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt -- --check`
 
 ## 4. 收尾
 
