@@ -143,17 +143,23 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
       )}
       {/* Cache badge — session-lifetime provider prompt-cache hit rate,
           token-weighted (Σ cached / Σ prompt, server-recomputed per call).
-          Hidden until the daemon reports usage. Tooltip keeps the totals. */}
+          Hidden until the daemon reports usage. CSS tooltip (group-hover)
+          instead of the native title attr: WKWebView/Tauri never renders
+          native tooltips, and even browsers delay them ~1s. */}
       {cacheHitPct !== null && (
-        <span
-          className="shrink-0 rounded-sm bg-success/15 px-1 tabular-nums text-success"
-          title={
-            sessionCacheTotals
-              ? `session cache: ${sessionCacheTotals.cached_tokens.toLocaleString()} / ${sessionCacheTotals.prompt_tokens.toLocaleString()} prompt tokens (weighted avg); last call: ${cachedTokens !== null ? `${cachedTokens.toLocaleString()} cached` : "no report"}`
-              : undefined
-          }
-        >
-          cache {cacheHitPct}%
+        <span className="group relative shrink-0">
+          <span className="rounded-sm bg-success/15 px-1 tabular-nums text-success">
+            cache {cacheHitPct}%
+          </span>
+          {sessionCacheTotals && (
+            <span className="pointer-events-none absolute bottom-full right-0 z-50 mb-1 hidden whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-left text-[11px] text-foreground shadow-lg group-hover:block">
+              session cache: {sessionCacheTotals.cached_tokens.toLocaleString()} /{" "}
+              {sessionCacheTotals.prompt_tokens.toLocaleString()} prompt tokens (weighted avg)
+              <br />
+              last call:{" "}
+              {cachedTokens !== null ? `${cachedTokens.toLocaleString()} cached` : "no report"}
+            </span>
+          )}
         </span>
       )}
       {/* Permission mode picker (normal / accept edits / yolo) */}
