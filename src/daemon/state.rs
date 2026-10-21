@@ -864,7 +864,16 @@ impl DaemonState {
         // Work-Graph store exists. Keep a late-bound handle so it can bind a
         // RootCause child before the child future is spawned.
         let root_cause_runtime_handle = crate::exec_session::root_cause_runtime_handle();
-        let permission_modes = PermissionModeStore::new();
+        let permission_modes = {
+            // Persist per-project modes to the user config dir so they survive
+            // daemon restarts (previously memory-only: every restart silently
+            // reset to Normal, surfacing as "mode didn't stick" in the web UI).
+            let store = crate::permissions::PermissionModeStore::with_persist_path(
+                crate::utils::config_dir().join(crate::permissions::mode_store::PERSIST_FILE),
+            );
+            store.load_persisted();
+            store
+        };
         // ── Shared MemoryManager (D1): backs memory_add tool + AutoDream ──
         let memory_manager = Arc::new(crate::context::MemoryManager::with_settings(
             &app_state.settings,
