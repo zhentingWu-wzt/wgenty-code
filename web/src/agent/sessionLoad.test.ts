@@ -54,4 +54,31 @@ describe("sessionMessagesToDisplay", () => {
     expect(tools.map((t) => t.toolExec?.call.function.name)).toEqual(["grep", "file_read"]);
     expect(tools.map((t) => t.toolExec?.response.content)).toEqual(["hit", "body"]);
   });
+
+  it("structured tool errors from old daemon builds flatten to strings", () => {
+    // Older builds persisted Rust ToolError objects ({code, message}) in the
+    // error field; rendering those raw crashes React (objects are not valid
+    // as a React child), so they must load as readable text.
+    const messages: SessionMessage[] = [
+      { role: "user", content: "make a task" },
+      {
+        role: "assistant",
+        content: "creating…",
+        tool_calls: [{ ...CALL, function: { name: "task_create", arguments: "{}" } }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "c1",
+        content: JSON.stringify({
+          success: false,
+          error: { code: "missing_description", message: "description is required" },
+        }),
+      },
+    ];
+    const out = sessionMessagesToDisplay(messages);
+    const tool = out.find((m) => m.role === "tool")!;
+    expect(tool.toolExec?.response.error).toBe(
+      "description is required (missing_description)",
+    );
+  });
 });
