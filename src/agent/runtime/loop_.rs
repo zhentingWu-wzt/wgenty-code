@@ -8,7 +8,7 @@ use super::compaction::{
 use super::compactor::{fallback_micro_compact, is_payload_too_large_error};
 use super::config::RuntimeConfig;
 use super::error::RuntimeError;
-use super::events::RuntimeEvent;
+use super::events::{RuntimeEvent, SessionCacheTotals};
 use super::ports::{
     Compactor, EventSink, HistoryStore, InboxPort, InteractionPort, LlmPort, PlannerPort,
     RoundObserver, SynthesisPort, TaskProgressPort, ToolPort, ToolRequest,
@@ -398,6 +398,13 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         events.emit(RuntimeEvent::UsageUpdate {
                             prompt_tokens: post_compact_prompt_tokens,
                             cached_tokens: None,
+                            // Lifetime totals unchanged by compaction (the
+                            // estimate path has no new provider usage to add).
+                            session_totals: hooks.token_counter.map(|c| SessionCacheTotals {
+                                prompt_tokens: c.total_prompt_tokens(),
+                                cached_tokens: c.total_cached_tokens(),
+                                cache_write_tokens: c.total_cache_write_tokens(),
+                            }),
                         });
                         events.emit(RuntimeEvent::ContextCompacted {
                             summary_chars: summary.chars().count(),
@@ -548,14 +555,26 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                 counter.add_output(usage.completion_tokens);
                 counter.set_prompt_tokens(usage.prompt_tokens);
                 counter.set_cached_tokens(usage_cached);
+                counter.record_call_usage(
+                    usage.prompt_tokens,
+                    usage_cached,
+                    usage.cache_creation_tokens,
+                );
             }
             // Live context-occupancy feed: the same value the TUI context bar
             // renders (token_counter.last_prompt_tokens), pushed to observing
             // frontends after every API call so multi-round turns show the
-            // bar climbing in real time.
+            // bar climbing in real time. `session_totals` carries the lifetime
+            // weighted hit rate for the cache-economy badge.
+            let session_totals = hooks.token_counter.map(|c| SessionCacheTotals {
+                prompt_tokens: c.total_prompt_tokens(),
+                cached_tokens: c.total_cached_tokens(),
+                cache_write_tokens: c.total_cache_write_tokens(),
+            });
             events.emit(RuntimeEvent::UsageUpdate {
                 prompt_tokens: usage.prompt_tokens,
                 cached_tokens: usage_cached,
+                session_totals,
             });
             if let Some(obs) = hooks.observer {
                 obs.on_usage(usage.total_tokens);
@@ -583,6 +602,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             events.emit(RuntimeEvent::UsageUpdate {
                 prompt_tokens: input_est,
                 cached_tokens: None,
+                session_totals: None,
             });
         }
 

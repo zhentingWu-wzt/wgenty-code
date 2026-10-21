@@ -324,12 +324,18 @@ impl EventSink for DaemonEventSink {
             RuntimeEvent::UsageUpdate {
                 prompt_tokens,
                 cached_tokens,
+                session_totals,
             } => {
                 self.publish(
                     SessionEventKind::UsageUpdate,
                     serde_json::json!({
                         "prompt_tokens": prompt_tokens,
                         "cached_tokens": cached_tokens,
+                        "session_totals": session_totals.map(|t| serde_json::json!({
+                            "prompt_tokens": t.prompt_tokens,
+                            "cached_tokens": t.cached_tokens,
+                            "cache_write_tokens": t.cache_write_tokens,
+                        })),
                     }),
                 );
             }
@@ -2218,6 +2224,12 @@ async fn run_session_turn(
         // Provider prompt-cache hit of the last call; null when the gateway
         // doesn't report it (web shows "—").
         "cached_tokens": token_counter.last_cached_tokens(),
+        // Session-lifetime cache economy (Σ over calls that reported usage).
+        "session_cache_totals": {
+            "prompt_tokens": token_counter.total_prompt_tokens(),
+            "cached_tokens": token_counter.total_cached_tokens(),
+            "cache_write_tokens": token_counter.total_cache_write_tokens(),
+        },
     });
     sink.publish(
         SessionEventKind::TurnContext,

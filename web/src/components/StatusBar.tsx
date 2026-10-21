@@ -50,6 +50,19 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
     activeStore?.subscribe ?? noopSubscribe,
     () => activeStore?.getState().cachedTokens ?? null,
   );
+  // Session-lifetime cache economy — the weighted hit rate Σcached/Σprompt
+  // recomputed server-side after every call. Meaningful average (not the
+  // mean of per-call percentages); null before the first usage report.
+  const sessionCacheTotals = useSyncExternalStore(
+    activeStore?.subscribe ?? noopSubscribe,
+    () => activeStore?.getState().sessionCacheTotals ?? null,
+  );
+  const cacheHitPct =
+    sessionCacheTotals && sessionCacheTotals.prompt_tokens > 0
+      ? Math.round(
+          Math.min(sessionCacheTotals.cached_tokens / sessionCacheTotals.prompt_tokens, 1) * 100,
+        )
+      : null;
 
   const statusText =
     connection === "connected"
@@ -128,14 +141,19 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
           </span>
         </span>
       )}
-      {/* Cache-hit badge — provider prompt-cache % of the last LLM call
-          (cached / prompt tokens). Hidden until the gateway reports it. */}
-      {cachedTokens !== null && contextTokens !== null && contextTokens > 0 && (
+      {/* Cache badge — session-lifetime provider prompt-cache hit rate,
+          token-weighted (Σ cached / Σ prompt, server-recomputed per call).
+          Hidden until the daemon reports usage. Tooltip keeps the totals. */}
+      {cacheHitPct !== null && (
         <span
           className="shrink-0 rounded-sm bg-success/15 px-1 tabular-nums text-success"
-          title={`cache ${cachedTokens.toLocaleString()} / ${contextTokens.toLocaleString()} tokens served from prompt cache`}
+          title={
+            sessionCacheTotals
+              ? `session cache: ${sessionCacheTotals.cached_tokens.toLocaleString()} / ${sessionCacheTotals.prompt_tokens.toLocaleString()} prompt tokens (weighted avg); last call: ${cachedTokens !== null ? `${cachedTokens.toLocaleString()} cached` : "no report"}`
+              : undefined
+          }
         >
-          cache {Math.round(Math.min(cachedTokens / contextTokens, 1) * 100)}%
+          cache {cacheHitPct}%
         </span>
       )}
       {/* Permission mode picker (normal / accept edits / yolo) */}
