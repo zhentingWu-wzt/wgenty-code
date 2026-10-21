@@ -70,17 +70,27 @@ fn retry_or_escalate(state: &WorkState) -> Result<WorkGraphStep, CoordinatorErro
     }
 
     let reports = state.specialist_reports(NodeType::GeneralPurpose)?;
-    Ok(
-        if reports.iter().any(|report| {
-            report.producer == NodeType::RootCause && report.kind == SpecialistReportKind::RootCause
-        }) {
-            require_plan_edge(state, NodeType::RootCause, NodeType::GeneralPurpose)?;
-            WorkGraphStep::Implement
-        } else {
-            require_plan_edge(state, NodeType::Verification, NodeType::RootCause)?;
-            WorkGraphStep::RootCause
-        },
-    )
+    if reports.iter().any(|report| {
+        report.producer == NodeType::RootCause && report.kind == SpecialistReportKind::RootCause
+    }) {
+        require_plan_edge(state, NodeType::RootCause, NodeType::GeneralPurpose)?;
+        return Ok(WorkGraphStep::Implement);
+    }
+    let diagnose_routable = match state.selected_work_graph() {
+        Some(plan) => plan.permits_role_edge(NodeType::Verification, NodeType::RootCause),
+        // Legacy checkpoints predate selected plans; retain deterministic
+        // RootCause routing for them.
+        None => true,
+    };
+    if diagnose_routable {
+        require_plan_edge(state, NodeType::Verification, NodeType::RootCause)?;
+        Ok(WorkGraphStep::RootCause)
+    } else {
+        // A stripped plan (low risk / zero specialist capacity) declares
+        // no diagnose channel; retry implementation directly until the
+        // anchor-driven adapter splices one (or the budget runs out).
+        Ok(WorkGraphStep::Implement)
+    }
 }
 
 fn selected_plan_has_role(state: &WorkState, role: NodeType) -> bool {
@@ -115,10 +125,56 @@ fn require_plan_edge(
 #[cfg(test)]
 mod tests {
     use crate::org_graph::{
-        Budget, CompileResult, NodeType, TestResult, VerifyFailureKind, VerifyOutcome, WorkState,
+        Budget, CompileResult, NodeType, Risk, TestResult, VerifyFailureKind, VerifyOutcome,
+        WorkGraphRequest, WorkGraphTaskKind, WorkState,
     };
 
     use super::{next_step, WorkGraphStep};
+
+    #[test]
+    fn stripped_plan_retries_implement_without_diagnosis() {
+        let mut state = WorkState::default();
+        state
+            .set_compile_result(
+                NodeType::Verification,
+                CompileResult {
+                    ok: true,
+                    stderr: String::new(),
+                },
+            )
+            .expect("verification anchor may record compile result");
+        state
+            .set_test_result(
+                NodeType::Verification,
+                TestResult {
+                    pass: false,
+                    failed_cases: vec!["cargo test".into()],
+                },
+            )
+            .expect("verification anchor may record test failure");
+        state
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter: 3,
+                    iter_used: 1,
+                    token_used: 0,
+                },
+            )
+            .expect("coordinator work node may record budget");
+        let stripped = crate::org_graph::compose_work_graph(&WorkGraphRequest {
+            task_kind: WorkGraphTaskKind::Implementation,
+            risk: Risk::Low,
+            ..Default::default()
+        })
+        .expect("compose stripped plan");
+        state.set_selected_work_graph(stripped);
+
+        assert_eq!(
+            next_step(&state).expect("route result"),
+            WorkGraphStep::Implement
+        );
+    }
 
     #[test]
     fn failed_compile_routes_to_root_cause_when_budget_remains() {

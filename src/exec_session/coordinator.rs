@@ -258,6 +258,31 @@ impl SessionCoordinator {
         Ok(removed)
     }
 
+    /// Truncate the node list at AND including `node_id` — used when a failed
+    /// node (the rollback anchor) is itself being discarded. `current_node`
+    /// clears so the session is ready for a fresh `begin_node`.
+    pub fn truncate_nodes_after_inclusive(&mut self, node_id: &str) -> Result<Vec<String>> {
+        let pos = self
+            .session
+            .node_states
+            .iter()
+            .position(|n| n.id == node_id);
+        let removed: Vec<String> = if let Some(idx) = pos {
+            let removed: Vec<String> = self.session.node_states[idx..]
+                .iter()
+                .map(|n| n.id.clone())
+                .collect();
+            self.session.node_states.truncate(idx);
+            self.session.current_node = None;
+            removed
+        } else {
+            Vec::new()
+        };
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        self.session.save(&self.session_dir)?;
+        Ok(removed)
+    }
+
     /// Increment the retry count of a node by id. Persists immediately.
     /// Called by `verify_node` (Task 6) on verify failure.
     pub fn increment_node_retry(&mut self, node_id: &str) -> Result<()> {
@@ -360,6 +385,25 @@ impl SessionCoordinator {
         if current_head.as_deref() == Some(target_refs.head.as_str()) {
             return Ok(false);
         }
+        // Guard: refuse to silently discard multiple commits made after the
+        // turn started. One commit is the agent's own node-scoped work (the
+        // standard workflow); more than one means external/infrastructure
+        // commits would be swallowed — surface them instead. The caller can
+        // stash/branch those commits and retry the rollback deliberately.
+        if let Ok(range) = run_git(
+            &self.project_root,
+            &["log", "--format=%s", &format!("{}..HEAD", target_refs.head)],
+        ) {
+            let subjects: Vec<&str> = range.lines().filter(|line| !line.is_empty()).collect();
+            if subjects.len() > 1 {
+                anyhow::bail!(
+                    "rollback would discard {} commit(s) made after the node started; \
+                     stash or branch them first, then retry: {}",
+                    subjects.len(),
+                    subjects.join(" | ")
+                );
+            }
+        }
         run_git(&self.project_root, &["reset", "--hard", &target_refs.head]).with_context(
             || {
                 format!(
@@ -411,6 +455,12 @@ impl SessionCoordinator {
         let mut deleted = Vec::new();
         for rel in &current_untracked {
             if baseline.contains(rel.as_str()) {
+                continue;
+            }
+            // The runtime's own state directory (checkpoints, snapshots,
+            // session json) must never be deleted by a rollback: removing it
+            // orphans in-memory state and deadlocks subsequent rollbacks.
+            if rel.starts_with(".wgenty-code/") || rel == ".wgenty-code" {
                 continue;
             }
             let abs = self.project_root.join(rel);
@@ -825,6 +875,83 @@ mod tests {
     }
 
     #[test]
+    fn rollback_refuses_when_multiple_commits_sit_between_head_and_target() {
+        // A rollback must never silently swallow commits made after the
+        // node started but outside its work: more than one commit between
+        // HEAD and the turn-start SHA means external/infrastructure work
+        // would be discarded — refuse and surface the subjects instead.
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap(); // turn-0
+
+        std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+        git_commit(dir.path(), "external-a");
+        std::fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+        git_commit(dir.path(), "external-b");
+
+        let err = coord.rollback_to("turn-0", &NoHooks).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("2 commit(s)"),
+            "error surfaces the count: {message}"
+        );
+        assert!(
+            message.contains("external-a") && message.contains("external-b"),
+            "commit subjects listed: {message}"
+        );
+    }
+
+    #[test]
+    fn rollback_single_commit_between_head_and_target_is_allowed() {
+        // One commit is the agent's own node-scoped work (the standard
+        // workflow, e.g. rollback_resets_git_head_when_commit_made); the
+        // guard only trips on multiple commits.
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap();
+
+        std::fs::write(dir.path().join("seed.txt"), "modified\n").unwrap();
+        git_commit(dir.path(), "agent work");
+
+        let result = coord.rollback_to("turn-0", &NoHooks).unwrap();
+        assert!(result.git_reset);
+    }
+
+    #[test]
+    fn rollback_never_deletes_runtime_state_directory() {
+        // .wgenty-code/ holds the runtime's own checkpoints and session
+        // state; untracked cleanup must skip it even when it appears in the
+        // untracked list (no gitignore protection).
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap();
+
+        let state_file = dir
+            .path()
+            .join(".wgenty-code/checkpoints/deadbeef/work_state.json");
+        std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+        std::fs::write(&state_file, "{}").unwrap();
+        std::fs::write(dir.path().join("scratch.txt"), "x\n").unwrap();
+
+        let result = coord.rollback_to("turn-0", &NoHooks).unwrap();
+        assert!(
+            result
+                .deleted_untracked
+                .iter()
+                .any(|p| p.ends_with("scratch.txt")),
+            "ordinary new untracked files are still cleaned: {:?}",
+            result.deleted_untracked
+        );
+        assert!(
+            state_file.exists(),
+            "runtime state directory must survive rollback"
+        );
+    }
+
+    #[test]
     fn rollback_resets_git_head_when_commit_made() {
         let dir = tempdir().unwrap();
         init_git_repo(dir.path());
@@ -1225,6 +1352,8 @@ mod tests {
                 attempt: 1,
                 kind: crate::org_graph::GraphAuditKind::ProfileResolved,
                 anchor: None,
+                adapted: None,
+                parent_node_id: None,
                 commands: Vec::new(),
                 route: None,
                 profile: Some(crate::org_graph::GraphAuditProfile::Rust),

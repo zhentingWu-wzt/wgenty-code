@@ -363,7 +363,9 @@ async fn rollback_without_verified_node_errors() {
     // Node is Running, not Verified.
 
     let err = setup.runtime.rollback_node().await.unwrap_err();
-    assert!(format!("{err}").contains("no verified node"));
+    // Running is not terminal: neither a Verified anchor nor a discardable
+    // Failed node exists.
+    assert!(format!("{err}").contains("no verified or failed node"));
 }
 
 #[tokio::test]

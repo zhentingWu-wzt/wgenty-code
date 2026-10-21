@@ -20,7 +20,12 @@ import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 
-function getHighlighter(): Promise<HighlighterCore> {
+/**
+ * Returns the app-wide highlighter singleton. Also used by the file preview
+ * panel (features/files/PreviewPanel.tsx) — never create a second core, the
+ * grammar/theme imports are the expensive part.
+ */
+export function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighterCore({
       themes: [import("shiki/dist/themes/one-dark-pro.mjs")],
@@ -45,7 +50,8 @@ function getHighlighter(): Promise<HighlighterCore> {
   return highlighterPromise;
 }
 
-const THEME = "one-dark-pro";
+/** Highlight theme shared with the preview panel — keep the pair in sync. */
+export const THEME = "one-dark-pro";
 
 /** Languages registered in `getHighlighter` — keep the two lists in sync. */
 const LANGS = [
@@ -79,6 +85,15 @@ const ALIASES: Record<string, string> = {
 // Kick off initialization immediately — by the time the first assistant
 // message streams in, highlighting is almost always ready.
 getHighlighter();
+
+/** Whether `lang` is registered in the singleton — callers outside this file
+ *  (the preview panel's extension mapping) guard against drift by checking
+ *  before calling `codeToHtml`, which throws on unknown langs. Applies the
+ *  same alias resolution as CodeBlock itself. */
+export function isRegisteredLang(language: string): boolean {
+  const resolved = ALIASES[language] ?? language;
+  return (LANGS as readonly string[]).includes(resolved);
+}
 
 export interface CodeBlockProps {
   language: string | null;

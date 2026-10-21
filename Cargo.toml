@@ -33,7 +33,7 @@ rusqlite = { version = "0.31" }
 
 # File system
 walkdir = "2.5"
-glob = "0.3"
+globset = "0.4"
 notify = "6.1"
 
 # Terminal UI — ratatui-based frontend (replaces TypeScript/React frontend)
@@ -55,7 +55,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
-thiserror = "1.0"
+thiserror = "2.0"
 anyhow = "1.0"
 
 # Memory & Cache
@@ -105,7 +105,7 @@ image = { version = "0.25", optional = true }
 
 
 # Web server for plugin marketplace + daemon API
-axum = { version = "0.7", optional = true }
+axum = { version = "0.7", optional = true, features = ["ws"] }
 tower = { version = "0.4", optional = true }
 tower-http = { version = "0.5", optional = true, features = ["fs", "cors"] }
 
@@ -131,11 +131,12 @@ mockall = "0.12"
 wasm-bindgen-test = "0.3"
 serde_yaml = "0.9"
 serial_test = "3"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 
 [features]
 default = ["i18n", "daemon", "bundled-skills"]
 wasm = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
-daemon = ["axum", "tower", "tower-http", "tokio-stream"]
+daemon = ["axum", "tower", "tower-http", "tokio-stream", "rust-embed"]
 i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
 bundled-skills = ["rust-embed"]
 export-icon = ["image"]

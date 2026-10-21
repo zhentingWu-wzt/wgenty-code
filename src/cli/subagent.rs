@@ -112,6 +112,14 @@ fn collect_headers(
     Ok(headers)
 }
 
+/// Display label for a header's `node_type`; `-` when absent (legacy rows).
+fn node_type_label(nt: &Option<crate::org_graph::NodeType>) -> String {
+    match nt {
+        Some(n) => format!("{:?}", n),
+        None => "-".to_string(),
+    }
+}
+
 /// Render the list table. Pure: takes headers, applies status filter + limit.
 fn render_list(headers: &[SubagentTranscriptHeader], status: Option<&str>, limit: usize) -> String {
     let filtered: Vec<&SubagentTranscriptHeader> = headers
@@ -122,10 +130,10 @@ fn render_list(headers: &[SubagentTranscriptHeader], status: Option<&str>, limit
 
     let mut out = String::new();
     out.push_str(&format!(
-        "{:<36}  {:<28}  {:<10}  {:<18}  {:>8}  {:>6}  {}\n",
-        "ID", "LABEL", "STATUS", "ROOT-CAUSE", "DUR(ms)", "ROUNDS", "STARTED"
+        "{:<36}  {:<28}  {:<10}  {:<16}  {:<18}  {:>8}  {:>6}  {}\n",
+        "ID", "LABEL", "STATUS", "NODE-TYPE", "ROOT-CAUSE", "DUR(ms)", "ROUNDS", "STARTED"
     ));
-    out.push_str(&format!("{}\n", "-".repeat(120)));
+    out.push_str(&format!("{}\n", "-".repeat(139)));
     for h in &filtered {
         let dur = h
             .finished_at
@@ -135,10 +143,11 @@ fn render_list(headers: &[SubagentTranscriptHeader], status: Option<&str>, limit
         let root = format!("{:?}", h.root_cause);
         let started = fmt_ts(h.started_at);
         out.push_str(&format!(
-            "{:<36}  {:<28}  {:<10}  {:<18}  {:>8}  {:>6}  {}\n",
+            "{:<36}  {:<28}  {:<10}  {:<16}  {:<18}  {:>8}  {:>6}  {}\n",
             h.id,
             label,
             h.status,
+            node_type_label(&h.node_type),
             truncate(&root, 18),
             dur,
             h.actual_rounds,
@@ -178,7 +187,18 @@ pub fn trace(db_path: &str, id: &str, format: TraceFormat, raw: bool) -> anyhow:
             .map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()),
     }
     .map_err(|e| anyhow::anyhow!("Failed to render trace: {}", e))?;
-    Ok(rendered)
+    // Text formats get a one-line header with the run's trusted node type
+    // (D4). Machine formats (html / chrome / raw JSON) keep their payload
+    // pristine; `--raw` carries node_type as a JSON field instead.
+    let out = match format {
+        TraceFormat::CallTree | TraceFormat::ErrorTimeline => format!(
+            "Node type: {}\n\n{}",
+            node_type_label(&transcript.node_type),
+            rendered
+        ),
+        TraceFormat::Html | TraceFormat::Chrome => rendered,
+    };
+    Ok(out)
 }
 
 /// Pretty-print the stored diagnostics for one transcript.
@@ -188,6 +208,7 @@ fn render_raw(t: &crate::transcript::SubagentTranscript) -> String {
         "session_id": t.session_id,
         "label": t.label,
         "status": t.status.to_string(),
+        "node_type": t.node_type,
         "root_cause": t.failure_diagnostics.as_ref().map(|d| format!("{:?}", d.root_cause)),
         "error_message": t.error_message,
         "failure_diagnostics": t.failure_diagnostics,
@@ -352,6 +373,7 @@ mod tests {
             summary: None,
             root_cause: root,
             project_path: None,
+            node_type: None,
         }
     }
 
@@ -413,6 +435,24 @@ mod tests {
     fn list_empty_shows_placeholder() {
         let out = render_list(&[], None, 50);
         assert!(out.contains("(no subagent runs match)"));
+    }
+
+    #[test]
+    fn list_renders_node_type_column() {
+        let mut explore = hdr("a", "s", "completed", 1000, FailureRootCause::Unknown);
+        explore.node_type = Some(crate::org_graph::NodeType::Explore);
+        let legacy = hdr("b", "s", "completed", 2000, FailureRootCause::Unknown);
+        let out = render_list(&[explore, legacy], None, 50);
+        assert!(out.contains("NODE-TYPE"), "column header present");
+        assert!(out.contains("Explore"), "known node type rendered");
+        let legacy_line = out
+            .lines()
+            .find(|l| l.starts_with('b'))
+            .expect("legacy row rendered");
+        assert!(
+            legacy_line.contains(" - "),
+            "legacy run (node_type=None) shows '-' placeholder: {legacy_line}"
+        );
     }
 
     // ── render_health ──
@@ -501,6 +541,7 @@ mod tests {
             summary: None,
             failure_diagnostics: None,
             project_path: None,
+            node_type: Some(crate::org_graph::NodeType::Explore),
             events: Vec::new(),
         };
         let store = SubagentTranscriptStore::open(db).unwrap();
@@ -524,6 +565,7 @@ mod tests {
 
         let tree = trace(path, "trace-1", TraceFormat::CallTree, false).unwrap();
         assert!(tree.contains("render me") || tree.contains("trace-1") || !tree.trim().is_empty());
+        assert!(tree.contains("Node type: Explore"), "trace shows node type");
 
         let timeline = trace(path, "trace-1", TraceFormat::ErrorTimeline, false).unwrap();
         assert!(timeline.contains("ERROR TIMELINE") || !timeline.trim().is_empty());
@@ -546,6 +588,7 @@ mod tests {
         assert_eq!(v["id"], "trace-1");
         assert_eq!(v["session_id"], "sess-trace");
         assert_eq!(v["status"], "failed");
+        assert_eq!(v["node_type"], "Explore");
         assert_eq!(v["error_message"], "Subagent timed out after 240s");
         std::fs::remove_dir_all(&dir).ok();
     }

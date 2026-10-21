@@ -1,6 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { sessionMessagesToDisplay } from "./sessionLoad";
-import { useDisplayPrefs } from "../state/displayPrefs";
 import type { SessionMessage } from "../api/types";
 
 const CALL = {
@@ -10,9 +9,7 @@ const CALL = {
 } as const;
 
 describe("sessionMessagesToDisplay", () => {
-  beforeEach(() => useDisplayPrefs.setState({ mode: "single" }));
-
-  it("single mode: folds tool results into the assistant bubble's toolExecs", () => {
+  it("tool results become standalone entries in wire order", () => {
     const messages: SessionMessage[] = [
       { role: "user", content: "read it" },
       { role: "assistant", content: "checking…", tool_calls: [CALL] },
@@ -23,35 +20,14 @@ describe("sessionMessagesToDisplay", () => {
       },
     ];
     const out = sessionMessagesToDisplay(messages);
-    expect(out.map((m) => m.role)).toEqual(["user", "assistant"]);
-    const assistant = out.find((m) => m.role === "assistant")!;
-    expect(assistant.toolExecs).toHaveLength(1);
-    expect(assistant.toolExecs?.[0].response.content).toBe("ok");
-  });
-
-  it("timeline mode: tool results become standalone entries in wire order", () => {
-    useDisplayPrefs.setState({ mode: "timeline" });
-    const messages: SessionMessage[] = [
-      { role: "user", content: "read it" },
-      { role: "assistant", content: "checking…", tool_calls: [CALL] },
-      {
-        role: "tool",
-        tool_call_id: "c1",
-        content: JSON.stringify({ success: true, content: "ok" }),
-      },
-    ];
-    const out = sessionMessagesToDisplay(messages);
-    // user → assistant text → tool entry, in wire order, no toolExecs on the bubble.
+    // user → assistant text → tool entry, in wire order.
     expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
-    const assistant = out.find((m) => m.role === "assistant")!;
-    expect(assistant.toolExecs).toBeUndefined();
     const tool = out.find((m) => m.role === "tool")!;
     expect(tool.toolExec?.call.function.name).toBe("file_read");
     expect(tool.toolExec?.response.content).toBe("ok");
   });
 
-  it("timeline mode: multiple tool calls interleave in call order", () => {
-    useDisplayPrefs.setState({ mode: "timeline" });
+  it("multiple tool calls interleave in call order", () => {
     const messages: SessionMessage[] = [
       { role: "user", content: "go" },
       {
@@ -77,5 +53,32 @@ describe("sessionMessagesToDisplay", () => {
     const tools = out.filter((m) => m.role === "tool");
     expect(tools.map((t) => t.toolExec?.call.function.name)).toEqual(["grep", "file_read"]);
     expect(tools.map((t) => t.toolExec?.response.content)).toEqual(["hit", "body"]);
+  });
+
+  it("structured tool errors from old daemon builds flatten to strings", () => {
+    // Older builds persisted Rust ToolError objects ({code, message}) in the
+    // error field; rendering those raw crashes React (objects are not valid
+    // as a React child), so they must load as readable text.
+    const messages: SessionMessage[] = [
+      { role: "user", content: "make a task" },
+      {
+        role: "assistant",
+        content: "creating…",
+        tool_calls: [{ ...CALL, function: { name: "task_create", arguments: "{}" } }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "c1",
+        content: JSON.stringify({
+          success: false,
+          error: { code: "missing_description", message: "description is required" },
+        }),
+      },
+    ];
+    const out = sessionMessagesToDisplay(messages);
+    const tool = out.find((m) => m.role === "tool")!;
+    expect(tool.toolExec?.response.error).toBe(
+      "description is required (missing_description)",
+    );
   });
 });

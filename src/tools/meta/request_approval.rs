@@ -4,9 +4,9 @@
 //! timeout) for an `ApprovalResponse`. The response is delivered by
 //! `MailboxInbox::drain` resolving the oneshot registered here.
 
-use crate::agent::ToolContext;
 use crate::teams::approval_registry;
 use crate::teams::mailbox::{Mailbox, TeamMessage};
+use crate::tools::context::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::collections::HashMap;

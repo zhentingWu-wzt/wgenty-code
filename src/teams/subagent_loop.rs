@@ -5,10 +5,6 @@
 //! non-root synthesis barrier) and exposes [`run_subagent_loop_with_permissions`]
 //! for `task` / RLM / run_script callers.
 
-use crate::agent::progress::{
-    ErrorInfo, ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
-    SubagentProgress, SubagentStatus,
-};
 use crate::agent::runtime::{
     run_agent_loop, ApiLlmPort, EventSink, HistoryStore, InboxPort, LoopHooks, LoopTurnState,
     MutexHistoryStore, RoundObserver, RunLoopArgs, RuntimeConfig, RuntimeError, RuntimeEvent,
@@ -20,6 +16,10 @@ use crate::agent::{
 };
 use crate::api::{ApiClient, ChatMessage};
 use crate::config::resolve_context_window;
+use crate::progress::{
+    ErrorInfo, ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
+    SubagentProgress, SubagentStatus,
+};
 use crate::teams::approval_registry;
 use crate::teams::failure_diagnostics::{
     redact_params, truncate_char_safe, FailedRoundContext, FailureRootCause, RetryAttempt,
@@ -714,6 +714,9 @@ impl SubagentSynthesis {
                 self.settings.agent.subagent.trace.context_char_limit,
                 retention,
                 workdir.as_ref().map(|p| p.to_string_lossy().to_string()),
+                // The re-dispatch is the same logical run: recover its trusted
+                // node type from the failed child's persisted transcript.
+                transcript.node_type.clone(),
             );
         }
 
@@ -854,7 +857,11 @@ impl SubagentObserver {
                 .expect("lock poisoned: current_params")
                 .clone(),
             action_log: action_log_snapshot.clone(),
-            text_snapshot: if is_terminal { None } else { snapshot },
+            // Always carry the snapshot (terminal included): the terminal
+            // event doubles as the result delivery to progress consumers and
+            // the trace bus. Non-terminal TraceEvents still omit it (mapped
+            // to `result` only when terminal).
+            text_snapshot: snapshot,
             started_at: self.started_at_ms,
             elapsed_ms: elapsed.as_millis() as u64,
             metadata,
@@ -955,6 +962,15 @@ impl RoundObserver for SubagentObserver {
             .find(|m| m.role == "assistant")
             .and_then(|m| m.content.clone())
             .unwrap_or_default();
+        // Keep the terminal snapshot current: the final assistant message IS
+        // the subagent's result. `emit` forwards it so REST views and the
+        // trace bus (`TraceEvent::result`) carry the finished result.
+        if !summary.is_empty() {
+            *self
+                .text_snapshot
+                .lock()
+                .expect("lock poisoned: text_snapshot") = Some(summary.clone());
+        }
         self.action_log
             .lock()
             .expect("lock poisoned: action_log")
@@ -1299,6 +1315,7 @@ pub async fn run_subagent_loop_with_permissions(
         turn_id: Some(loop_turn_id),
         agent_generation: 0,
         stream_max_retries: 0,
+        stream_idle_timeout_secs: crate::config::DEFAULT_STREAM_IDLE_TIMEOUT_SECS,
     };
 
     // s09/s10: open this subagent's team mailbox (best-effort). The shared

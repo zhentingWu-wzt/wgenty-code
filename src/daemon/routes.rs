@@ -12,7 +12,10 @@ use crate::daemon::run_loop;
 use crate::daemon::session_admin;
 use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
+use crate::daemon::web_ui;
+use crate::daemon::workspace_files;
 use crate::daemon::worktrees;
+use crate::daemon::ws_push;
 use axum::{
     middleware,
     routing::{delete, get, post, put},
@@ -26,6 +29,10 @@ pub(crate) fn agent_routes() -> Router<Arc<DaemonState>> {
     Router::new()
         .route("/api/v1/ui/viewers", post(handlers::create_viewer))
         .route("/api/v1/agents/self", get(handlers::get_agent_self))
+        .route(
+            "/api/v1/agents/directory",
+            get(handlers::get_agent_directory),
+        )
         .route("/api/v1/agents/children", get(handlers::get_agent_children))
         .route(
             "/api/v1/agents/children/:capability",
@@ -61,7 +68,15 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // Thin-client heartbeat (SSE keepalive); daemon tracks connected
         // clients and initiates graceful shutdown when the last one leaves.
         .route("/api/v1/client/heartbeat", get(handlers::client_heartbeat))
+        // Embedded Web UI static hosting (design §1): page load precedes any
+        // token acquisition, so these routes live in the public group. Merged
+        // BEFORE `.with_state` — public_router() is Router<Arc<DaemonState>>.
+        .merge(web_ui::public_router())
         .with_state(state.clone());
+
+    // Cloned for the activity middleware; the original is consumed by
+    // `.with_state(state)` at the end of the protected router chain.
+    let activity_state = state.clone();
 
     let protected = Router::new()
         // Config
@@ -69,6 +84,8 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/config",
             get(handlers::get_config).put(handlers::update_config),
         )
+        // Graceful shutdown (`wgenty-code daemon stop`)
+        .route("/api/v1/shutdown", post(handlers::shutdown))
         // Model profiles (switchable via /model in the TUI)
         .route("/api/v1/models", get(handlers::list_models))
         .route("/api/v1/model/switch", post(handlers::switch_model))
@@ -129,6 +146,12 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/subagents/trace/stream",
             get(handlers::subagent_trace_stream),
         )
+        // One-shot JSON replay of persisted transcript headers — the
+        // connection-light alternative to a session-scoped SSE stream.
+        .route(
+            "/api/v1/subagents/trace/replay",
+            get(handlers::subagent_trace_replay),
+        )
         // MCP
         .route(
             "/api/v1/mcp/servers",
@@ -159,6 +182,12 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         )
         // Filesystem browsing (web directory picker — read-only sub-dir listing)
         .route("/api/v1/fs/dirs", get(fs::list_dirs))
+        // Workspace file tree + preview (read-only, scoped to registered
+        // workspace roots incl. linked git worktrees)
+        .route("/api/v1/fs/entries", get(workspace_files::list_entries))
+        .route("/api/v1/fs/file", get(workspace_files::get_file))
+        .route("/api/v1/fs/git-status", get(workspace_files::git_status))
+        .route("/api/v1/fs/git-diff", get(workspace_files::git_diff))
         // Projects (multi-project registry; main project = daemon working_dir)
         .route(
             "/api/v1/projects",
@@ -180,9 +209,29 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
         )
+        // WebSocket push channel. Sits behind the auth/activity route_layers
+        // like every protected route (axum wraps routes registered before a
+        // `route_layer`); `require_auth` accepts the `?token=` query fallback
+        // (design §3.1) because browser WebSocket APIs cannot set headers,
+        // and the handler re-checks credentials in-handler with the same
+        // rejection shape. Idle-shutdown accounting registers the connection
+        // as an active client on upgrade (task 2.4).
+        .route("/api/v1/ws", get(ws_push::ws_handler))
         // Session server-side runs (spawn / cancel an agent turn, live SSE events)
-        .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
+        .route(
+            "/api/v1/sessions/:id/run",
+            post(run_loop::post_run).get(run_loop::get_run_status),
+        )
         .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))
+        // Queued user messages (submitted while the run slot was busy)
+        .route(
+            "/api/v1/sessions/:id/queue",
+            get(run_loop::get_queue).delete(run_loop::delete_queue),
+        )
+        .route(
+            "/api/v1/sessions/:id/queue/:message_id",
+            delete(run_loop::delete_queued_message),
+        )
         .route(
             "/api/v1/sessions/:id/events",
             get(run_loop::get_session_events),
@@ -196,6 +245,13 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/sessions/:id/archive",
             put(session_admin::set_archived),
         )
+        // Layered inside `require_auth` (which runs first) so only
+        // authenticated requests reset the idle-shutdown timer — public
+        // health probes must not keep an unused daemon alive.
+        .route_layer(middleware::from_fn_with_state(
+            activity_state,
+            touch_activity,
+        ))
         .route_layer(middleware::from_fn_with_state(
             api_token,
             auth::require_auth,
@@ -203,4 +259,15 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .with_state(state);
 
     (health, protected)
+}
+
+/// Records API activity on the idle-shutdown tracker. Runs after
+/// `require_auth`, so unauthenticated traffic does not count as activity.
+async fn touch_activity(
+    axum::extract::State(state): axum::extract::State<Arc<DaemonState>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    state.active_clients.touch();
+    next.run(request).await
 }

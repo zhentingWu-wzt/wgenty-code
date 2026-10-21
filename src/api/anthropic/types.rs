@@ -142,6 +142,9 @@ pub struct AnthropicResponse {
 pub struct AnthropicUsage {
     pub input_tokens: usize,
     pub output_tokens: usize,
+    /// Tokens served from the Anthropic prompt cache (billing discount).
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<usize>,
 }
 
 // ── Anthropic SSE Event Types ────────────────────────────────────────────────

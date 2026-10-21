@@ -19,6 +19,8 @@ pub struct TokenCounter {
 
     /// Tokens used in the most recent prompt (set by caller before each send).
     last_prompt_tokens: Arc<AtomicUsize>,
+    /// Provider prompt-cache hit of the most recent call (0 = None sentinel).
+    last_cached_tokens: Arc<AtomicUsize>,
 }
 
 impl TokenCounter {
@@ -29,6 +31,7 @@ impl TokenCounter {
             turn_input: Arc::new(AtomicUsize::new(0)),
             turn_output: Arc::new(AtomicUsize::new(0)),
             last_prompt_tokens: Arc::new(AtomicUsize::new(0)),
+            last_cached_tokens: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -81,6 +84,23 @@ impl TokenCounter {
     /// Number of tokens used in the most recent prompt.
     pub fn last_prompt_tokens(&self) -> usize {
         self.last_prompt_tokens.load(Ordering::Relaxed)
+    }
+
+    /// Record the provider prompt-cache hit of the most recent call. `None`
+    /// (and `Some(0)`) collapse to the internal 0 sentinel — 0 cached tokens
+    /// carries no signal, and AtomicUsize cannot hold Option.
+    pub fn set_cached_tokens(&self, cached: Option<usize>) {
+        self.last_cached_tokens
+            .store(cached.unwrap_or(0), Ordering::Relaxed);
+    }
+
+    /// Prompt-cache hit of the most recent call; `None` when the gateway
+    /// doesn't report one (0 collapses to None — no hit signal).
+    pub fn last_cached_tokens(&self) -> Option<usize> {
+        match self.last_cached_tokens.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(n),
+        }
     }
 }
 

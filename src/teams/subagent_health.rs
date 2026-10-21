@@ -621,6 +621,7 @@ mod tests {
             summary: None,
             root_cause: FailureRootCause::default(),
             project_path: None,
+            node_type: None,
         }
     }
 

@@ -210,6 +210,9 @@ fn spawn_daemon(port: u16, resource_dir: Option<&std::path::Path>) -> Result<(),
     // which we'll pick up via read_token() / discover_daemon() afterwards.
     std::process::Command::new(&exe)
         .args(["daemon", "--port", &port.to_string()])
+        // Client-bound: the daemon follows the desktop app down once it (and
+        // any other client) disconnects, instead of idling out from under it.
+        .args(["--spawned-by", "desktop"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

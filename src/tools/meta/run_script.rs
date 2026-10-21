@@ -4,11 +4,12 @@
 //! through a sandboxed Rhai scripting engine. Exposes key agent APIs as Rhai
 //! functions: `task`, `grep`, `read`, `exec`, `log`.
 
-use crate::agent::{AgentCoordinator, ToolContext};
+use crate::agent::AgentCoordinator;
 use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
+use crate::tools::context::ToolContext;
 use crate::tools::meta::task::transcript::{new_transcript_id, save_minimal_transcript};
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 use crate::transcript::SubagentTranscriptStore;
@@ -177,7 +178,7 @@ impl Tool for RunScriptTool {
                                 sub_system_prompt,
                                 &prompt,
                                 &tools,
-                                settings.agent.subagent.max_rounds.unwrap_or(100),
+                                settings.subagent_effective_max_rounds(),
                                 settings.agent.subagent.timeout_secs,
                                 None,
                                 None,
@@ -206,6 +207,7 @@ impl Tool for RunScriptTool {
                                     settings.agent.subagent.trace.context_char_limit,
                                     retention,
                                     Some(settings.storage.working_dir.to_string_lossy().to_string()),
+                                    Some(crate::org_graph::NodeType::GeneralPurpose),
                                 );
                             }
                             return match result {
@@ -229,7 +231,7 @@ impl Tool for RunScriptTool {
                     let result = run_subagent_loop_with_permissions(
                         &client, reg.clone(), &child_context, coordinator.clone(),
                         sub_system_prompt,
-                        &prompt, &tools, settings.agent.subagent.max_rounds.unwrap_or(100), settings.agent.subagent.timeout_secs, None, None, None,
+                        &prompt, &tools, settings.subagent_effective_max_rounds(), settings.agent.subagent.timeout_secs, None, None, None,
                         permission, Arc::new(settings.clone()), transcript_store.clone(), None,
                     ).await;
                     if let Some(ref store) = transcript_store {
@@ -250,6 +252,7 @@ impl Tool for RunScriptTool {
                             settings.agent.subagent.trace.context_char_limit,
                             retention,
                             Some(settings.storage.working_dir.to_string_lossy().to_string()),
+                            Some(crate::org_graph::NodeType::GeneralPurpose),
                         );
                     }
                     let (terminal, content) = match result {

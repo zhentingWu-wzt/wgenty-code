@@ -87,6 +87,9 @@ export interface ConfigResponse {
   max_tokens: number;
   timeout: number;
   streaming: boolean;
+  /** Model context window (tokens) — the denominator of the StatusBar
+   *  context-usage bar. */
+  context_window: number;
 }
 
 // ── MCP servers ──────────────────────────────────────────────────────────────
@@ -240,6 +243,9 @@ export interface TraceEvent {
   token_budget_k?: number | null;
   cumulative_tokens: number;
   error?: unknown;
+  /** Terminal-only final result text of the subagent (present on the last
+   *  progress event once status is completed/failed/cancelled). */
+  result?: string | null;
   kind?:
     | "progress"
     | "permission_pending"
@@ -248,6 +254,89 @@ export interface TraceEvent {
     | "question_resolved";
   permission?: StructuredApproval;
   question?: QuestionPayload;
+}
+
+// ── Scoped agent views (subagent local view + transcript) ───────────────────
+
+/** Mirrors `AgentLifecycleStatus` (serde variant names). Kept as a loose string
+ *  union so unknown future variants still render without a type error. */
+export type AgentLifecycleStatus =
+  | "idle"
+  | "running"
+  | "thinking"
+  | "awaiting_approval"
+  | "awaiting_input"
+  | "completed"
+  | "done"
+  | "failed"
+  | "cancelled"
+  | (string & {});
+
+/** Self projection in a scoped agent view. Mirrors `SelfAgentResponse`. */
+export interface SelfAgentResponse {
+  agent_id: string;
+  status: AgentLifecycleStatus;
+  label: string;
+  text_snapshot?: string | null;
+  cumulative_tokens: number;
+  started_at: number;
+  elapsed_ms: number;
+  round?: number | null;
+  max_rounds?: number | null;
+  /** Model messages captured by the progress callback. */
+  messages: ChatMessage[];
+}
+
+/** Direct-child projection with an opaque navigation capability. Mirrors
+ *  `DirectChildResponse`. */
+export interface DirectChildResponse {
+  agent_id: string;
+  status: AgentLifecycleStatus;
+  label: string;
+  summary?: string | null;
+  navigation_capability: string;
+  text_snapshot?: string | null;
+  cumulative_tokens: number;
+  started_at: number;
+  elapsed_ms: number;
+  round?: number | null;
+  max_rounds?: number | null;
+  messages: ChatMessage[];
+}
+
+/** Local view: self plus direct children only. Mirrors
+ *  `LocalAgentViewResponse`. */
+export interface LocalAgentViewResponse {
+  self_view: SelfAgentResponse;
+  children: DirectChildResponse[];
+}
+
+/** One node of the recursive subagent tree. Mirrors `AgentDirectoryEntry`
+ *  (src/daemon/models.rs). */
+export interface AgentDirectoryEntry {
+  agent_id: string;
+  status: AgentLifecycleStatus;
+  label: string;
+  summary: string | null;
+  cumulative_tokens: number;
+  started_at: number;
+  elapsed_ms: number;
+  round: number | null;
+  max_rounds: number | null;
+  depth: number;
+  children: AgentDirectoryEntry[];
+}
+
+/** Full subagent tree for a session. Mirrors `AgentDirectoryResponse`
+ *  (src/daemon/models.rs). */
+export interface AgentDirectoryResponse {
+  session_id: string;
+  root: AgentDirectoryEntry;
+}
+
+/** `POST /api/v1/ui/viewers` response. */
+export interface CreateViewerResponse {
+  viewer_token: string;
 }
 
 // ── ask_user_question (server-side interaction) ──────────────────────────────
@@ -453,11 +542,24 @@ export type SessionEventKind =
   | "tool_result"
   | "turn_done"
   | "turn_error"
+  /** Live context occupancy: `data.prompt_tokens` after each LLM call. */
+  | "usage_update"
   | "save"
-  | "turn_context";
+  | "turn_context"
+  /** Control plane (seq 0, empty run_id): the replay window no longer covers
+   *  the client's cursor; realign to data.latest_seq and keep reading. */
+  | "sync_lost"
+  /** Root tool Ask / ask_user_question notifications (web consumes the same
+   *  prompts via the trace stream; tolerated here for forward-compat). */
+  | "permission_required"
+  | "ask_user"
+  /** Daemon-truth turn phase (thinking / connecting / preparing_tools /
+   *  compacting). Authoritative when present; local derivation stays as the
+   *  fallback for older daemons that never send it. */
+  | "phase_changed";
 
 /** Mirrors SessionEvent (src/daemon/run_loop.rs:26). Server-side run broadcasts
- *  these on GET /sessions/:id/events (SSE). data shape varies by kind. */
+ * these on GET /sessions/:id/events (SSE). data shape varies by kind. */
 export interface SessionEvent {
   seq: number;
   session_id: string;
@@ -466,10 +568,49 @@ export interface SessionEvent {
   data: Record<string, unknown>;
 }
 
-/** Response to POST /sessions/:id/run. */
+/** Mirrors GlobalEvent (src/daemon/global_events.rs) — one event on the
+ * daemon-wide global bus, delivered via SSE (`GET /events`) or the WebSocket
+ * push channel (`global` envelopes). `seq` is monotonic per daemon boot. */
+export interface GlobalEvent {
+  seq: number;
+  kind: string;
+  data: Record<string, unknown>;
+}
+
+/** Response to POST /sessions/:id/run. `run_id` is ALWAYS set — a queued
+ *  turn keeps the same id when the scheduler starts it, so the observer can
+ *  filter on it immediately. Legacy daemons answered `run_id: ""` +
+ *  `queued: true`; `runSessionTurn` falls back to run-id adoption for those. */
 export interface RunResponse {
   run_id: string;
   session_id: string;
+  queued?: boolean;
+  queue_position?: number;
+}
+
+/** Response to GET /sessions/:id/run — active-run reconciliation snapshot
+ *  (consumed after a `sync_lost` to decide whether the awaited turn is still
+ *  live). `run_id` null = session idle; `queued` counts FIFO messages that
+ *  have not started yet. */
+export interface SessionRunStatus {
+  run_id: string | null;
+  queued: number;
+}
+
+/** Mirrors PendingSubagentPermission (src/daemon/models.rs) — one blocked
+ *  policy-Ask waiter, from GET /tools/pending-permissions. */
+export interface PendingSubagentPermission {
+  request_id: string;
+  from: string;
+  kind: string;
+  tool: string;
+  policy_reason: string;
+  session_rule: string;
+  human_summary: string;
+}
+
+export interface ListPendingPermissionsResponse {
+  pending: PendingSubagentPermission[];
 }
 
 // ── Filesystem browsing (web directory picker) ──────────────────────────────
@@ -490,4 +631,73 @@ export interface DirListing {
   parent: string | null;
   /** Sorted child directories (hidden ones interleaved). */
   entries: DirEntry[];
+}
+
+// ── Workspace file preview (read-only, path-bounded) ────────────────────────
+
+/** One entry of a workspace directory listing. Mirrors FsEntry
+ *  (src/daemon/workspace_files.rs). Symlinks are skipped server-side. */
+export interface FsEntry {
+  name: string;
+  is_dir: boolean;
+  /** Bytes; 0 for directories or when metadata is unavailable. */
+  size: number;
+}
+
+/** Mirrors FsEntries. Response to GET /api/v1/fs/entries?path=<dir>.
+ *  Directories sort first, names case-insensitive. `truncated` marks the
+ *  2000-entry cap — render a "list truncated" hint, don't fetch more. */
+export interface FsEntries {
+  current: string;
+  entries: FsEntry[];
+  truncated: boolean;
+}
+
+/** Weak version stamp (design D4): mtime+size is enough for the future
+ *  optimistic-concurrency check and costs nothing to compute. Both fs
+ *  endpoints return it. */
+export interface FileVersion {
+  mtime_ms: number;
+  size: number;
+}
+
+/** Client-side union over the two wire shapes of GET /api/v1/fs/file:
+ *  JSON `{lines, version}` (UTF-8 text) or `{is_binary, version}`
+ *  (non-whitelisted binary — unsupported), and raw bytes (whitelisted
+ *  image/PDF mime) wrapped as a Blob with its Content-Type mime. */
+export type FileContent =
+  | { kind: "text"; lines: string[]; version: FileVersion }
+  | { kind: "binary-unsupported"; version: FileVersion }
+  | { kind: "blob"; mime: string; blob: Blob };
+
+/** Simplified git change kind (serde snake_case). Mirrors GitChangeKind
+ *  (src/daemon/workspace_files.rs): A/? → added, D → deleted, rest → modified. */
+export type GitChangeKind = "added" | "modified" | "deleted";
+
+/** One changed file under a workspace root; `path` is relative to that root.
+ *  Mirrors GitFileStatus. Response item of GET /api/v1/fs/git-status. */
+export interface GitFileStatus {
+  path: string;
+  status: GitChangeKind;
+}
+
+/** One inline-diff row kind. Mirrors DiffLineKind
+ *  (src/daemon/workspace_files.rs). */
+export type DiffLineKind = "context" | "add" | "delete";
+
+/** One row of a file's full inline diff vs HEAD. The daemon diffs with a
+ *  huge context so unchanged lines appear too — `lines` is the complete
+ *  new-file content with deleted lines interleaved. Mirrors DiffLine. */
+export interface DiffLine {
+  kind: DiffLineKind;
+  old_no?: number;
+  new_no?: number;
+  text: string;
+}
+
+/** Response of GET /api/v1/fs/git-diff?path=<file>. Mirrors FileDiff. */
+export interface FileDiff {
+  status: GitChangeKind;
+  truncated: boolean;
+  lines: DiffLine[];
 }

@@ -21,18 +21,11 @@ use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;
 use std::collections::HashMap;
-use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 fn debug_log(msg: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/wgenty-code-debug.log")
-    {
-        let _ = writeln!(f, "{}", msg);
-    }
+    tracing::debug!("{}", msg);
 }
 
 pub struct TaskManagementTool {

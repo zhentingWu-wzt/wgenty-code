@@ -28,6 +28,7 @@ pub mod mcp;
 pub mod org_graph;
 pub mod permissions;
 pub mod plugins;
+pub mod progress;
 pub mod prompts;
 pub mod runtime;
 pub mod sandbox;

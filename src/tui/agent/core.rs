@@ -50,7 +50,8 @@ impl AgentLoop {
             session_id: self.session_id.clone(),
             turn_id: self.turn_id.clone(),
             agent_generation: self.agent_generation,
-            stream_max_retries: super::MAX_RETRIES,
+            stream_max_retries: self.stream_max_retries,
+            stream_idle_timeout_secs: self.stream_idle_timeout_secs,
         };
 
         let mut state = LoopTurnState {
@@ -60,11 +61,13 @@ impl AgentLoop {
             rounds_since_plan: self.rounds_since_plan,
             compacted_summary: self.compacted_summary.clone(),
             compaction_boundary: self.compaction_boundary,
+            micro_compact_frontier: 0,
             consecutive_parse_errors: 0,
             rounds_since_task_mgmt: 0,
             last_measured_prompt_tokens: None,
             last_request_chars: None,
             micro_compact_attempted: false,
+            length_continuations: 0,
         };
 
         let planner_ref = planner

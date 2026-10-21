@@ -6,6 +6,21 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Extract the shell text a command-execution tool will run, so every
+/// guardian integration point reviews the same set of tools:
+/// `command`-style tools (`execute_command`/`exec_command`/`background`) and
+/// stdin injection into an already-running session (`write_stdin`).
+pub fn shell_text_for_tool<'a>(tool_name: &str, args: &'a serde_json::Value) -> Option<&'a str> {
+    match tool_name {
+        "execute_command" | "exec_command" | "background" => args.get("command")?.as_str(),
+        "write_stdin" => {
+            let chars = args.get("chars")?.as_str()?;
+            (!chars.is_empty()).then_some(chars)
+        }
+        _ => None,
+    }
+}
+
 /// Risk level for a proposed command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RiskLevel {
@@ -104,9 +119,66 @@ fn matches_pattern(command: &str, pattern: &str) -> bool {
     true
 }
 
+/// Fork bombs appear with and without spaces (`:(){ :|:& };:` vs
+/// `:(){:|:&};:`); collapse whitespace before matching either form.
+fn is_fork_bomb(command: &str) -> bool {
+    let collapsed: String = command
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    collapsed.contains(":(){:|:&};:")
+}
+
+/// Detect `rm` with recursive flags (in any order or combined form) whose
+/// target is the filesystem root. Catches variants the literal patterns miss,
+/// e.g. `rm -r -f /`, `rm --recursive -f /*`, `rm -fr / --no-preserve-root`.
+fn is_destructive_rm(command: &str) -> bool {
+    let lowered = command.to_lowercase();
+    let tokens: Vec<&str> = lowered.split_whitespace().collect();
+
+    for (i, token) in tokens.iter().enumerate() {
+        // Basename only for the command token (`/usr/bin/rm` → `rm`);
+        // target tokens must stay intact so `/` and `/*` are recognisable.
+        let base = token.rsplit('/').next().unwrap_or(token);
+        if base != "rm" {
+            continue;
+        }
+        let mut recursive = false;
+        let mut root_target = false;
+        let mut preserve_root = false;
+        for t in &tokens[i + 1..] {
+            match *t {
+                "--no-preserve-root" => preserve_root = true,
+                "--recursive" => recursive = true,
+                other if other.starts_with("--") => {}
+                other if other.starts_with('-') && other.len() > 1 => {
+                    // Short-flag cluster: -r, -f, -rf, -fr, -R (lowercased).
+                    if other.contains('r') {
+                        recursive = true;
+                    }
+                }
+                // First non-flag token is the (only) target examined.
+                "/" | "/*" | "/*/" => {
+                    root_target = true;
+                    break;
+                }
+                _ => break,
+            }
+        }
+        if (recursive && root_target) || preserve_root {
+            return true;
+        }
+    }
+    false
+}
+
 /// Classify the risk level of a shell command.
 pub fn classify_risk(command: &str) -> RiskLevel {
     let cmd_lower = command.to_lowercase();
+
+    if is_fork_bomb(command) || is_destructive_rm(command) {
+        return RiskLevel::Critical;
+    }
 
     // Check for command substitution that could hide dangerous operations
     for indicator in SUBSTITUTION_INDICATORS {
@@ -241,6 +313,16 @@ impl Default for Guardian {
     }
 }
 
+impl From<&crate::config::GuardianSettings> for GuardianConfig {
+    fn from(settings: &crate::config::GuardianSettings) -> Self {
+        Self {
+            enabled: settings.enabled,
+            llm_review: settings.llm_review,
+            auto_deny_critical: settings.auto_deny_critical,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +352,40 @@ mod tests {
             classify_risk("rm -rf / --no-preserve-root"),
             RiskLevel::Critical
         );
+    }
+
+    #[test]
+    fn test_classify_critical_rm_flag_order_variants() {
+        // Literal patterns miss these; the token scanner must catch them.
+        assert_eq!(classify_risk("rm -r -f /"), RiskLevel::Critical);
+        assert_eq!(classify_risk("rm -fr /"), RiskLevel::Critical);
+        assert_eq!(classify_risk("rm --recursive -f /*"), RiskLevel::Critical);
+        assert_eq!(classify_risk("/usr/bin/rm -r -f /"), RiskLevel::Critical);
+        assert_eq!(
+            classify_risk("rm -rf / --no-preserve-root"),
+            RiskLevel::Critical
+        );
+        // Recursive rm on a real subpath stays High (destructive but targeted).
+        assert_eq!(classify_risk("rm -rf /tmp/x"), RiskLevel::High);
+    }
+
+    #[test]
+    fn test_classify_fork_bomb_spacing_variants() {
+        assert_eq!(classify_risk(":(){ :|:& };:"), RiskLevel::Critical);
+        assert_eq!(classify_risk(":(){:|:&};:"), RiskLevel::Critical);
+        assert_eq!(classify_risk(":(){  :|:&  };:"), RiskLevel::Critical);
+    }
+
+    #[test]
+    fn test_guardian_settings_wired_into_config() {
+        let settings = crate::config::GuardianSettings {
+            enabled: false,
+            llm_review: false,
+            auto_deny_critical: false,
+        };
+        let guardian = Guardian::new(GuardianConfig::from(&settings));
+        let decision = guardian.check("execute_command", "rm -r -f /");
+        assert!(decision.allowed, "disabled guardian must allow");
     }
 
     #[test]

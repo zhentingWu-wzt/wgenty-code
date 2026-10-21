@@ -314,7 +314,6 @@ export function ProjectTree({
             key={p.path}
             icon={<FolderGit2 size={13} />}
             title={p.name}
-            subtitle={p.path}
             actions={
               <>
                 {p.is_git_repo && (

@@ -87,15 +87,44 @@ impl Cli {
                 self.run_skills(action).await?;
             }
             #[cfg(feature = "daemon")]
-            Some(super::Commands::Daemon { port }) => {
-                crate::daemon::run(state, *port).await?;
-            }
+            Some(super::Commands::Daemon {
+                action,
+                port,
+                host,
+                spawned_by,
+            }) => match action {
+                None => {
+                    // Every fresh launch replaces a still-running predecessor
+                    // so the daemon never keeps serving a stale binary.
+                    super::daemon_admin::kill_predecessor().await?;
+                    crate::daemon::run(state, host, *port, spawned_by.clone()).await?
+                }
+                Some(super::DaemonCommands::Status) => {
+                    super::daemon_admin::status(*port).await?;
+                }
+                Some(super::DaemonCommands::Stop) => {
+                    super::daemon_admin::stop(*port).await?;
+                }
+            },
             #[cfg(not(feature = "daemon"))]
-            Some(super::Commands::Daemon { .. }) => {
-                return Err(anyhow::anyhow!(
-                    "Daemon feature is not enabled. Rebuild with: cargo build --features daemon"
-                ));
-            }
+            Some(super::Commands::Daemon {
+                action,
+                port,
+                host: _,
+                spawned_by: _,
+            }) => match action {
+                Some(super::DaemonCommands::Status) => {
+                    super::daemon_admin::status(*port).await?;
+                }
+                Some(super::DaemonCommands::Stop) => {
+                    super::daemon_admin::stop(*port).await?;
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Daemon feature is not enabled. Rebuild with: cargo build --features daemon"
+                    ));
+                }
+            },
             Some(super::Commands::Subagent { action }) => {
                 super::subagent::run(&state, action).await?;
             }
@@ -238,6 +267,10 @@ impl Cli {
         // Create client and app
         let client = DaemonClient::new(base_url);
         crate::utils::startup_timing::mark("daemon client created");
+        // A running TUI counts as a thin client: hold the heartbeat
+        // connection so the daemon's idle shutdown stays suspended even
+        // while the TUI sits idle at the prompt (making no requests).
+        client.spawn_heartbeat_keeper();
         // Local id; first SaveSession upserts via PUT /sessions/:id and must
         // preserve this id (see Session::with_id / update_session). Do not
         // POST an empty session on startup — that would flood the panel with

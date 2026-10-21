@@ -55,11 +55,13 @@ impl Tool for WriteStdinTool {
             code: Some("missing_parameter".to_string()),
         })?;
         let chars = input["chars"].as_str().unwrap_or("");
-        let yield_time_ms = input["yield_time_ms"].as_u64().unwrap_or(1000);
+        let yield_time_ms = input["yield_time_ms"]
+            .as_u64()
+            .unwrap_or(super::DEFAULT_YIELD_TIME_MS);
         let max_output_chars = input["max_output_chars"]
             .as_u64()
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
-            .unwrap_or(4000);
+            .unwrap_or(super::DEFAULT_MAX_OUTPUT_CHARS);
 
         let chunk = self
             .sessions

@@ -33,7 +33,9 @@ pub use config::RuntimeConfig;
 pub use error::RuntimeError;
 pub use events::RuntimeEvent;
 pub use history::MutexHistoryStore;
-pub use loop_::{run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, StreamStyle};
+pub use loop_::{
+    run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, StreamStyle, MAX_LENGTH_CONTINUATIONS,
+};
 pub use ports::{
     ChatCompletion, Compactor, EventSink, HistoryStore, InboxPort, InteractionPort, LlmPort,
     PlannerPort, RoundObserver, SynthesisPort, TaskProgressPort, ToolPort, ToolRequest,

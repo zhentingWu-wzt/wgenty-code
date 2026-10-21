@@ -159,19 +159,28 @@ function HooksTab({ reminder }: { reminder: TurnContextData["reminder"] }) {
 }
 
 function TokensTab({ usage }: { usage: TurnContextData["usage"] }) {
+  const cached = usage.cached_tokens;
+  const cachedDisplay =
+    cached == null
+      ? "—"
+      : `${cached.toLocaleString()} (${Math.round(
+          Math.min(cached / Math.max(usage.prompt_tokens, 1), 1) * 100,
+        )}%)`;
   return (
     <div className="flex gap-4 p-1">
       <Metric label="Prompt" value={usage.prompt_tokens} />
       <Metric label="Completion" value={usage.completion_tokens} />
       <Metric label="Total" value={usage.total_tokens} />
+      <Metric label="Cached" value={cachedDisplay} />
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value }: { label: string; value: number | string }) {
+  const display = typeof value === "number" ? value.toLocaleString() : value;
   return (
     <div className="flex flex-col">
-      <span className="text-[15px] font-semibold">{value.toLocaleString()}</span>
+      <span className="text-[15px] font-semibold">{display}</span>
       <span className="text-[11px] text-muted-foreground">{label}</span>
     </div>
   );

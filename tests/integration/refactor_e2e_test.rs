@@ -13,10 +13,10 @@
 #![cfg(any())]
 
 use std::sync::Arc;
-use wgenty_code::agent::progress::{ProgressCallback, SubagentProgress};
 use wgenty_code::agent::runtime::loop_::run_agent_loop;
 use wgenty_code::api::ApiClient;
 use wgenty_code::config::Settings;
+use wgenty_code::progress::{ProgressCallback, SubagentProgress};
 use wgenty_code::tools::ToolRegistry;
 
 fn create_test_project(dir: &std::path::Path) {
@@ -161,9 +161,9 @@ fn count_occurrences(dir: &std::path::Path, pattern: &str) -> usize {
 
 fn progress_printer(progress: SubagentProgress) {
     let icon = match progress.status {
-        wgenty_code::agent::progress::SubagentStatus::Running => "🔄",
-        wgenty_code::agent::progress::SubagentStatus::Completed => "✅",
-        wgenty_code::agent::progress::SubagentStatus::Failed => "❌",
+        wgenty_code::progress::SubagentStatus::Running => "🔄",
+        wgenty_code::progress::SubagentStatus::Completed => "✅",
+        wgenty_code::progress::SubagentStatus::Failed => "❌",
         _ => "⏳",
     };
     println!(

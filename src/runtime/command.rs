@@ -114,6 +114,57 @@ impl CommandRouter {
     }
 }
 
+/// Parse a simple YAML list from text.
+/// Looks for lines like "key:" followed by "  - value" entries.
+/// (Mirrors the TUI's workflow.yaml parser.)
+fn parse_yaml_list(text: &str, key: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == key {
+            in_section = true;
+            continue;
+        }
+        if in_section {
+            if let Some(value) = trimmed.strip_prefix("- ") {
+                result.push(value.trim().to_string());
+            } else if !trimmed.starts_with('-') && !trimmed.is_empty() {
+                // No longer in the list section
+                break;
+            }
+        }
+    }
+    result
+}
+
+/// Discover the comet workflow's entry commands for a project root — the same
+/// recipe the TUI uses: `<root>/.wgenty-code/skills/comet/workflow.yaml`
+/// `entry_commands:` first, falling back to the external skill registry's
+/// comet-prefixed canonical names. Synchronous disk I/O; callers on async
+/// paths should wrap in `block_in_place` (it only runs once per process via
+/// the daemon's OnceLock cache).
+pub fn discover_workflow_entry_commands(project_root: &std::path::Path) -> Vec<String> {
+    let workflow_yaml = project_root.join(".wgenty-code/skills/comet/workflow.yaml");
+    if let Ok(content) = std::fs::read_to_string(&workflow_yaml) {
+        let entries = parse_yaml_list(&content, "entry_commands:");
+        if !entries.is_empty() {
+            return entries;
+        }
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let roots = crate::knowledge::SkillRootResolver::roots_with(&home, project_root);
+    crate::knowledge::ExternalSkillRegistry::discover(roots)
+        .map(|reg| {
+            reg.list()
+                .iter()
+                .filter(|s| s.canonical_name.starts_with("comet"))
+                .map(|s| s.canonical_name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +216,21 @@ mod tests {
     fn test_not_slash() {
         let router = CommandRouter::new(vec![]);
         assert!(matches!(router.route("hello"), RouteResult::NotSlash));
+    }
+
+    #[test]
+    fn discover_workflow_entry_commands_reads_workflow_yaml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill_dir = dir.path().join(".wgenty-code/skills/comet");
+        std::fs::create_dir_all(&skill_dir).expect("mkdirs");
+        std::fs::write(
+            skill_dir.join("workflow.yaml"),
+            "name: comet\nentry_commands:\n  - comet\n  - pr\nsteps: 4\n",
+        )
+        .expect("write yaml");
+
+        let cmds = discover_workflow_entry_commands(dir.path());
+        assert_eq!(cmds, vec!["comet".to_string(), "pr".to_string()]);
     }
 
     #[test]

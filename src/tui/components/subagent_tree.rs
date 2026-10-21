@@ -1,7 +1,7 @@
 //! SubagentTree — in-memory tree state for subagent execution progress.
 
-use crate::agent::progress::{SubagentProgress, SubagentStatus};
 use crate::daemon::models::LocalAgentViewResponse;
+use crate::progress::{SubagentProgress, SubagentStatus};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]

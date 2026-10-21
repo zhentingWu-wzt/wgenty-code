@@ -30,7 +30,7 @@ use chrono::Local;
 /// Pre-compiled base instructions (embedded at compile time).
 const BASE_INSTRUCTIONS: &str = include_str!("base.md");
 
-/// Opening preamble for the hook-only `<system-reminder>` channel.
+/// Opening preamble for the per-turn `<system-reminder>` channel.
 const REMINDER_PREAMBLE_OPENING: &str =
     "As you answer the user's questions, you can use the following context:\n\
      # injectedContext\n\
@@ -261,16 +261,28 @@ pub struct ReminderOutput {
     pub to_transcript: Option<String>,
 }
 
-/// Build the per-turn `<system-reminder>` block from **hook injections only**.
+/// Build the per-turn `<system-reminder>` block from hook injections and the
+/// turn's recalled cross-session memories (`ctx.memories`).
 ///
 /// Static project/user instruction files are session-cached in
 /// [`assemble_instructions`] and must not be embedded into user messages.
-/// Returns `None` when there are no hook injections.
+/// Memories ride the user-message tail (not the system cascade) so the
+/// system prefix stays byte-stable across turns — the precondition for
+/// provider implicit prompt caching (change: prompt-cache-economy).
+/// Memories are model-only: they never appear in `to_transcript` (the
+/// Inspector surfaces them via `recalled_memories` instead).
+/// Returns `None` when there is nothing to inject.
 pub fn build_user_turn_reminder(
-    _ctx: &PromptContext,
+    ctx: &PromptContext,
     hook_injections: &[InjectedFragment],
 ) -> Option<ReminderOutput> {
-    if hook_injections.is_empty() {
+    let memories: Vec<&str> = ctx
+        .memories
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    if hook_injections.is_empty() && memories.is_empty() {
         return None;
     }
 
@@ -291,6 +303,16 @@ pub fn build_user_turn_reminder(
             to_transcript.push_str(&block);
             transcript_has_hook = true;
         }
+    }
+
+    // Recalled memories: after hooks (user-configured hooks win the front).
+    if !memories.is_empty() {
+        to_model.push_str("\n<relevant_memories>\n");
+        for line in memories {
+            to_model.push_str(line);
+            to_model.push('\n');
+        }
+        to_model.push_str("</relevant_memories>\n");
     }
 
     to_model.push('\n');
@@ -383,10 +405,11 @@ pub fn dump_user_turn_reminder(
             body.push_str("## Result\n\n");
             body.push_str("**No `<system-reminder>` was prepended to this user message.**\n\n");
             body.push_str(
-                "Current channel is hook-only: static WGENTY/AGENTS/rules live in the \
-                 system cascade (`assemble_instructions`), not in the per-turn user \
-                 reminder. An empty dump means no `UserPromptSubmit` hook injected \
-                 context this turn.\n",
+                "Channel carries UserPromptSubmit hook injections and the turn's \
+                 recalled cross-session memories (model-only). Static WGENTY/AGENTS/\
+                 rules live in the system cascade (`assemble_instructions`), not in \
+                 the per-turn user reminder. An empty dump means no hook injected \
+                 context and no memories were recalled this turn.\n",
             );
         }
         Some(r) => {
@@ -518,24 +541,12 @@ pub fn assemble_instructions(
         });
     }
 
-    // ── Layer 5b: Recalled Cross-Session Memories ──────────────────────
-    if !context.memories.is_empty() {
-        let memory_lines = context.memories.join("\n");
-        let text = format!(
-            "<relevant_memories>\n{}\n</relevant_memories>",
-            memory_lines
-        );
-        let char_count = text.len();
-        system_messages.push(ChatMessage::system(text.clone()));
-        layers.push(LayerMeta {
-            label: "Layer 5b: project_memories".into(),
-            source: LayerSource::MemoryRecall {
-                scope: "project".into(),
-            },
-            content: text,
-            char_count,
-        });
-    }
+    // ── Layer 5b: Recalled Cross-Session Memories (moved) ──────────────
+    // Recalled memories ride the per-turn user-message <system-reminder>
+    // (build_user_turn_reminder) instead of the system cascade: they change
+    // every turn, and a mutating system prefix defeats provider implicit
+    // prompt caching (change: prompt-cache-economy). Layer 5c below stays —
+    // the global-memory set is stable across turns.
 
     // ── Layer 5c: Global Memories (injected every turn, soft cap 50) ──
     if !context.global_memories.is_empty() {
@@ -887,66 +898,72 @@ mod tests {
     }
 
     #[test]
-    fn test_assemble_with_memories_between_layer_5_and_6() {
-        let mut settings = Settings::default();
-        settings.prompt.include.skills = true; // ensure Layer 6 exists
-
-        let ctx = PromptContext::new()
+    fn assemble_excludes_recalled_memories_from_system_cascade() {
+        // Recalled memories change every turn; they must ride the per-turn
+        // user-message reminder instead of the system cascade so the system
+        // prefix stays byte-stable for provider prompt caching.
+        let settings = Settings::default();
+        let base = PromptContext::new()
             .with_cwd("/tmp")
             .with_shell("zsh")
-            .with_skills(vec![SkillEntry {
-                name: "test-skill".into(),
-                description: "A test skill".into(),
-            }])
-            .with_memories(vec![
-                "- [decision] Use Jaccard for dedup".to_string(),
-                "- [knowledge] Project uses Rust".to_string(),
-            ]);
+            .with_memories(vec!["- [decision] Use Jaccard for dedup".to_string()]);
+        let other_recall = base.clone().with_memories(vec![
+            "- [knowledge] Completely different recall this turn".to_string(),
+        ]);
 
-        let instructions = assemble_instructions(&settings, &ctx);
-        let messages = &instructions.system_messages;
-
-        // Find positions of environment marker, memories marker, and skills marker
-        let env_pos = messages
-            .iter()
-            .position(|m| {
-                m.content
-                    .as_deref()
-                    .is_some_and(|c| c.contains("<environment_context>"))
-            })
-            .expect("Layer 5 (Environment) should be present");
-
-        let mem_pos = messages
-            .iter()
-            .position(|m| {
+        let a = assemble_instructions(&settings, &base).system_messages;
+        let b = assemble_instructions(&settings, &other_recall).system_messages;
+        assert_eq!(a.len(), b.len(), "same layer count across recalls");
+        for (ma, mb) in a.iter().zip(b.iter()) {
+            assert_eq!(ma.content, mb.content, "system prefix must be byte-stable");
+        }
+        assert!(
+            !a.iter().any(|m| {
                 m.content
                     .as_deref()
                     .is_some_and(|c| c.contains("<relevant_memories>"))
-            })
-            .expect("Memories should be present when non-empty");
-
-        let skills_pos = messages
-            .iter()
-            .position(|m| {
-                m.content
-                    .as_deref()
-                    .is_some_and(|c| c.contains("Available skills"))
-            })
-            .expect("Layer 6 (Skills) should be present when skills enabled");
-
-        assert!(
-            env_pos < mem_pos,
-            "Memories should come after Environment (Layer 5)"
+            }),
+            "recalled memories must not appear in the system cascade"
         );
-        assert!(
-            mem_pos < skills_pos,
-            "Memories should come before Skills (Layer 6)"
-        );
+    }
 
-        // Verify content
-        let mem_content = messages[mem_pos].content.as_deref().unwrap();
-        assert!(mem_content.contains("Use Jaccard for dedup"));
-        assert!(mem_content.contains("Project uses Rust"));
+    #[test]
+    fn reminder_carries_memories_after_hooks_and_degrades_to_none() {
+        let mut settings = Settings::default();
+        settings.prompt.include.skills = true;
+
+        // Memories-only turn (no hooks) still produces a reminder.
+        let ctx = PromptContext::new().with_memories(vec![
+            "- [decision] Use Jaccard for dedup".to_string(),
+            "- [knowledge] Project uses Rust".to_string(),
+        ]);
+        let alone = build_user_turn_reminder(&ctx, &[]).expect("memories-only reminder");
+        assert!(alone.to_model.contains("<relevant_memories>"));
+        assert!(alone.to_model.contains("Use Jaccard for dedup"));
+        assert!(
+            !alone.to_model.contains("Contents of"),
+            "no hook blocks expected"
+        );
+        assert!(alone.to_transcript.is_none(), "memories are model-only");
+
+        // Hooks come before the memories section.
+        let hooks = vec![InjectedFragment {
+            source_label: "test-hook".into(),
+            content: "hook body".into(),
+            priority: 10,
+            visibility: LayerVisibility::Visible,
+        }];
+        let with_both = build_user_turn_reminder(&ctx, &hooks).expect("both");
+        let hook_pos = with_both.to_model.find("hook body").expect("hook present");
+        let mem_pos = with_both
+            .to_model
+            .find("<relevant_memories>")
+            .expect("memories section");
+        assert!(hook_pos < mem_pos, "hooks must precede memories");
+
+        // Neither hooks nor memories → no reminder at all.
+        let empty = PromptContext::new();
+        assert!(build_user_turn_reminder(&empty, &[]).is_none());
     }
 
     #[test]

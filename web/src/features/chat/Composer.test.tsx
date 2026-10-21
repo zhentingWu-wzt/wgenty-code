@@ -77,7 +77,121 @@ describe("Composer", () => {
 
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox")).toBeDisabled();
+    // The textarea stays enabled so the user can queue a follow-up message;
+    // the running placeholder hints at this.
+    expect(screen.getByRole("textbox")).not.toBeDisabled();
+    expect(screen.getByRole("textbox")).toHaveAttribute(
+      "placeholder",
+      "Agent is working… type to queue your next message",
+    );
+  });
+
+  it("calls onSend via Enter while running so the parent can queue", async () => {
+    const store = createSessionStore();
+    store.getState().setRunning(true);
+    const onSend = vi.fn();
+    const user = userEvent.setup();
+    renderComposer(onSend, store);
+
+    const input = screen.getByRole("textbox");
+    // Input is enabled while running — typing + Enter queues.
+    expect(input).not.toBeDisabled();
+    await user.type(input, "follow up");
+    await user.keyboard("{Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("follow up");
+    expect(input).toHaveValue("");
+  });
+
+  /** The input frame mirrors the status-bar state (same palette/priority):
+   *  pending decision → warning, errored last turn → danger, running →
+   *  primary, idle → default. */
+  describe("input frame follows the turn state", () => {
+    const frame = () => screen.getByRole("textbox").parentElement!.className;
+
+    it("idle keeps the default input border", () => {
+      renderComposer(vi.fn());
+      expect(frame()).toContain("border-input");
+    });
+
+    it("a running turn tints the frame primary", () => {
+      const store = createSessionStore();
+      store.getState().setRunning(true);
+      renderComposer(vi.fn(), store);
+      expect(frame()).toContain("border-primary/60");
+      expect(frame()).toContain("focus-within:ring-primary");
+    });
+
+    it("the frame hue follows the phase (thinking → sky, executing → teal)", () => {
+      const thinking = createSessionStore();
+      thinking.getState().setRunning(true);
+      thinking.getState().setAgentPhase({ phase: "thinking" });
+      const first = renderComposer(vi.fn(), thinking);
+      expect(frame()).toContain("border-sky-500/60");
+      first.unmount();
+
+      const executing = createSessionStore();
+      executing.getState().setRunning(true);
+      executing.getState().setAgentPhase({ phase: "executing", toolName: "file_read" });
+      renderComposer(vi.fn(), executing);
+      expect(frame()).toContain("border-teal-500/60");
+    });
+
+    it("a pending decision (permission/question) wins over running → warning", () => {
+      const store = createSessionStore();
+      store.getState().setRunning(true);
+      store.getState().pushSubagentPermission({} as never);
+      renderComposer(vi.fn(), store);
+      expect(frame()).toContain("border-warning");
+    });
+
+    it("an errored last turn tints the frame danger and persists at idle", () => {
+      const store = createSessionStore();
+      store.getState().setRunning(true);
+      store.getState().setError({ message: "boom", kind: "upstream" });
+      store.getState().setRunning(false);
+      renderComposer(vi.fn(), store);
+      expect(frame()).toContain("border-danger");
+      expect(frame()).toContain("focus-within:ring-danger");
+    });
+  });
+});
+
+describe("Composer pending queue", () => {
+  it("renders each queued message as an editable field", () => {
+    const store = createSessionStore();
+    store.getState().enqueueInput("first");
+    store.getState().enqueueInput("second");
+    renderComposer(vi.fn(), store);
+
+    expect(screen.getByLabelText("Queued message 1")).toHaveValue("first");
+    expect(screen.getByLabelText("Queued message 2")).toHaveValue("second");
+  });
+
+  it("edits a queued message in place and keeps it queued", async () => {
+    const store = createSessionStore();
+    store.getState().enqueueInput("draft");
+    const user = userEvent.setup();
+    renderComposer(vi.fn(), store);
+
+    const field = screen.getByLabelText("Queued message 1");
+    await user.clear(field);
+    await user.type(field, "revised");
+    expect(field).toHaveValue("revised");
+    // Still queued (not sent): store reflects the edit.
+    expect(store.getState().pendingInputs).toEqual(["revised"]);
+  });
+
+  it("removes a queued message via its remove button", async () => {
+    const store = createSessionStore();
+    store.getState().enqueueInput("keep");
+    store.getState().enqueueInput("drop");
+    const user = userEvent.setup();
+    renderComposer(vi.fn(), store);
+
+    await user.click(screen.getAllByLabelText("Remove queued message")[1]);
+    expect(store.getState().pendingInputs).toEqual(["keep"]);
+    expect(screen.queryByLabelText("Queued message 2")).not.toBeInTheDocument();
   });
 });
 

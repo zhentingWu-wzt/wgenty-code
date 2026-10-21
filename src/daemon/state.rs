@@ -20,47 +20,72 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
-/// Grace period (seconds) after the last thin client disconnects before the
-/// daemon initiates a graceful shutdown.
-pub const THIN_CLIENT_IDLE_TIMEOUT_SECS: u64 = 10;
+/// Idle timeout (seconds): the daemon initiates a graceful shutdown when no
+/// thin client is connected AND no authenticated API request has arrived for
+/// this long. Counts from daemon start, so a daemon that never serves any
+/// client also exits instead of lingering forever.
+pub const THIN_CLIENT_IDLE_TIMEOUT_SECS: u64 = 300;
 
-/// Tracks active thin-client connections and signals the daemon to exit
-/// when all clients have disconnected and the idle timeout has elapsed.
+/// Grace window for a client-bound daemon (spawned with `--spawned-by`):
+/// once the LAST client (WS push or heartbeat SSE) disconnects, the daemon
+/// exits after this window. Short enough to follow its owner down promptly,
+/// long enough to absorb page refreshes and reconnect jitter.
+pub const CLIENT_BOUND_GRACE_SECS: u64 = 30;
+
+/// Tracks active thin-client connections and the last API activity time;
+/// signals the daemon to exit when it has been idle for
+/// [`THIN_CLIENT_IDLE_TIMEOUT_SECS`].
 pub struct ActiveClientTracker {
     count: AtomicUsize,
-    /// Set to true once at least one client has ever connected.
-    /// Prevents auto-shutdown when no thin client has ever connected
-    /// (e.g. daemon started from TUI without web/desktop clients).
-    ever_had_client: AtomicUsize,
+    /// Unix epoch milliseconds of the last observed activity (client
+    /// connect/disconnect or any authenticated API request). Seeded with the
+    /// tracker's creation time so the idle window starts at daemon boot.
+    last_activity_ms: AtomicU64,
     zero_notify: tokio::sync::Notify,
     shutting_down: AtomicUsize,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 impl ActiveClientTracker {
     pub fn new() -> Self {
         Self {
             count: AtomicUsize::new(0),
-            ever_had_client: AtomicUsize::new(0),
+            last_activity_ms: AtomicU64::new(now_ms()),
             zero_notify: tokio::sync::Notify::new(),
             shutting_down: AtomicUsize::new(0),
         }
+    }
+
+    /// Record activity: any authenticated request or client connect/disconnect
+    /// pushes the idle shutdown deadline out.
+    pub fn touch(&self) {
+        self.last_activity_ms.store(now_ms(), Ordering::Release);
+    }
+
+    /// Duration since the last observed activity.
+    pub fn idle_for(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            now_ms().saturating_sub(self.last_activity_ms.load(Ordering::Acquire)),
+        )
     }
 
     pub fn register_client(&self) -> bool {
         if self.shutting_down.load(Ordering::Acquire) != 0 {
             return false;
         }
-        let was_zero = self.ever_had_client.swap(1, Ordering::Release) == 0;
+        self.touch();
         self.count.fetch_add(1, Ordering::Release);
-        // Wake the shutdown monitor so it can re-check when the first
-        // client ever connects (moves from "never shutdown" to idle-shutdown).
-        if was_zero {
-            self.zero_notify.notify_one();
-        }
         true
     }
 
     pub fn unregister_client(&self) {
+        self.touch();
         let prev = self.count.fetch_sub(1, Ordering::Release);
         if prev == 1 {
             self.zero_notify.notify_one();
@@ -71,19 +96,11 @@ impl ActiveClientTracker {
         self.count.load(Ordering::Acquire)
     }
 
-    /// Resolves when count reaches zero AND at least one thin client has
-    /// ever connected. Blocks indefinitely if no client has ever connected
-    /// (daemon started without thin clients — should not auto-shutdown).
-    /// Wakes on every state change (first client, count transitions) and
-    /// returns only when the shutdown condition is met.
-    pub async fn wait_for_zero(&self) {
-        loop {
-            // Check condition before waiting to avoid missing a wake.
-            if self.ever_had_client.load(Ordering::Acquire) == 1 && self.client_count() == 0 {
-                return;
-            }
-            self.zero_notify.notified().await;
-        }
+    /// Resolves when the client count drops to zero or shutdown is initiated.
+    /// Lets the idle-shutdown monitor re-check promptly instead of waiting
+    /// out its current sleep.
+    pub async fn clients_changed(&self) {
+        self.zero_notify.notified().await;
     }
 
     pub fn initiate_shutdown(&self) {
@@ -321,6 +338,168 @@ impl BackgroundResultInbox {
     }
 }
 
+/// Maximum queued user messages per session. `POST /sessions/:id/run` answers
+/// `429` beyond this depth so a runaway client cannot balloon memory; the
+/// queue itself is intentionally short (typing ahead a few turns).
+pub const MESSAGE_QUEUE_MAX_DEPTH: usize = 8;
+
+/// One user message parked while the session's single run slot is busy.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct QueuedMessage {
+    pub message_id: String,
+    pub message: String,
+    /// Preserved from the submitting request so a queued Plan-mode turn still
+    /// runs as Plan mode when the scheduler finally starts it.
+    pub plan_mode: bool,
+    /// Run id pre-minted at POST /run time so the response can return it
+    /// immediately: the client subscribes and filters on this id while the
+    /// turn waits in the queue, and the scheduler reuses it verbatim when it
+    /// starts the turn. (Previously the response answered `run_id: ""` and
+    /// clients were expected to adopt the id from the first event — a
+    /// contract the web observer never implemented, freezing its status on
+    /// "running" forever.)
+    pub run_id: String,
+}
+
+#[derive(Default)]
+struct SessionMessageQueue {
+    /// FIFO of not-yet-started messages.
+    pending: VecDeque<QueuedMessage>,
+    /// The single head claimed by the active continuation run. At most one
+    /// because `RunRegistry` permits one run per session. Retained (not
+    /// removed) until the run's start save succeeds, so a crashed start can
+    /// requeue it — mirrors `BackgroundResultClaim`.
+    claim: Option<(String, QueuedMessage)>,
+}
+
+/// Per-session FIFO of user messages submitted while a run was active.
+///
+/// Lifecycle mirrors [`BackgroundResultInbox`]: a claimed head stays visible
+/// until the continuation run persists its start save (`ack_claim`); a failed
+/// start requeues it ahead of the rest (`requeue_claim`). Unlike background
+/// results there is no dedup/tombstone layer — messages are unique by id.
+#[derive(Default)]
+struct MessageInbox {
+    by_session: HashMap<String, SessionMessageQueue>,
+}
+
+/// Error returned by [`MessageInbox::enqueue`] when the session's queue is at
+/// [`MESSAGE_QUEUE_MAX_DEPTH`].
+#[derive(Debug)]
+pub struct MessageQueueFull;
+
+impl MessageInbox {
+    fn enqueue(
+        &mut self,
+        session_id: &str,
+        message: String,
+        plan_mode: bool,
+    ) -> Result<QueuedMessage, MessageQueueFull> {
+        let session = self.by_session.entry(session_id.to_string()).or_default();
+        if session.pending.len() >= MESSAGE_QUEUE_MAX_DEPTH {
+            return Err(MessageQueueFull);
+        }
+        let queued = QueuedMessage {
+            message_id: uuid::Uuid::new_v4().to_string(),
+            message,
+            plan_mode,
+            run_id: uuid::Uuid::new_v4().to_string(),
+        };
+        session.pending.push_back(queued.clone());
+        Ok(queued)
+    }
+
+    fn snapshot_for_session(&self, session_id: &str) -> Vec<QueuedMessage> {
+        self.by_session
+            .get(session_id)
+            .map(|session| session.pending.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn depth(&self, session_id: &str) -> usize {
+        self.by_session
+            .get(session_id)
+            .map_or(0, |session| session.pending.len())
+    }
+
+    /// Peek the run id of the queue head WITHOUT claiming it, so the
+    /// scheduler can claim the run slot under the same id the enqueueing
+    /// POST /run already handed the client.
+    fn head_run_id(&self, session_id: &str) -> Option<String> {
+        self.by_session
+            .get(session_id)?
+            .pending
+            .front()
+            .map(|queued| queued.run_id.clone())
+    }
+
+    /// Move the head message into an exclusive claim by `run_id`.
+    fn claim_head(&mut self, session_id: &str, run_id: &str) -> Option<QueuedMessage> {
+        let session = self.by_session.get_mut(session_id)?;
+        if session.claim.is_some() {
+            return None;
+        }
+        let head = session.pending.pop_front()?;
+        session.claim = Some((run_id.to_string(), head.clone()));
+        Some(head)
+    }
+
+    /// Drop the claim after the run's start save succeeded. The message is
+    /// now durable session history.
+    fn ack_claim(&mut self, session_id: &str, run_id: &str) -> bool {
+        let Some(session) = self.by_session.get_mut(session_id) else {
+            return false;
+        };
+        match session.claim.take() {
+            Some((claim_run_id, _)) if claim_run_id == run_id => true,
+            other => {
+                session.claim = other;
+                false
+            }
+        }
+    }
+
+    /// Restore a failed run's claim to the queue head.
+    fn requeue_claim(&mut self, session_id: &str, run_id: &str) -> bool {
+        let Some(session) = self.by_session.get_mut(session_id) else {
+            return false;
+        };
+        match session.claim.take() {
+            Some((claim_run_id, message)) if claim_run_id == run_id => {
+                session.pending.push_front(message);
+                true
+            }
+            other => {
+                session.claim = other;
+                false
+            }
+        }
+    }
+
+    /// Remove one still-pending message (user retracting a queued turn).
+    /// Claimed heads cannot be removed — their run may already be saving.
+    fn remove(&mut self, session_id: &str, message_id: &str) -> bool {
+        let Some(session) = self.by_session.get_mut(session_id) else {
+            return false;
+        };
+        let before = session.pending.len();
+        session.pending.retain(|m| m.message_id != message_id);
+        before != session.pending.len()
+    }
+
+    /// Drop every pending message for the session. Returns how many.
+    fn clear(&mut self, session_id: &str) -> usize {
+        self.by_session
+            .get_mut(session_id)
+            .map(|session| {
+                let n = session.pending.len();
+                session.pending.clear();
+                n
+            })
+            .unwrap_or(0)
+    }
+}
+
 /// Per-session permission rules.
 struct SessionRules {
     approved: HashSet<String>,
@@ -373,6 +552,10 @@ pub struct DaemonState {
     /// Session-scoped, task-ID-deduplicated background result inbox. Fed by
     /// the tool-layer manager hook and retained before any SSE notification.
     background_result_inbox: Arc<RwLock<BackgroundResultInbox>>,
+    /// Session-scoped FIFO of user messages submitted while the single run
+    /// slot was busy. Drained by the continuation scheduler after a run
+    /// finishes (and after pending background results / ready task groups).
+    message_inbox: Arc<RwLock<MessageInbox>>,
     /// Scheduler mailbox. Result-ready and run-finished notifications share
     /// one consumer so their relative ordering cannot strand a busy session's
     /// pending inbox entries.
@@ -397,7 +580,7 @@ pub struct DaemonState {
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
     /// Subagent progress store, scoped by session_id → node_id.
     pub subagent_progress:
-        Arc<RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>>,
+        Arc<RwLock<HashMap<String, HashMap<String, crate::progress::SubagentProgress>>>>,
     /// Last poll timestamp per session, used for TTL-based eviction.
     pub subagent_poll_times: Arc<RwLock<HashMap<String, Instant>>>,
     /// Exclusive owner of agent spawning, concurrency, and lifecycle. Scoped
@@ -451,6 +634,30 @@ pub struct DaemonState {
     /// Broadcast hub for daemon-run session events (`SessionEvent` envelope).
     /// One hub per daemon; events carry session_id/run_id for filtering.
     pub session_event_hub: crate::daemon::run_loop::SessionEventHub,
+    /// Current bearer token as seen by in-handler auth (the WebSocket push
+    /// endpoint authenticates from a query param because browser WebSocket
+    /// APIs cannot set headers; design §3.1). Empty until `set_api_token`
+    /// runs at startup — the ws handler rejects ALL credentials while empty
+    /// so the uninitialized window cannot be bypassed with an empty token.
+    /// RwLock so a future in-process rotation can close live ws connections
+    /// with code 4001 (pump tick guard).
+    api_token: std::sync::RwLock<String>,
+    /// Port the HTTP listener actually bound to (design §2). Set once after
+    /// `TcpListener::bind` succeeds in `run()`; read by the bootstrap
+    /// endpoint's same-origin predicate to build the allowed host:port set
+    /// (`127.0.0.1:<port>` / `localhost:<port>`). `None` until set — the
+    /// bootstrap endpoint fail-closes while unset. Same RwLock shape as
+    /// `api_token` for consistency.
+    /// `(port, lan_exposed)` of the bound listener (`None` until
+    /// [`DaemonState::set_bind`]). `lan_exposed` marks a non-loopback bind
+    /// (`--host 0.0.0.0`), which widens the web-UI bootstrap same-origin
+    /// allowlist to private-IP hosts.
+    bind: std::sync::RwLock<Option<(u16, bool)>>,
+
+    /// Lazily-built slash-command router for workflow invocations
+    /// (`/comet …`) on the server-side run path. Populated on the first
+    /// `/`-prefixed run request; disk discovery runs once.
+    workflow_router: std::sync::OnceLock<std::sync::Arc<crate::runtime::command::CommandRouter>>,
     /// Broadcast hub for daemon-wide (cross-project) global events
     /// (`GlobalEvent` envelope). Independent from `session_event_hub` so
     /// high-frequency session deltas can't starve global events (design §3.1).
@@ -487,9 +694,61 @@ pub struct DaemonState {
     /// Tracks connected thin clients and triggers graceful shutdown
     /// when the last client disconnects.
     pub active_clients: Arc<ActiveClientTracker>,
+    /// Signalled by `POST /api/v1/shutdown` (`wgenty-code daemon stop`) to
+    /// request a graceful shutdown; the server's shutdown future listens on
+    /// this alongside Ctrl-C and the thin-client idle timeout.
+    pub shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 impl DaemonState {
+    /// Record the startup-generated bearer token for in-handler auth
+    /// (WebSocket query-token path). Called once after `generate_api_token`.
+    pub fn set_api_token(&self, token: String) {
+        *self.api_token.write().expect("api token lock poisoned") = token;
+    }
+
+    /// Current bearer token (empty until [`DaemonState::set_api_token`]).
+    pub fn current_api_token(&self) -> String {
+        self.api_token
+            .read()
+            .expect("api token lock poisoned")
+            .clone()
+    }
+
+    /// Record `(port, lan_exposed)` of the listener. Called once after
+    /// `TcpListener::bind` succeeds in `run()` (near `set_api_token`).
+    pub fn set_bind(&self, port: u16, lan_exposed: bool) {
+        *self.bind.write().expect("bind lock poisoned") = Some((port, lan_exposed));
+    }
+
+    /// `(port, lan_exposed)` the listener bound to (`None` until
+    /// [`DaemonState::set_bind`]).
+    pub fn current_bind(&self) -> Option<(u16, bool)> {
+        *self.bind.read().expect("bind lock poisoned")
+    }
+
+    /// The workflow slash-command router (`/comet …`), built on first use
+    /// from the project root's workflow.yaml / external skill registry —
+    /// the same discovery the TUI performs at startup. Only the comet
+    /// workflow is registered; built-ins stay client-side (web/TUI intercept
+    /// them before the message reaches the daemon).
+    ///
+    /// Performs synchronous disk I/O on the first call — wrap in
+    /// `tokio::task::block_in_place` from async handlers.
+    pub fn workflow_router(&self) -> std::sync::Arc<crate::runtime::command::CommandRouter> {
+        self.workflow_router
+            .get_or_init(|| {
+                let root = self.app_state.settings.storage.working_dir.clone();
+                let mut router = crate::runtime::command::CommandRouter::new(Vec::new());
+                let entries = crate::runtime::command::discover_workflow_entry_commands(&root);
+                if !entries.is_empty() {
+                    router.register_workflow("comet", &entries);
+                }
+                std::sync::Arc::new(router)
+            })
+            .clone()
+    }
+
     pub async fn new(app_state: AppState) -> Self {
         let task_manager = Arc::new(TaskManagementTool::new());
         let todo_state = Arc::new(RwLock::new(TodoState::default()));
@@ -556,7 +815,7 @@ impl DaemonState {
         crate::utils::startup_timing::mark("daemon state: skill loader ready");
 
         let progress_store: Arc<
-            RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>,
+            RwLock<HashMap<String, HashMap<String, crate::progress::SubagentProgress>>>,
         > = Arc::new(RwLock::new(HashMap::new()));
 
         let mcp_manager = Arc::new(crate::mcp::McpManager::new());
@@ -766,7 +1025,7 @@ impl DaemonState {
             Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
                 app_state.settings.storage.working_dir.clone(),
                 checkpoint_store.clone(),
-                2,
+                app_state.settings.agent.exec_session.auto_retry_max,
             ));
         *root_cause_runtime_handle
             .write()
@@ -851,8 +1110,16 @@ impl DaemonState {
         // home directory and diverges from WGENTY.md / historical project sessions.
         let session_manager =
             MemorySessionManager::with_project_root(app_state.settings.storage.working_dir.clone());
+        // Guardian from user settings (`integrations.guardian`); previously a
+        // Guardian::default() made the enable/auto-deny switches ineffective.
+        let guardian = crate::runtime::guardian::Guardian::new(
+            crate::runtime::guardian::GuardianConfig::from(
+                &app_state.settings.integrations.guardian,
+            ),
+        );
         let tool_executor = ToolExecutor::new(tool_registry.clone(), policy)
             .with_hooks(hook_manager.clone())
+            .with_guardian(guardian)
             .with_shared_session_rules(shared_session_rules);
 
         // Shared pooled HTTP clients for LLM API calls. Built once so every
@@ -903,6 +1170,7 @@ impl DaemonState {
             skill_loader,
             background_manager: bg_manager,
             background_result_inbox,
+            message_inbox: Arc::new(RwLock::new(MessageInbox::default())),
             background_scheduler_tx,
             background_scheduler_rx: std::sync::Mutex::new(Some(background_scheduler_rx)),
             background_scheduler_started: std::sync::atomic::AtomicBool::new(false),
@@ -936,7 +1204,11 @@ impl DaemonState {
             session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
+            api_token: std::sync::RwLock::new(String::new()),
+            bind: std::sync::RwLock::new(None),
+            workflow_router: std::sync::OnceLock::new(),
             active_clients: Arc::new(ActiveClientTracker::new()),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             http_client,
             http_client_stream,
         }
@@ -1032,6 +1304,74 @@ impl DaemonState {
             .has_pending_for_session(session_id)
     }
 
+    // ── Queued user messages (run-slot busy → FIFO, drained by scheduler) ──
+
+    pub(crate) async fn enqueue_message(
+        &self,
+        session_id: &str,
+        message: String,
+        plan_mode: bool,
+    ) -> Result<QueuedMessage, MessageQueueFull> {
+        self.message_inbox
+            .write()
+            .await
+            .enqueue(session_id, message, plan_mode)
+    }
+
+    pub async fn queued_messages_snapshot(&self, session_id: &str) -> Vec<QueuedMessage> {
+        self.message_inbox
+            .read()
+            .await
+            .snapshot_for_session(session_id)
+    }
+
+    pub(crate) async fn message_queue_depth(&self, session_id: &str) -> usize {
+        self.message_inbox.read().await.depth(session_id)
+    }
+
+    /// Run id the scheduler will use when it starts the queue head, if any.
+    /// The scheduler pairs this with [`Self::claim_queued_message`] so the
+    /// started turn keeps the id POST /run already returned to the client.
+    pub(crate) async fn queued_head_run_id(&self, session_id: &str) -> Option<String> {
+        self.message_inbox.read().await.head_run_id(session_id)
+    }
+
+    pub(crate) async fn claim_queued_message(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Option<QueuedMessage> {
+        self.message_inbox
+            .write()
+            .await
+            .claim_head(session_id, run_id)
+    }
+
+    pub(crate) async fn ack_message_claim(&self, session_id: &str, run_id: &str) -> bool {
+        self.message_inbox
+            .write()
+            .await
+            .ack_claim(session_id, run_id)
+    }
+
+    pub(crate) async fn requeue_message_claim(&self, session_id: &str, run_id: &str) -> bool {
+        self.message_inbox
+            .write()
+            .await
+            .requeue_claim(session_id, run_id)
+    }
+
+    pub(crate) async fn remove_queued_message(&self, session_id: &str, message_id: &str) -> bool {
+        self.message_inbox
+            .write()
+            .await
+            .remove(session_id, message_id)
+    }
+
+    pub(crate) async fn clear_queued_messages(&self, session_id: &str) -> usize {
+        self.message_inbox.write().await.clear(session_id)
+    }
+
     pub(crate) async fn background_continuation_is_blocked(&self, session_id: &str) -> bool {
         self.background_result_inbox
             .read()
@@ -1071,6 +1411,29 @@ impl DaemonState {
             Arc::downgrade(self),
             receiver,
         );
+
+        // Forward coordinator task-group readiness pings into the scheduler so
+        // completed subagent groups are delivered to the root agent
+        // server-side, without relying on a polling client.
+        let mut ready_rx = self.coordinator.subscribe_ready_groups();
+        let tx = self.background_scheduler_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match ready_rx.recv().await {
+                    Ok(session_id) => {
+                        let _ = tx.send(
+                            crate::daemon::run_loop::BackgroundSchedulerEvent::TaskGroupReady {
+                                session_id: session_id.as_str().to_string(),
+                            },
+                        );
+                    }
+                    // Pings are idempotent hints; a lagged receiver just
+                    // re-checks readiness on the next one.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
     }
 
     pub(crate) fn background_scheduler_sender(

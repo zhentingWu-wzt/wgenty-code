@@ -7,7 +7,7 @@
 use crate::agent::coordinator::{
     AgentCoordinator, ChildResult, ChildTerminalStatus, CoordinatorError,
 };
-use crate::agent::identity::{AgentExecutionContext, AgentId};
+use crate::tools::context::{AgentExecutionContext, AgentId};
 
 /// Kind of fallback to attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +123,7 @@ pub async fn prepare_structural_fallback(
 mod tests {
     use super::*;
     use crate::agent::coordinator::{ChildResult, ChildTerminalStatus};
-    use crate::agent::identity::{AgentExecutionContext, AgentId, SessionId};
+    use crate::tools::context::{AgentExecutionContext, AgentId, SessionId};
     use tokio_util::sync::CancellationToken;
 
     fn make_child_result(code: Option<&str>, status: ChildTerminalStatus) -> ChildResult {

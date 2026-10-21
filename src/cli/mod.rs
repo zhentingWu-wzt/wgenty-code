@@ -7,6 +7,7 @@
 pub mod args;
 pub mod branding;
 pub mod commands;
+pub mod daemon_admin;
 pub mod headless_runtime;
 pub mod org_graph;
 pub mod subagent;
@@ -82,7 +83,7 @@ pub enum Commands {
         yolo: bool,
 
         /// Override the agent loop max rounds
-        /// (default: settings.agent.max_rounds or 100)
+        /// (default: settings.agent.max_rounds; 0 = unlimited)
         #[arg(long, value_name = "N")]
         max_rounds: Option<usize>,
     },
@@ -187,9 +188,23 @@ pub enum Commands {
 
     /// Start the daemon HTTP API server
     Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonCommands>,
+
         /// Port to listen on
-        #[arg(long, default_value = "8371")]
+        #[arg(long, default_value_t = crate::daemon::DEFAULT_PORT)]
         port: u16,
+
+        /// IP address to bind (`0.0.0.0` exposes the daemon — API and
+        /// embedded web UI — to the local network for phone access)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Owner that spawned this daemon (web|tui|desktop). Switches the
+        /// shutdown policy from idle-timeout to "exit once all clients have
+        /// been gone for the grace window" so the daemon follows its owner.
+        #[arg(long)]
+        spawned_by: Option<String>,
     },
 
     /// Inspect subagent transcripts offline (list / trace / health)
@@ -203,6 +218,14 @@ pub enum Commands {
         #[command(subcommand)]
         action: OrgGraphCommands,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DaemonCommands {
+    /// Show the running daemon's status (discovery file + health probe)
+    Status,
+    /// Gracefully stop the running daemon (API-triggered shutdown)
+    Stop,
 }
 
 #[derive(Subcommand, Debug)]

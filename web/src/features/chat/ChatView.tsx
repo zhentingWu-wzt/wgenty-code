@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, memo, useEffect, useRef } from "react";
 import type { ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -49,6 +49,11 @@ const MARKDOWN_CLASSES = cn(
   "[&_a]:text-primary [&_a]:no-underline [&_a:hover]:underline",
   "[&_blockquote]:my-2 [&_blockquote]:border-l-[3px] [&_blockquote]:border-border [&_blockquote]:py-0.5 [&_blockquote]:pl-3.5 [&_blockquote]:text-muted-foreground",
   "[&_code]:rounded-sm [&_code]:bg-background [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em]",
+  // 移动端防溢出：内联 code（长路径/命令）与链接必须可断行，否则撑出
+  // 页面级横向滚动条；表格改为块级 + 内部横滚（display:block 后内部仍按
+  // 匿名 table 盒渲染，列对齐保留），宽表不再撑破布局。
+  "[&_code]:[overflow-wrap:anywhere] [&_a]:break-all",
+  "[&_table]:block [&_table]:overflow-x-auto [&_table]:w-max [&_table]:max-w-full",
   "[&_pre]:my-2.5 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:border-border [&_pre]:bg-background! [&_pre]:px-3.5 [&_pre]:py-2.5",
   "[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-[0.82em] [&_pre_code]:leading-normal",
   "[&_table]:my-2.5 [&_table]:border-collapse [&_table]:text-[0.88em]",
@@ -57,7 +62,8 @@ const MARKDOWN_CLASSES = cn(
   "[&_hr]:my-3 [&_hr]:border-border",
 );
 
-function Markdown({ children }: { children: string }) {
+/** GFM renderer shared with the file preview panel (.md files). */
+export function Markdown({ children }: { children: string }) {
   return (
     <div className={MARKDOWN_CLASSES}>
       <ReactMarkdown
@@ -92,14 +98,145 @@ function ToolEntry({ m }: { m: DisplayMessage }) {
   return null;
 }
 
-/** Scrolling message list. Auto-scrolls to bottom while streaming. */
+/** Reasoning trace block. The trace lives in its own scroll area
+ * (`max-h-96`), so the timeline's stick-to-bottom cannot reveal new text —
+ * while the message streams, this block keeps itself pinned to its own
+ * bottom instead. Scrolling up inside the block pauses the follow (same
+ * contract as the outer stick-to-bottom); it stays put once streaming ends. */
+function ReasoningBlock({ text, live }: { text: string; live: boolean }) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const pinnedRef = useRef(true);
+  useEffect(() => {
+    const el = preRef.current;
+    if (el && live && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [text, live]);
+  return (
+    <div className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
+      <div className="px-2 py-1 font-medium">reasoning</div>
+      <pre
+        ref={preRef}
+        onScroll={() => {
+          const el = preRef.current;
+          if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+        className="max-h-96 overflow-y-auto px-2 pb-2 whitespace-pre-wrap"
+      >
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+/** One timeline row, memoized: streamed deltas rebuild the `messages` array
+ * but keep untouched message identities (sessionStore.appendAssistant), so a
+ * per-frame commit re-renders ONLY the streaming bubble — completed bubbles
+ * skip their ReactMarkdown re-parse and shiki re-highlight entirely. Without
+ * this, long turns froze the UI (design D3). */
+const MessageRow = memo(function MessageRow({
+  m,
+  showDivider,
+}: {
+  m: DisplayMessage;
+  showDivider: boolean;
+}) {
+  return (
+    <Fragment>
+      {showDivider && <div className="my-2 border-t border-border" />}
+      <div
+        className={cn("flex flex-col gap-1 px-2 py-2 sm:px-4", m.role === "user" && "items-end")}
+      >
+        {m.role === "tool" ? (
+          <ToolEntry m={m} />
+        ) : (
+          <>
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
+                )}
+              />
+              {m.role}
+              {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
+              {m.streaming ? " · …" : ""}
+            </div>
+            {/* Reasoning is a streaming-time affordance only (TUI parity:
+                reasoning never lands in the chat area): visible while the
+                round streams so the user can watch progress, hidden once the
+                round finalizes so long traces don't bury the answer. The text
+                stays on the message for inspector/debug views. */}
+            {m.streaming && m.reasoning && <ReasoningBlock text={m.reasoning} live />}
+            {!m.streaming && m.role === "assistant" && !m.content && m.reasoning && (
+              <div className="px-1 text-[11px] italic text-muted-foreground/70">
+                reasoning only — no content this round
+              </div>
+            )}
+            {m.content && (
+              <div
+                className={cn(
+                  "rounded-lg px-3 py-2 text-[13px]",
+                  m.role === "user" ? "max-w-[85%] bg-primary/10 whitespace-pre-wrap" : "bg-card",
+                )}
+              >
+                {m.role === "assistant" ? (
+                  <>
+                    <Markdown>{m.content}</Markdown>
+                    {m.streaming && (
+                      <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
+                    )}
+                  </>
+                ) : (
+                  m.content
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </Fragment>
+  );
+});
+
+/** Scrolling message list with stick-to-bottom auto-scroll.
+ *
+ * While streaming, `messages` changes every token batch. Naively calling
+ * `scrollIntoView({behavior:"smooth"})` on each change (a) queues overlapping
+ * smooth animations → visible jumping, and (b) hijacks the scroll position so
+ * the user cannot scroll up at all. Instead we track whether the user is
+ * "pinned" near the bottom (within PIN_THRESHOLD px) via a passive scroll
+ * listener, and only follow the stream while pinned — using an instant
+ * scrollTop assignment (no animation to fight the user). Sending a new user
+ * message re-pins the view. */
 export function ChatView() {
   const messages = useSessionStore((s) => s.messages);
   const lastError = useSessionStore((s) => s.lastError);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // The scroll container is the <main> wrapper in App.tsx (overflow-y-auto);
+  // discovered from the bottom sentinel via closest().
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const pinnedRef = useRef(true);
+  const PIN_THRESHOLD = 80;
+  const hasMessages = messages.length > 0;
+
+  // (Re)discover the scroll container when the sentinel mounts (the empty
+  // state renders no sentinel, so discovery must retry once messages exist).
+  useEffect(() => {
+    scrollerRef.current = bottomRef.current?.closest("main") ?? null;
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_THRESHOLD;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [hasMessages]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    // A fresh user message means a new turn is starting — re-pin so the
+    // response follows even if the user had scrolled up to re-read.
+    if (messages[messages.length - 1]?.role === "user") pinnedRef.current = true;
+    const el = scrollerRef.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [messages, lastError]);
 
   if (messages.length === 0) {
@@ -115,64 +252,9 @@ export function ChatView() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1100px] flex-col gap-2 px-6 pt-6">
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-2 px-3 pt-4 sm:px-6 sm:pt-6">
       {messages.map((m, i) => (
-        <Fragment key={m.id}>
-          {m.role === "user" && i > 0 && <div className="my-2 border-t border-border" />}
-          <div className={cn("flex flex-col gap-1 px-4 py-2", m.role === "user" && "items-end")}>
-            {m.role === "tool" ? (
-              <ToolEntry m={m} />
-            ) : (
-              <>
-                <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 rounded-full",
-                      m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
-                    )}
-                  />
-                  {m.role}
-                  {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
-                  {m.streaming ? " · …" : ""}
-                </div>
-                {m.reasoning && (
-                  <details className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
-                    <summary className="cursor-pointer px-2 py-1 select-none">reasoning</summary>
-                    <pre className="max-h-60 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
-                      {m.reasoning}
-                    </pre>
-                  </details>
-                )}
-                {m.content && (
-                  <div
-                    className={cn(
-                      "max-w-[85%] rounded-lg px-3 py-2 text-[13px]",
-                      m.role === "user" ? "bg-primary/10 whitespace-pre-wrap" : "bg-card",
-                    )}
-                  >
-                    {m.role === "assistant" ? (
-                      <>
-                        <Markdown>{m.content}</Markdown>
-                        {m.streaming && (
-                          <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
-                        )}
-                      </>
-                    ) : (
-                      m.content
-                    )}
-                  </div>
-                )}
-                {m.toolExecs && m.toolExecs.length > 0 && (
-                  <div className="mt-2 flex w-full flex-col gap-1.5">
-                    {m.toolExecs.map((exec, i) => (
-                      <ToolCallCard key={i} exec={exec} />
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </Fragment>
+        <MessageRow key={m.id} m={m} showDivider={m.role === "user" && i > 0} />
       ))}
       {lastError && (
         <div className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger/10 px-3 py-2 font-mono text-[13px] whitespace-pre-wrap text-danger">

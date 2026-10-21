@@ -69,7 +69,9 @@ export function ToolCallCard({ exec }: { exec: ToolExecution }) {
         )}
         {response.error && (
           <pre className="mt-1.5 max-h-56 overflow-y-auto font-mono text-[11px] whitespace-pre-wrap text-danger">
-            {response.error}
+            {typeof response.error === "string"
+              ? response.error
+              : JSON.stringify(response.error, null, 2)}
           </pre>
         )}
         {showDiff ? (

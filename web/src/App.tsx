@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
+import { wsChannel } from "./api/wsChannel";
 import { getPlatform } from "./platform";
 import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
+import { useContinuationObserver } from "./hooks/useContinuationObserver";
 import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
 import { ConfirmProvider } from "./components/ui/ConfirmModal";
 import { StatusBar } from "./components/StatusBar";
+import { TurnStatus } from "./components/TurnStatus";
 import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { SessionTabBar } from "./components/layout/SessionTabBar";
 import { ChatView } from "./features/chat/ChatView";
@@ -16,10 +19,16 @@ import { QuestionModal } from "./features/permissions/QuestionModal";
 import { CommandModal } from "./features/panels/CommandModal";
 import { RightRail } from "./components/layout/RightRail";
 import { ModelPanel } from "./features/panels/ModelPanel";
+import { SubagentDetailPanel } from "./features/panels/SubagentDetailPanel";
+import { PreviewPanel } from "./features/files/PreviewPanel";
+import { DiffView } from "./features/scm/DiffView";
 import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
+import { setSkillCommands } from "./components/slashCommands";
 import { sessionMessagesToDisplay } from "./agent/sessionLoad";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
+import { usePermissionModeSync } from "./hooks/usePermissionModeSync";
+import { useSubagentDirectory } from "./hooks/useSubagentDirectory";
 import { usePolling } from "./hooks/usePolling";
 import { startUiSync } from "./state/uiSync";
 import { useUiStore } from "./state/uiStore";
@@ -47,12 +56,29 @@ export function App() {
 
   const setConnection = useSessionManager((s) => s.setConnection);
   const setModelName = useSessionManager((s) => s.setModelName);
+  const setContextWindow = useSessionManager((s) => s.setContextWindow);
   const activeId = useSessionManager((s) => s.activeId);
   const theme = useUiStore((s) => s.theme);
 
   // Active session's store. Each session keeps its own store; only the active
   // one is provided to the center pane.
   const activeStore = useSessionManager((s) => (s.activeId ? s.entries[s.activeId].store : null));
+
+  // Unified active tab: a session id, `subagent:<nodeId>`, or
+  // `preview:<absPath>`. When it's a subagent tab, the center pane shows the
+  // subagent detail panel instead of the chat view (the active session store
+  // stays bound for the Composer); a preview tab likewise swaps in the file
+  // preview panel.
+  const activeTabId = useUiStore((s) => s.activeTabId);
+  const subagentTabs = useUiStore((s) => s.subagentTabs);
+  const subagentTabMeta =
+    activeTabId && activeTabId.startsWith("subagent:") ? subagentTabs[activeTabId] : undefined;
+  const previewTabs = useUiStore((s) => s.previewTabs);
+  const previewTabMeta =
+    activeTabId && activeTabId.startsWith("preview:") ? previewTabs[activeTabId] : undefined;
+  const diffTabs = useUiStore((s) => s.diffTabs);
+  const diffTabMeta =
+    activeTabId && activeTabId.startsWith("diff:") ? diffTabs[activeTabId] : undefined;
 
   // Bootstrap: restore the most recent daemon sessions so the left rail shows
   // real history on startup, and activate the newest one (TUI-aligned). When
@@ -90,10 +116,14 @@ export function App() {
             if (Object.values(state.entries).some((e) => e.daemonId === info.id)) {
               continue; // already open (e.g. opened via the Sessions panel)
             }
+            // activate: false — restoring N sessions must not make each one
+            // active in turn (activeId churn → uiSync opens a tab per session);
+            // the newest one is activated once below.
             const localId = state.createLocalSession(info.name ?? "Session", {
               id: info.id,
               daemonId: info.id,
               projectPath: info.project_path ?? null,
+              activate: false,
               ...(info.worktree ? { worktree: info.worktree } : {}),
             });
             const store = useSessionManager.getState().entries[localId].store;
@@ -144,6 +174,22 @@ export function App() {
   // sessionManager → uiStore.openTabs 单向同步（激活补开 tab、删除剪 tab）。
   useEffect(() => startUiSync(), []);
 
+  // Skill slash-command hints: fetch once at bootstrap and register them in
+  // the composer's `/` menu (e.g. `/comet`). Best-effort — a daemon hiccup
+  // just leaves the four built-in commands.
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .listSkills()
+      .then((skills) => {
+        if (!cancelled) setSkillCommands(skills);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
   // Warn before unloading the page while any session is mid-turn. The run
   // itself lives on the daemon (closing the tab will not kill it), but leaving
   // disconnects the live SSE observer - a heads-up avoids surprise.
@@ -158,47 +204,53 @@ export function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
-  // Thin-client heartbeat: open an SSE connection to the daemon so it can track
-  // this client and shut down gracefully when all clients disconnect. The
-  // EventSource is automatically closed when the tab/window closes (browser GC).
-  // The daemon has a 10s grace period after the last client leaves before
-  // shutting down, so page refreshes and brief disconnects are tolerated.
+  // Thin-client heartbeat: the singleton WebSocket push channel IS the
+  // heartbeat — the daemon counts an authenticated ws connection as an
+  // active client (idle-shutdown deferral) exactly like the old SSE
+  // heartbeat, and the channel's reconnect loop replaces EventSource's
+  // auto-retry. Connect is idempotent; the channel lives until the tab
+  // closes. The daemon shuts down after 5 minutes with no connected client
+  // and no authenticated API activity, so page refreshes and brief
+  // disconnects are tolerated.
   useEffect(() => {
-    // Build the URL relative to the daemon (same host/port as other API calls).
-    const base = `${window.location.protocol}//${window.location.host}`;
-    const es = new EventSource(`${base}/api/v1/client/heartbeat`);
-
-    es.onmessage = (event) => {
-      if (event.data && typeof event.data === "string") {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.clients !== undefined) {
-            // Daemon reports current client count; useful for debugging.
-            void payload;
-          }
-        } catch {
-          // Non-JSON payload (e.g. ping comment) — ignore.
-        }
-      }
-    };
-
-    es.addEventListener("shutting_down", () => {
-      // Daemon is going away; close to avoid reconnect loops.
-      es.close();
-    });
-
-    es.onerror = () => {
-      // Connection error — EventSource will auto-retry. If the daemon has
-      // shut down permanently, the next connect attempt will receive a
-      // "shutting_down" event or connect to a fresh daemon instance.
-    };
-
-    return () => es.close();
+    wsChannel.connect();
   }, []);
 
   // Subscribe to the trace SSE for pushed subagent permission prompts
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
   usePermissionTrace(client);
+
+  // Keep the StatusBar's permission-mode label aligned with daemon truth:
+  // per-session on tab switch, re-fetch on daemon restart recovery, and live
+  // adoption of `mode_changed` broadcasts (TUI / other tabs).
+  usePermissionModeSync(client);
+
+  // Observe daemon-initiated runs (subagent synthesis continuations) live —
+  // otherwise web only renders turns it started itself.
+  useContinuationObserver(client);
+
+  // A `/model` switch (from ANY client — web modal, TUI, CLI) can change the
+  // context window along with the name, so re-read /config on the broadcast
+  // instead of trusting the first-load snapshot forever.
+  useEffect(() => {
+    return wsChannel.subscribeGlobal((ev) => {
+      if (ev.kind !== "model_changed") return;
+      client
+        .getConfig()
+        .then((cfg) => {
+          useSessionManager.getState().setModelName(cfg.model);
+          useSessionManager.getState().setContextWindow(cfg.context_window);
+        })
+        .catch(() => {
+          // Non-fatal: the health poll's one-shot load remains in effect.
+        });
+    });
+  }, [client]);
+
+  // Poll the lightweight agent directory into the per-session store so the
+  // Subagents panel always has the whole-session tree (not just SSE-active
+  // nodes). Pauses while the tab is hidden; caches per session on switch.
+  useSubagentDirectory(client);
 
   // ── Daemon health heartbeat (design D7.1) ──────────────────────────────────
   // Poll /health on a slow cadence so the status bar reflects daemon
@@ -218,19 +270,7 @@ export function App() {
           modelLoadedRef.current = true;
           const cfg = await client.getConfig();
           setModelName(cfg.model);
-          // Load the current root permission mode once (StatusBar reads + switches it).
-          // 按活跃会话路由：已落地 daemon 的用 daemonId，否则用本地 id
-          //（daemon 对未知 id 回退 main working root，等同改动前的 "default"）。
-          const sm = useSessionManager.getState();
-          const sid = sm.activeId ? (sm.entries[sm.activeId]?.daemonId ?? sm.activeId) : null;
-          if (sid) {
-            try {
-              const pm = await client.getPermissionMode(sid);
-              useSessionManager.getState().setPermissionMode(pm.mode);
-            } catch {
-              // Non-fatal: StatusBar falls back to "-" until a switch succeeds.
-            }
-          }
+          setContextWindow(cfg.context_window);
         }
       } catch {
         setConnection("disconnected");
@@ -279,7 +319,10 @@ export function App() {
 
   return (
     <ConfirmProvider>
-      <div className="flex h-screen flex-col bg-background text-foreground">
+      {/* h-dvh（动态视口高度）：手机地址栏伸缩时 100vh 会大于可视区域，
+          导致文档级滚动条；overflow-hidden + overscroll-none 兜底禁止
+          页面级双轴滚动 —— 滚动只发生在内部容器（消息列表、代码块）。 */}
+      <div className="flex h-dvh flex-col overflow-hidden overscroll-none bg-background text-foreground">
         <AppTopbar />
         <div className="flex min-h-0 flex-1">
           <LeftSidebar client={client} />
@@ -287,11 +330,48 @@ export function App() {
             <div className="flex min-w-0 flex-1 flex-col">
               <SessionTabBar />
               <main className="min-h-0 flex-1 overflow-y-auto">
-                <ChatView />
+                {subagentTabMeta ? (
+                  <SubagentDetailPanel
+                    key={subagentTabMeta.nodeId}
+                    client={client}
+                    nodeId={subagentTabMeta.nodeId}
+                    rootSessionId={subagentTabMeta.rootSessionId}
+                    label={subagentTabMeta.label}
+                  />
+                ) : previewTabMeta ? (
+                  // key = absPath so switching preview files remounts the
+                  // panel (fetch/blob-URL state resets per file).
+                  <PreviewPanel
+                    key={previewTabMeta.absPath}
+                    client={client}
+                    meta={previewTabMeta}
+                  />
+                ) : diffTabMeta ? (
+                  <DiffView key={diffTabMeta.absPath} client={client} meta={diffTabMeta} />
+                ) : (
+                  <ChatView />
+                )}
               </main>
+              {/* 权限/问答卡片内嵌在聊天区与输入框之间（非 fixed 悬浮）：
+                  出现时 flex 列让聊天区收缩让位，底部消息可滚动查看，
+                  不遮挡任何内容。仅活跃会话有待处理项时占位。 */}
+              <PermissionModal client={client} />
+              <QuestionModal client={client} />
+              {/* 轮次状态条：仅 turn phase（spinner/文案/耗时），紧贴输入框
+                  上方提高可见性；连接/模型/模式等常驻信息仍在底部 StatusBar。 */}
+              <TurnStatus />
               <Composer
                 onSend={(text) => {
-                  if (activeId) void runSessionTurn(client, activeId, text);
+                  if (!activeId || !activeStore) return;
+                  const state = activeStore.getState();
+                  if (state.isRunning) {
+                    // A turn is active — queue the message and auto-send it
+                    // once the current turn finishes cleanly. Mirrors the
+                    // TUI pending_inputs / submit_input path.
+                    state.enqueueInput(text);
+                  } else {
+                    void runSessionTurn(client, activeId, text);
+                  }
                 }}
                 onStop={() => {
                   if (activeId) void stopSessionTurn(client, activeId);
@@ -299,8 +379,6 @@ export function App() {
                 onCommand={handleCommand}
               />
             </div>
-            <PermissionModal client={client} />
-            <QuestionModal client={client} />
           </SessionStoreContext.Provider>
           <RightRail client={client} />
         </div>
