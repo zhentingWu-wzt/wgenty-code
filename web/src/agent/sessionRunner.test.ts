@@ -521,9 +521,85 @@ describe("runSessionTurn (server-side observer)", () => {
     });
     const id2 = useSessionManager.getState().createLocalSession("s2");
     await runSessionTurn(client2 as unknown as DaemonClient, id2, "y");
-    expect(
-      useSessionManager.getState().entries[id2].store.getState().cachedTokens,
-    ).toBeNull();
+    expect(useSessionManager.getState().entries[id2].store.getState().cachedTokens).toBeNull();
+  });
+
+  it("usage_update session_totals drive the weighted hit rate badge", async () => {
+    // Totals are server-recomputed per call — the badge source of truth is
+    // whatever the latest event carries, not client-side accumulation.
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "usage_update", {
+          prompt_tokens: 10000,
+          cached_tokens: 8000,
+          session_totals: { prompt_tokens: 10000, cached_tokens: 8000, cache_write_tokens: 200 },
+        }),
+        makeEvent(2, "usage_update", {
+          prompt_tokens: 11000,
+          cached_tokens: 10500,
+          session_totals: { prompt_tokens: 21000, cached_tokens: 18500, cache_write_tokens: 200 },
+        }),
+        makeEvent(3, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s3");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.sessionCacheTotals).toEqual({
+      prompt_tokens: 21000,
+      cached_tokens: 18500,
+      cache_write_tokens: 200,
+    });
+  });
+
+  it("turn_context session_cache_totals sync the totals after the turn", async () => {
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "usage_update", {
+          prompt_tokens: 5000,
+          cached_tokens: 4000,
+          session_totals: { prompt_tokens: 5000, cached_tokens: 4000, cache_write_tokens: 0 },
+        }),
+        makeEvent(2, "turn_context", {
+          layers: [],
+          recalled_memories: [],
+          new_messages: [],
+          reminder: null,
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            context_tokens: 5000,
+            cached_tokens: 4000,
+            session_cache_totals: {
+              prompt_tokens: 5000,
+              cached_tokens: 4000,
+              cache_write_tokens: 0,
+            },
+          },
+        }),
+        makeEvent(3, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s4");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.sessionCacheTotals).not.toBeNull();
+    expect(store.sessionCacheTotals!.cached_tokens).toBe(4000);
+  });
+
+  it("older daemons without session_totals leave the totals untouched", async () => {
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "usage_update", { prompt_tokens: 3000, cached_tokens: 2000 }),
+        makeEvent(2, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s5");
+    await runSessionTurn(client as unknown as DaemonClient, id, "x");
+    expect(useSessionManager.getState().entries[id].store.getState().sessionCacheTotals).toBeNull();
   });
 });
 

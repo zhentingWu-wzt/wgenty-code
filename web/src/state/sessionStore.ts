@@ -71,6 +71,16 @@ export interface TurnContextUsage {
   /** Provider prompt-cache hit of the last call (newer daemons; null when
    *  the gateway doesn't report cache hits). */
   cached_tokens?: number | null;
+  /** Session-lifetime cache economy (newer daemons; Σ over calls that
+   *  reported usage, recomputed server-side). */
+  session_cache_totals?: SessionCacheTotals;
+}
+/** Session-lifetime cache-economy totals. Denominator is the OpenAI-inclusive
+ *  prompt_tokens sum, so `cached / prompt` is the weighted hit rate. */
+export interface SessionCacheTotals {
+  prompt_tokens: number;
+  cached_tokens: number;
+  cache_write_tokens: number;
 }
 export interface TurnContextData {
   layers: TurnContextLayer[];
@@ -146,6 +156,10 @@ export interface SessionState {
   /** Provider prompt-cache hit of the last LLM call (tokens); null when the
    *  gateway doesn't report it. Drives the StatusBar cache badge. */
   cachedTokens: number | null;
+  /** Session-lifetime cache-economy totals (Σ over calls that reported
+   *  usage). Null until the first usage report arrives. Drives the StatusBar
+   *  weighted hit-rate badge; recomputed server-side, so it survives compaction. */
+  sessionCacheTotals: SessionCacheTotals | null;
   /** Fine-grained turn phase (TUI-aligned), derived from SessionEvents by
    *  sessionRunner. Null when no turn is active. */
   agentPhase: AgentPhaseInfo | null;
@@ -181,6 +195,8 @@ export interface SessionState {
   setContextTokens: (n: number) => void;
   /** Live cache-hit setter (usage_update events + turn_context sync). */
   setCachedTokens: (n: number | null) => void;
+  /** Session-lifetime cache totals setter (usage_update + turn_context). */
+  setSessionCacheTotals: (t: SessionCacheTotals | null) => void;
   /** Turn phase setter (sessionRunner derives from SessionEvents). */
   setAgentPhase: (p: AgentPhaseInfo | null) => void;
   /** Turn start timestamp setter (paired with agentPhase). */
@@ -278,6 +294,7 @@ export function createSessionStore() {
       turnContext: null,
       contextTokens: null,
       cachedTokens: null,
+      sessionCacheTotals: null,
       agentPhase: null,
       turnStartedAt: null,
 
@@ -366,9 +383,11 @@ export function createSessionStore() {
           // live usage_update events carry.
           contextTokens: data.usage.context_tokens ?? get().contextTokens,
           cachedTokens: data.usage.cached_tokens ?? null,
+          sessionCacheTotals: data.usage.session_cache_totals ?? get().sessionCacheTotals,
         }),
       setContextTokens: (n) => set({ contextTokens: n }),
       setCachedTokens: (n) => set({ cachedTokens: n }),
+      setSessionCacheTotals: (t) => set({ sessionCacheTotals: t }),
       setAgentPhase: (p) => {
         // Delta handlers re-set "streaming" on every chunk; skip identical
         // values so phase subscribers don't re-render per token batch.

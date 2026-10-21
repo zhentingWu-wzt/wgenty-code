@@ -145,6 +145,10 @@ pub struct AnthropicUsage {
     /// Tokens served from the Anthropic prompt cache (billing discount).
     #[serde(default)]
     pub cache_read_input_tokens: Option<usize>,
+    /// Tokens used to create/refresh cache entries this call (billed at a
+    /// premium). Absent on gateways that don't report it.
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<usize>,
 }
 
 // ── Anthropic SSE Event Types ────────────────────────────────────────────────

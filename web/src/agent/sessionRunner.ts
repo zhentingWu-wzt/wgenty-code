@@ -18,7 +18,14 @@ import { toast } from "sonner";
 import { sessionTitleFromMessage, useSessionManager } from "../state/sessionManager";
 import type { SessionStore } from "../state/sessionStore";
 import type { SessionEvent, SessionEventKind, SessionRunStatus } from "../api/types";
+import type { SessionCacheTotals } from "../state/sessionStore";
 import type { ToolExecution } from "./types";
+
+/** Shape of `turn_context.usage` we consume for badge sync (subset). */
+interface TurnContextUsageLike {
+  cached_tokens?: number | null;
+  session_cache_totals?: SessionCacheTotals;
+}
 
 /** Pending tool invocation (started but not yet resulted). */
 interface PendingTool {
@@ -603,9 +610,17 @@ function handleEvent(
       // Inspector data for the completed turn — store for InspectorPanel.
       s.setTurnContext(ev.data as unknown as import("../state/sessionStore").TurnContextData);
       // Sync the live cache-hit badge with the authoritative turn-end usage.
-      const turnCached = (ev.data as { usage?: { cached_tokens?: number | null } }).usage
-        ?.cached_tokens;
+      const turnUsage = (ev.data as { usage?: TurnContextUsageLike }).usage;
+      const turnCached = turnUsage?.cached_tokens;
       s.setCachedTokens(typeof turnCached === "number" ? turnCached : null);
+      const totals = turnUsage?.session_cache_totals;
+      if (totals && typeof totals.prompt_tokens === "number") {
+        s.setSessionCacheTotals({
+          prompt_tokens: totals.prompt_tokens,
+          cached_tokens: totals.cached_tokens,
+          cache_write_tokens: totals.cache_write_tokens,
+        });
+      }
       break;
     }
     case "usage_update": {
@@ -617,6 +632,15 @@ function handleEvent(
       }
       const cached = ev.data.cached_tokens;
       s.setCachedTokens(typeof cached === "number" ? cached : null);
+      const totals = ev.data.session_totals as
+        import("../state/sessionStore").SessionCacheTotals | undefined;
+      if (totals && typeof totals.prompt_tokens === "number") {
+        s.setSessionCacheTotals({
+          prompt_tokens: totals.prompt_tokens,
+          cached_tokens: totals.cached_tokens,
+          cache_write_tokens: totals.cache_write_tokens,
+        });
+      }
       break;
     }
     case "save":

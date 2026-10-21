@@ -173,6 +173,7 @@ fn text_response(text: &str) -> ChatCompletion {
             completion_tokens: 5,
             total_tokens: 15,
             prompt_tokens_details: None,
+            cache_creation_tokens: None,
         }),
     }
 }
@@ -797,6 +798,7 @@ async fn usage_update_reports_exact_prompt_tokens_per_call() {
                 completion_tokens: 5,
                 total_tokens: 15,
                 prompt_tokens_details: None,
+                cache_creation_tokens: None,
             }),
         },
         ChatCompletion {
@@ -807,6 +809,7 @@ async fn usage_update_reports_exact_prompt_tokens_per_call() {
                 completion_tokens: 5,
                 total_tokens: 30,
                 prompt_tokens_details: None,
+                cache_creation_tokens: None,
             }),
         },
     ]);
