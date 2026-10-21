@@ -311,6 +311,32 @@ pub struct Usage {
     pub cache_creation_tokens: Option<usize>,
 }
 
+impl Usage {
+    fn cached_tokens(&self) -> Option<usize> {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+    }
+
+    /// Normalizes gateway quirks before the value feeds any ratio, total, or
+    /// cost math. OpenAI's official semantics are inclusive (`cached ≤
+    /// prompt_tokens`), so `cached > prompt` is impossible under them — it
+    /// can only mean the gateway reported Anthropic-style EXCLUSIVE
+    /// `prompt_tokens` (cached tokens NOT added back). Detect that and
+    /// repair the denominator; keep official inclusive payloads as-is.
+    ///
+    /// Returns the (prompt, total) pair to use downstream.
+    pub fn normalized_totals(&self) -> (usize, usize) {
+        match self.cached_tokens() {
+            Some(cached) if cached > self.prompt_tokens => {
+                let prompt = self.prompt_tokens + cached;
+                (prompt, prompt + self.completion_tokens)
+            }
+            _ => (self.prompt_tokens, self.total_tokens),
+        }
+    }
+}
+
 /// Subset of OpenAI `prompt_tokens_details` we consume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptTokensDetails {
@@ -382,6 +408,51 @@ pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_totals_repairs_exclusive_gateway_denominator() {
+        // Gateway reports Anthropic-style EXCLUSIVE prompt_tokens with cached
+        // tokens NOT added back (cached > prompt is impossible inclusively).
+        let usage = Usage {
+            prompt_tokens: 5_000,
+            completion_tokens: 500,
+            total_tokens: 5_500,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(100_000),
+            }),
+            cache_creation_tokens: None,
+        };
+        let (prompt, total) = usage.normalized_totals();
+        assert_eq!(prompt, 105_000);
+        assert_eq!(total, 105_500);
+    }
+
+    #[test]
+    fn normalized_totals_keeps_official_inclusive_payload() {
+        // Official OpenAI semantics: cached ≤ prompt → untouched.
+        let usage = Usage {
+            prompt_tokens: 15_000,
+            completion_tokens: 300,
+            total_tokens: 15_300,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(12_000),
+            }),
+            cache_creation_tokens: None,
+        };
+        assert_eq!(usage.normalized_totals(), (15_000, 15_300));
+    }
+
+    #[test]
+    fn normalized_totals_untouched_without_cache_report() {
+        let usage = Usage {
+            prompt_tokens: 800,
+            completion_tokens: 100,
+            total_tokens: 900,
+            prompt_tokens_details: None,
+            cache_creation_tokens: None,
+        };
+        assert_eq!(usage.normalized_totals(), (800, 900));
+    }
 
     #[test]
     fn usage_parses_prompt_tokens_details_cached_tokens() {
