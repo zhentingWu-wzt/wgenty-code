@@ -12,19 +12,18 @@
 //! - `explore`                   — codebase search and analysis
 //! - `plan`                      — architecture planning and breakdown
 
-use crate::agent::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
-use crate::agent::{
-    AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
-};
+use crate::agent::{AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest};
 use crate::api::ApiClient;
 use crate::config::{RootPermissionMode, Settings};
 use crate::permissions::policy::ToolPermissionPolicy;
 use crate::permissions::{PermissionModeEntry, PermissionModeStore};
+use crate::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::runtime::guardian::Guardian;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::permission_bridge::PermissionBridge;
 use crate::teams::subagent_loop::{run_subagent_loop_with_permissions, SubagentError};
 use crate::teams::subagent_mailbox::SubagentResultMailbox;
+use crate::tools::context::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use crate::transcript::TranscriptStatus;
 use async_trait::async_trait;
@@ -42,10 +41,8 @@ use self::transcript::{new_transcript_id, save_minimal_transcript};
 
 /// Convert a live `SubagentEvent` (progress timeline) into the persisted
 /// `SubagentEventRecord` (transcript) shape.
-fn convert_event(
-    e: &crate::agent::progress::SubagentEvent,
-) -> crate::transcript::SubagentEventRecord {
-    use crate::agent::progress::SubagentEventType;
+fn convert_event(e: &crate::progress::SubagentEvent) -> crate::transcript::SubagentEventRecord {
+    use crate::progress::SubagentEventType;
     let (event_type, tool_name, data) = match &e.event_type {
         SubagentEventType::Thought { text } => ("thought".to_string(), None, text.clone()),
         SubagentEventType::Action {
@@ -219,7 +216,11 @@ impl TaskTool {
             ask_strategy: limits.ask_strategy,
             approval_timeout_secs: limits.approval_timeout_secs,
             timeout_decision: limits.timeout_decision,
-            guardian: Guardian::default(),
+            // Honour the user's integrations.guardian settings; the previous
+            // Guardian::default() silently ignored them for subagents.
+            guardian: Guardian::new(crate::runtime::guardian::GuardianConfig::from(
+                &self.settings.integrations.guardian,
+            )),
             agent_id: agent_id.to_string(),
             root_mode: entry.root_mode,
             effective_mode: entry.effective_mode,
@@ -275,6 +276,7 @@ impl TaskTool {
         full_prompt: &str,
         system_prompt: &str,
         fallback_key: &str,
+        node_type: &crate::org_graph::NodeType,
     ) -> Result<ToolOutput, ToolError> {
         use crate::agent::fallback::{prepare_structural_fallback, FallbackBlocked, FallbackKind};
 
@@ -346,7 +348,7 @@ impl TaskTool {
             system_prompt,
             full_prompt,
             &allowed_tools,
-            self.settings.agent.subagent.max_rounds.unwrap_or(100),
+            self.settings.subagent_effective_max_rounds(),
             timeout_secs,
             None,
             None,
@@ -378,6 +380,7 @@ impl TaskTool {
                 self.settings.agent.subagent.trace.context_char_limit,
                 retention,
                 context.workdir.map(|p| p.to_string_lossy().to_string()),
+                Some(node_type.clone()),
             );
         }
 
@@ -704,6 +707,7 @@ impl Tool for TaskTool {
                             &full_prompt,
                             &system_prompt,
                             &fallback_key,
+                            &node_type,
                         )
                         .await;
                 }
@@ -799,6 +803,7 @@ impl Tool for TaskTool {
         let desc_bg = description.to_string();
         let sys_prompt_bg = system_prompt.clone();
         let prompt_bg = full_prompt.clone();
+        let node_type_bg = node_type.clone();
         let transcript_store_bg = self.transcript_store.clone();
         let retention_days = self.settings.storage.transcript.max_age_days;
         let started_at_bg = chrono::Utc::now().timestamp_millis();
@@ -978,7 +983,7 @@ impl Tool for TaskTool {
                         // Only fill error_details if the real emit didn't.
                         if p.error_details.is_none() {
                             if let Some(msg) = &error_msg {
-                                p.error_details = Some(crate::agent::progress::ErrorInfo {
+                                p.error_details = Some(crate::progress::ErrorInfo {
                                     error_type: ErrorType::Unknown,
                                     message: msg.clone(),
                                     last_tool: None,
@@ -993,14 +998,18 @@ impl Tool for TaskTool {
                 }
             }
 
-            let (terminal, content, error_message) = match result {
-                Ok(r) => (
-                    ChildTerminal::Completed {
-                        summary: r.chars().take(500).collect(),
-                    },
-                    r,
-                    None,
-                ),
+            let (terminal, content, error_message, summary) = match result {
+                Ok(r) => {
+                    let summary: String = r.chars().take(500).collect();
+                    (
+                        ChildTerminal::Completed {
+                            summary: summary.clone(),
+                        },
+                        r,
+                        None,
+                        Some(summary),
+                    )
+                }
                 Err(e) => {
                     let msg = e.full_message();
                     (
@@ -1010,6 +1019,7 @@ impl Tool for TaskTool {
                         },
                         format!("Subagent error: {}", msg),
                         Some(msg),
+                        None,
                     )
                 }
             };
@@ -1103,10 +1113,14 @@ impl Tool for TaskTool {
                     actual_rounds,
                     token_budget,
                     error_message,
-                    None, // summary
+                    // Persist the terminal summary so cold-start trace replay
+                    // (`trace_event_from_header`) can deliver the result text
+                    // to reconnecting SSE clients.
+                    summary,
                     events,
                     failure_diagnostics,
                     project_path,
+                    Some(node_type_bg),
                 );
                 let _ = store.save(&transcript, retention);
             }

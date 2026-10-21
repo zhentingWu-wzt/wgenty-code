@@ -8,7 +8,7 @@
 
 Wgenty Code is an LLM-driven coding assistant built in Rust. Instead of copy-pasting snippets into a chat box, you point it at a real project: it reads files, runs searches, executes commands, applies edits, and iterates until the task is done — all from a single self-contained binary with no Node.js or Python runtime required.
 
-It ships with **25 built-in tools** (filesystem, code search, command execution, web access, …), a **two-stage command guardian**, and **OS-level sandboxing** on every platform, so the agent can act autonomously while staying safe by default. It supports multiple AI providers with automatic routing — **Anthropic (Claude)**, **OpenAI**, **DeepSeek**, and any OpenAI-compatible endpoint (DashScope, Ollama, vLLM, …) — and model aliases like `sonnet`, `haiku`, `opus` are mapped transparently.
+It ships with **29 built-in tools** (filesystem, code search, command execution, web access, …), a **rule-based command guardian**, and **OS-level sandboxing** on every platform, so the agent can act autonomously while staying safe by default. It supports multiple AI providers with automatic routing — **Anthropic (Claude)**, **OpenAI**, **DeepSeek**, and any OpenAI-compatible endpoint (DashScope, Ollama, vLLM, …) — and model aliases like `sonnet`, `haiku`, `opus` are mapped transparently.
 
 [中文文档](README.zh.md)
 
@@ -18,9 +18,9 @@ It ships with **25 built-in tools** (filesystem, code search, command execution,
 
 - **Interactive TUI** — turn-based chat, a structured plan panel, collapsible tool output, and agent mode switching (`Normal / Plan / Accept Edits / Yolo`)
 - **Plan Mode** — the agent explores the codebase and proposes a plan *before* executing any mutations (`Ctrl+P` to toggle); nothing changes until you approve
-- **25 built-in tools** — file read/write/edit, code search (grep/glob/LSP), command execution, web search/fetch, and more
+- **29 built-in tools** — file read/write/edit, code search (grep/glob/LSP), command execution, web search/fetch, and more
 - **Multi-provider routing & `/model` switching** — auto-detects the provider from the base URL; switch between Claude, OpenAI, DeepSeek, or self-hosted endpoints live in the REPL with `/model` — persisted across restarts, sub-agents follow automatically
-- **Security by default** — every command passes a two-stage guardian review (rule-based + optional LLM review); critical-risk operations are auto-denied; OS-level sandboxing on macOS (Seatbelt), Linux (seccomp-bpf), and Windows (Job Objects)
+- **Security by default** — every command passes a rule-based guardian review (pattern matching + risk classification into `Low / Medium / High / Critical`); critical-risk operations are auto-denied; OS-level sandboxing on macOS (Seatbelt), Linux (bubblewrap or unshare namespaces), and Windows (Job Objects)
 - **Sub-agent delegation** — complex tasks automatically decompose into parallel sub-tasks with recursion control (RLM pipeline: Planner -> Executor -> Aggregator); sub-agent models auto-routed by task complexity (light/medium/heavy tiers)
 - **Session & memory management** — save, load, and search past sessions; dual-scope memory (project + global) with TF-IDF recall, tier-2 LLM review, a recall feedback loop, and staleness auditing
 - **Undo & rollback** — rewind file edits to any per-turn checkpoint with `/undo`; interactive turn picker with scope selection
@@ -51,20 +51,20 @@ See [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md) for full data.
 
 ### 🔒 Secure by default
 
-Every command the agent wants to run goes through a **two-stage Guardian review**:
+Every command the agent wants to run goes through a **rule-based Guardian review**:
 
-1. **Rule filtering** — static patterns block obviously dangerous operations (e.g. `rm -rf /`, `curl | sh`)
-2. **LLM review** *(optional)* — a model evaluates ambiguous commands and classifies risk as `Low / Medium / High / Critical`
+1. **Pattern filtering** — static patterns block obviously dangerous operations (e.g. `rm -rf /`, `curl | sh`, fork bombs, including flag-order variants like `rm -r -f /`)
+2. **Risk classification** — commands are classified as `Low / Medium / High / Critical`; Medium+ is flagged for approval and Critical is auto-denied
 
-Critical-risk operations are auto-denied. The execution surface is further isolated by an **OS-level sandbox** (macOS Seatbelt, Linux seccomp-bpf, Windows Job Objects), degrading gracefully to a no-op when kernel support is unavailable.
+Command-substitution bodies (`$(...)`, backticks) and newline-separated statements are analysed too, so dangerous payloads cannot hide behind a benign first token. The execution surface is further isolated by an **OS-level sandbox** (macOS Seatbelt, Linux bubblewrap/unshare, Windows Job Objects), degrading gracefully to a no-op when kernel support is unavailable.
 
-### 🧩 25 tools, one abstraction
+### 🧩 29 tools, one abstraction
 
 All agent capabilities — file ops, code search, command execution, web access — implement a single `Tool` trait. A key design choice: **`is_read_only()` defaults to `false`**. Every read-only tool must explicitly declare itself safe, so the guardian always errs on the side of caution.
 
-### 📐 8-layer prompt assembly
+### 📐 Layered prompt assembly
 
-The system prompt is assembled from 8 independently toggleable layers:
+The system prompt is assembled from 10+ independently toggleable layers:
 
 ```
 base_instructions -> permissions -> developer -> collaboration

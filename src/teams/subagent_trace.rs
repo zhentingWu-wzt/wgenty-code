@@ -5,7 +5,7 @@
 //! executions with their tool calls, then renders them as ASCII art
 //! or exports JSON for external tools (Perfetto, Chrome DevTools).
 
-use crate::agent::progress::ErrorInfo;
+use crate::progress::ErrorInfo;
 use crate::teams::subagent_health::{HealthPeriod, SubagentHealthAnalyzer};
 use crate::transcript::{SubagentTranscriptHeader, SubagentTranscriptStore};
 use std::collections::HashMap;
@@ -1431,7 +1431,7 @@ mod tests {
 
     // ── Section 5: failure-diagnostics rendering (RED) ─────────────────
 
-    use crate::agent::progress::{ErrorInfo, ErrorType};
+    use crate::progress::{ErrorInfo, ErrorType};
     use crate::teams::failure_diagnostics::{
         FailedRoundContext, RetryAttempt, RetryOutcome, ToolCallStep,
     };
@@ -1511,6 +1511,7 @@ mod tests {
             summary: None,
             failure_diagnostics: Some(diag),
             project_path: None,
+            node_type: None,
             events: vec![],
         };
         store.save(&t, None).unwrap();
@@ -1562,6 +1563,7 @@ mod tests {
             summary: None,
             failure_diagnostics: Some(diag),
             project_path: None,
+            node_type: None,
             events: vec![],
         };
         store.save(&t, None).unwrap();

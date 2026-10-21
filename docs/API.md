@@ -24,7 +24,7 @@ Full CLI reference: `wgenty-code --help`
 | `sandbox` | Sandbox control |
 | `agent` | Run agent subcommand |
 | `init` | Initialize project |
-| `daemon` | Start HTTP daemon |
+| `daemon` | Start HTTP daemon; `daemon status` / `daemon stop` inspect and stop it |
 
 ## Daemon HTTP API
 
@@ -34,9 +34,21 @@ Start the daemon:
 wgenty-code daemon --port 8371
 ```
 
+Manage a running daemon (works in any build; reads the discovery/token files
+and talks HTTP to the daemon process):
+
+```bash
+wgenty-code daemon status   # discovery file state + health probe
+wgenty-code daemon stop     # graceful shutdown via POST /api/v1/shutdown
+```
+
 All endpoints except `GET /api/v1/health` require `Authorization: Bearer <token>`.
 The token is generated at startup and written to `~/.wgenty-code/daemon.token`
 (mode `0600`).
+
+`POST /api/v1/shutdown` requests a graceful shutdown (same effect as SIGINT:
+in-flight requests finish, then the token/discovery files are removed).
+It backs `wgenty-code daemon stop` and answers `{"shutting_down": true}`.
 
 ### Session event stream (resume / replay)
 
@@ -97,6 +109,58 @@ version always conflicts instead of silently overwriting run output.
 New sessions start at `version: 0`; legacy sessions without the field
 deserialize as 0.
 
+### Queued user messages (run queue)
+
+One session runs one agent turn at a time. When `POST /api/v1/sessions/:id/run`
+finds the run slot busy, the message joins a per-session FIFO instead of
+failing (opt out with `"queue": false` in the request body to keep the legacy
+immediate-409 contract). A queued submission still answers `202` with
+`{"run_id": "<pre-minted>", "queued": true, "queue_position": N}` — the run id
+is minted at POST time and the scheduler reuses it verbatim when it starts
+the turn, so clients can subscribe and filter on it immediately (no
+first-event adoption needed).
+
+After a run finishes, the daemon-owned scheduler drains pending work in a
+fixed order: background results first, then ready task groups, then queued
+user messages. Queue depth is capped at 8 per session; beyond that the
+endpoint answers `429`.
+
+Queue management:
+
+| Endpoint | Effect |
+|:---------|:-------|
+| `GET /api/v1/sessions/:id/queue` | `{"session_id", "messages": [{message_id, message, plan_mode, run_id}]}` (pending only) |
+| `DELETE /api/v1/sessions/:id/queue` | drop all pending messages; answers `{"dropped": N}` |
+| `DELETE /api/v1/sessions/:id/queue/:message_id` | retract one pending message; `204` or `404` (already started/gone) |
+
+The queue is in-memory: pending messages do not survive a daemon restart.
+
+### Run-status reconciliation
+
+`GET /api/v1/sessions/:id/run` answers `{"run_id": <string|null>, "queued": N}`:
+the session's ACTIVE run id (null when idle) plus how many user messages still
+wait in the FIFO. Mid-turn `sync_lost` subscribers (event buffer evicted their
+replay window, or the daemon restarted) poll this to decide whether the
+awaited turn is still live instead of hanging on a terminal event that fired
+inside the lost window. `404` when the session is unknown.
+
+### Turn phase events
+
+`phase_changed` is published on the session event stream at the transitions
+thin clients cannot derive from the other events:
+
+| `data` | Meaning |
+|:-------|:--------|
+| `{"phase": "thinking"}` | run start / prompt assembly / compaction finished |
+| `{"phase": "connecting", "attempt": N, "max_retries": M}` | LLM stream open or retry |
+| `{"phase": "preparing_tools"}` | model is emitting tool calls |
+| `{"phase": "compacting"}` | auto/manual history compaction started |
+
+Clients that derive phases locally keep their derivation as the fallback
+(older daemons never send `phase_changed`); when present it is authoritative.
+`streaming`/`executing`/`error` remain client-derived from
+`content_delta`/`tool_start`/`turn_error`.
+
 ### 409 semantics
 
 | Endpoint | Condition | 409 body |
@@ -105,7 +169,7 @@ deserialize as 0.
 | `POST /api/v1/tools/resolve-permission` | permission already resolved | `{"success": false, "resolved": true, "approved": <first decision>}` |
 | `PUT /api/v1/sessions/:id` | stale `expected_version` | `{"error": "version conflict", "current_version": N}` |
 | `PUT /api/v1/sessions/:id` | a server-side run is active | `{"error": "run active"}` |
-| `POST /api/v1/sessions/:id/run` | a run is already active | plain text message |
+| `POST /api/v1/sessions/:id/run` | a run is already active and `"queue": false` (default queues instead) | plain text message |
 
 Duplicate resolutions never overwrite the first decision and trigger no
 second side effect; unknown interaction/permission ids return 404.
@@ -139,6 +203,64 @@ daemon instead of spawning a duplicate:
   stale (or belongs to another daemon instance) and the UI falls back to
   spawning its own daemon — a stale file never causes a misconnection.
   `pid` liveness is advisory only; the heartbeat is authoritative.
+
+### Workspace file preview (fs/entries, fs/file)
+
+Read-only file tree + preview endpoints, scoped to **registered workspaces**:
+the daemon's main project root, every registered project root, and each
+project's linked git worktrees (`git worktree list`). Any `path` that
+canonicalizes outside those roots is refused with `403 {"error": "outside
+registered workspaces"}` — the daemon is not a general-purpose file server.
+Paths that do not resolve return `404`. Symlinks are resolved by
+canonicalization, so a link inside a workspace pointing outside is still 403.
+
+`GET /api/v1/fs/entries?path=<dir>` — one-level listing of a workspace
+directory:
+
+```json
+{
+  "current": "/abs/path/to/dir",
+  "entries": [
+    { "name": "src", "is_dir": true, "size": 192 },
+    { "name": "README.md", "is_dir": false, "size": 4096 }
+  ],
+  "truncated": false
+}
+```
+
+- Directories first, then files; each group sorted case-insensitively by name.
+- Hidden (`.`-prefixed) entries and non-file/non-dir objects (symlinks,
+  sockets, fifos) are skipped.
+- Collection stops at **2000** entries; `truncated: true` marks a partial
+  list. A child whose metadata cannot be read is listed with `size: 0`.
+- `400 {"error": "path is not a directory"}` when `path` is a file.
+
+`GET /api/v1/fs/file?path=<file>` — preview a single workspace file. The
+size limit is checked against metadata **before** the body is read;
+oversized files return `413 {"error": "file too large to preview", "size":
+N, "limit": M}` without reading the file.
+
+- Whitelisted extensions `png / jpg / jpeg / gif / webp / svg / pdf` (limit
+  5 MiB) stream the raw bytes with the mapped `Content-Type`
+  (`image/png`, `image/jpeg`, `image/gif`, `image/webp`,
+  `image/svg+xml`, `application/pdf`).
+- Everything else (limit 1.5 MiB): the first 8192 bytes are probed for a NUL
+  byte and the body is strict-decoded as UTF-8.
+
+```json
+{
+  "lines": ["fn main() {", "    …", "}"],
+  "is_binary": false,
+  "version": { "mtime_ms": 1755300000000, "size": 4096 }
+}
+```
+
+- Text: `lines` is split on `\n` with per-line trailing `\r` stripped (CRLF);
+  an empty file yields `"lines": []`.
+- Binary (NUL probe hit, or UTF-8 decode failure): the `lines` field is
+  omitted and `"is_binary": true` is returned — the frontend branches on it.
+- `version` lets the UI detect stale previews (`mtime` in ms + size).
+- `400 {"error": "path is not a file"}` when `path` is a directory.
 
 ## Configuration File
 

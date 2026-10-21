@@ -44,6 +44,13 @@ pub trait Provider: Send + Sync {
     fn is_openai_compat(&self) -> bool {
         true
     }
+
+    /// Whether this provider requires historical `reasoning_content` to be
+    /// echoed back in subsequent requests. DeepSeek does; other
+    /// OpenAI-compatible endpoints don't, so replay strips it by default.
+    fn echoes_reasoning_content(&self) -> bool {
+        false
+    }
 }
 
 // ── OpenAI Provider ──────────────────────────────────────────────────────────
@@ -106,6 +113,10 @@ impl Provider for DeepSeekProvider {
             }
         }
         None
+    }
+
+    fn echoes_reasoning_content(&self) -> bool {
+        true
     }
 }
 

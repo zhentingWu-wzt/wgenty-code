@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use super::contract::NodeType;
-use super::work_graph_plan::WorkGraphPlan;
+use super::work_graph_plan::{WorkGraphPlan, WorkGraphRequest};
 use crate::agent::coordinator::CoordinatorError;
 use crate::org_graph::contract::ContractDimension;
 
@@ -49,6 +49,25 @@ pub struct WorkState {
     /// replace it.
     #[serde(default)]
     selected_work_graph: Option<WorkGraphPlan>,
+    /// Depth of this Work-Graph instance inside the recursive decomposition
+    /// tree. The root graph is depth 0; only the trusted runtime may raise it
+    /// when launching a child graph (Task 9).
+    #[serde(default)]
+    graph_depth: u32,
+    /// Decomposed child units accepted by the atomic `decompose_node`
+    /// proposal validation. Empty until a proposal passes every check.
+    #[serde(default)]
+    decomposed_units: Vec<DecomposedUnit>,
+    /// Coordinator-persisted implementation reports from passed child units.
+    /// Kept separate from `specialist_reports` (whose `(producer, kind)`
+    /// dedup would collapse the bounded ≤4 units into one entry).
+    #[serde(default)]
+    unit_specialist_reports: Vec<SpecialistReport>,
+    /// Parent budget snapshot taken immediately before an accepted
+    /// decomposition split it; `rollback_node` restores this so a rolled-back
+    /// node does not inherit the shrunken allocation.
+    #[serde(default)]
+    pre_decompose_budget: Option<Budget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +108,59 @@ pub struct GraphChildBinding {
     pub role: NodeType,
     pub child_agent_id: String,
     pub timestamp: String,
+    /// Reference to the child Work-Graph instance that fulfils this binding.
+    /// Populated only by the trusted runtime once the child graph is launched;
+    /// legacy checkpoints deserialize to `None`.
+    #[serde(default)]
+    pub child_graph: Option<ChildGraphRef>,
+}
+
+/// Durable reference from a parent-graph binding to the child Work-Graph
+/// instance (its own session + root node) that executes the decomposed unit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChildGraphRef {
+    /// Session id of the child Work-Graph instance.
+    pub session_id: String,
+    /// Root node id of the child Work-Graph instance.
+    pub root_node_id: String,
+}
+
+/// One accepted decomposition unit persisted with the parent's WorkState.
+/// Everything here is code-derived from closed-set proposal fields; the
+/// bounded child plan is composed and role-bound before persistence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DecomposedUnit {
+    /// Sequential unit identity inside the parent node (`unit-0`, `unit-1`, …).
+    pub unit_id: String,
+    /// The unit's bounded goal as proposed (≤ `decompose` schema cap).
+    pub goal: String,
+    /// Closed-set composition facts the child plan was composed from.
+    pub request: WorkGraphRequest,
+    /// The code-composed, role-bound child Work-Graph for this unit.
+    pub plan: WorkGraphPlan,
+    /// The child's iteration allocation (split from the parent budget).
+    pub allocation: Budget,
+    /// Closed-set verification facts accepted with the proposal. They are
+    /// executed only by the trusted child-graph launcher (Task 9) — never by
+    /// the proposing agent. `#[serde(default)]` keeps legacy checkpoints
+    /// readable.
+    #[serde(default)]
+    pub verify_commands: Vec<String>,
+    /// Files the child unit is expected to change; empty = no boundary check.
+    #[serde(default)]
+    pub expected_files: Vec<String>,
+    /// Terminal outcome of this unit, set once the child-graph launcher has
+    /// finished its anchored attempts. `None` = not yet executed.
+    #[serde(default)]
+    pub outcome: Option<UnitOutcome>,
+}
+
+/// Terminal state of one executed decomposition unit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnitOutcome {
+    pub passed: bool,
+    pub attempts_used: u32,
+    pub summary: String,
 }
 
 /// A specialist role's typed report category.
@@ -101,6 +173,8 @@ pub enum SpecialistReportKind {
     RootCause,
     /// An actionable implementation plan.
     ImplementationPlan,
+    /// A completed child-graph implementation unit (recursive work graphs).
+    Implementation,
 }
 
 /// One evidence item cited by a specialist report.
@@ -161,8 +235,23 @@ pub struct GraphAuditEvent {
     /// Present on `profile_resolved`; absent from historical events.
     #[serde(default)]
     pub resolved_commands: Option<GraphAuditCommands>,
+    /// Present on `adapted` events; absent from historical events.
+    #[serde(default)]
+    pub adapted: Option<GraphAuditAdaptation>,
+    /// Present on `decomposed` events: the id of the parent node whose graph
+    /// spawned the child unit; absent from historical events.
+    #[serde(default)]
+    pub parent_node_id: Option<String>,
     pub budget: Option<Budget>,
     pub timestamp: String,
+}
+
+/// Payload of an anchor-driven plan adaptation audit event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphAuditAdaptation {
+    pub reason: crate::org_graph::AdaptationReason,
+    pub revision_from: u32,
+    pub revision_to: u32,
 }
 
 /// 工作图审计事件类别。
@@ -172,6 +261,9 @@ pub enum GraphAuditKind {
     ProfileResolved,
     AnchorCompleted,
     RouteSelected,
+    Adapted,
+    /// The node's graph was decomposed into child units (one event per unit).
+    Decomposed,
 }
 
 /// 已执行的外部锚点类别。
@@ -221,6 +313,7 @@ pub enum VerifyFailureKind {
         exit_code: Option<i32>,
         stderr: String,
     },
+
     BoundaryViolation {
         unexpected_files: Vec<String>,
     },
@@ -374,6 +467,82 @@ impl WorkState {
     /// Return the code-selected Work-Graph persisted for the active node.
     pub fn selected_work_graph(&self) -> Option<&WorkGraphPlan> {
         self.selected_work_graph.as_ref()
+    }
+
+    /// Depth of this Work-Graph instance in the recursive decomposition tree.
+    /// Root graphs default to 0; legacy checkpoints deserialize to 0.
+    pub fn graph_depth(&self) -> u32 {
+        self.graph_depth
+    }
+
+    /// Trusted runtime setter for the session's graph depth (used when a
+    /// child graph instance is launched).
+    #[allow(dead_code)] // production launch site arrives with Task 9 child execution
+    pub(crate) fn set_graph_depth(&mut self, depth: u32) {
+        self.graph_depth = depth;
+    }
+
+    /// Decomposed child units accepted for the active node's graph.
+    pub fn decomposed_units(&self) -> &[DecomposedUnit] {
+        &self.decomposed_units
+    }
+
+    /// Coordinator-owned update of one unit's terminal outcome and allocation
+    /// after the child-graph launcher finishes its anchored attempts. The
+    /// unit id must exist; unknown ids are a contract violation.
+    pub(crate) fn record_unit_outcome(
+        &mut self,
+        unit_id: &str,
+        outcome: UnitOutcome,
+        allocation: Budget,
+    ) -> Result<(), CoordinatorError> {
+        let unit = self
+            .decomposed_units
+            .iter_mut()
+            .find(|unit| unit.unit_id == unit_id)
+            .ok_or_else(|| CoordinatorError::ContractViolation {
+                node_type: NodeType::GeneralPurpose,
+                dimension: ContractDimension::State,
+                reason: format!("record_unit_outcome: unknown unit '{unit_id}'"),
+            })?;
+        unit.outcome = Some(outcome);
+        unit.allocation = allocation;
+        Ok(())
+    }
+
+    /// Read the coordinator-persisted child-unit implementation reports.
+    /// Stored separately from `specialist_reports` because units share the
+    /// (GeneralPurpose, Implementation) key and are bounded at 4 per node.
+    pub fn unit_specialist_reports(&self) -> &[SpecialistReport] {
+        &self.unit_specialist_reports
+    }
+
+    /// Coordinator-owned append of one passed unit's implementation report.
+    pub(crate) fn push_unit_report(&mut self, report: SpecialistReport) {
+        self.unit_specialist_reports.push(report);
+    }
+
+    pub(crate) fn set_decomposed_units(&mut self, units: Vec<DecomposedUnit>) {
+        self.decomposed_units = units;
+    }
+
+    /// Read the pre-decomposition parent budget snapshot, if any.
+    pub fn pre_decompose_budget(&self) -> Option<&Budget> {
+        self.pre_decompose_budget.as_ref()
+    }
+
+    /// Coordinator-owned snapshot of the parent budget before a split.
+    pub(crate) fn set_pre_decompose_budget(&mut self, budget: Budget) {
+        self.pre_decompose_budget = Some(budget);
+    }
+
+    /// Rollback hook: drop every decomposition product (units, unit reports,
+    /// budget snapshot). Audit events are deliberately retained — they are
+    /// the immutable record of what happened.
+    pub(crate) fn clear_decomposition(&mut self) {
+        self.decomposed_units.clear();
+        self.unit_specialist_reports.clear();
+        self.pre_decompose_budget = None;
     }
 
     pub fn graph_child_bindings(&self) -> &[GraphChildBinding] {
@@ -699,6 +868,9 @@ impl WorkState {
         self.human_review = None;
         self.specialist_reports.clear();
         self.selected_work_graph = None;
+        self.decomposed_units.clear();
+        self.unit_specialist_reports.clear();
+        self.pre_decompose_budget = None;
     }
 
     /// Invalidate every result derived from a prior work-graph pass before a
@@ -729,6 +901,10 @@ impl WorkState {
             specialist_reports: self.specialist_reports.clone(),
             graph_child_bindings: self.graph_child_bindings.clone(),
             selected_work_graph: self.selected_work_graph.clone(),
+            graph_depth: self.graph_depth,
+            decomposed_units: self.decomposed_units.clone(),
+            unit_specialist_reports: self.unit_specialist_reports.clone(),
+            pre_decompose_budget: None,
         }
     }
 }
@@ -882,6 +1058,8 @@ mod tests {
             attempt,
             kind,
             anchor: Some(GraphAuditAnchor::Compile),
+            adapted: None,
+            parent_node_id: None,
             commands: vec![AuditCommandRun {
                 command: "cargo check".into(),
                 exit_code: Some(0),
@@ -921,6 +1099,14 @@ mod tests {
             "\"profile_resolved\""
         );
         assert_eq!(
+            serde_json::to_string(&GraphAuditKind::AnchorCompleted).unwrap(),
+            "\"anchor_completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GraphAuditKind::Decomposed).unwrap(),
+            "\"decomposed\""
+        );
+        assert_eq!(
             serde_json::to_string(&GraphAuditAnchor::Compile).unwrap(),
             "\"compile\""
         );
@@ -950,6 +1136,66 @@ mod tests {
 
         let event: GraphAuditEvent = serde_json::from_str(json).expect("deserialize old event");
         assert_eq!(event.resolved_commands, None);
+    }
+
+    #[test]
+    fn historical_graph_audit_event_defaults_missing_parent_node_id() {
+        // Task 7: 旧 GraphAuditEvent JSON(无 parent_node_id 字段)反序列化默认 None。
+        let json = r#"{
+            "node_id":"n1",
+            "attempt":1,
+            "kind":"route_selected",
+            "anchor":null,
+            "commands":[],
+            "route":"implement",
+            "profile":null,
+            "budget":null,
+            "timestamp":"2026-08-12T00:00:00Z"
+        }"#;
+
+        let event: GraphAuditEvent = serde_json::from_str(json).expect("deserialize old event");
+        assert_eq!(event.parent_node_id, None);
+
+        // 携带 parent_node_id 的新事件 round-trip 保留该值。
+        let mut populated = event.clone();
+        populated.parent_node_id = Some("node-1".into());
+        let round: GraphAuditEvent =
+            serde_json::from_str(&serde_json::to_string(&populated).unwrap()).unwrap();
+        assert_eq!(round, populated);
+        assert_eq!(round.parent_node_id.as_deref(), Some("node-1"));
+    }
+
+    #[test]
+    fn historical_graph_child_binding_defaults_missing_child_graph() {
+        // Task 7: 旧 GraphChildBinding JSON(无 child_graph 字段)反序列化默认 None。
+        let json = r#"{
+            "node_id":"node-1",
+            "attempt":1,
+            "role":"RootCause",
+            "child_agent_id":"child-a",
+            "timestamp":"2026-08-12T00:00:00Z"
+        }"#;
+
+        let binding: GraphChildBinding =
+            serde_json::from_str(json).expect("deserialize old binding");
+        assert_eq!(binding.child_graph, None);
+
+        // 绑定子图实例后 round-trip 保留 ChildGraphRef。
+        let mut populated = binding.clone();
+        populated.child_graph = Some(ChildGraphRef {
+            session_id: "child-session".into(),
+            root_node_id: "node-2".into(),
+        });
+        let round: GraphChildBinding =
+            serde_json::from_str(&serde_json::to_string(&populated).unwrap()).unwrap();
+        assert_eq!(round, populated);
+        assert_eq!(
+            round.child_graph,
+            Some(ChildGraphRef {
+                session_id: "child-session".into(),
+                root_node_id: "node-2".into()
+            })
+        );
     }
 
     #[test]
@@ -1007,6 +1253,10 @@ mod tests {
             specialist_reports: Vec::new(),
             graph_child_bindings: Vec::new(),
             selected_work_graph: None,
+            graph_depth: 0,
+            decomposed_units: Vec::new(),
+            unit_specialist_reports: Vec::new(),
+            pre_decompose_budget: None,
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
@@ -1424,6 +1674,10 @@ mod tests {
             specialist_reports: Vec::new(),
             graph_child_bindings: Vec::new(),
             selected_work_graph: None,
+            graph_depth: 0,
+            decomposed_units: Vec::new(),
+            unit_specialist_reports: Vec::new(),
+            pre_decompose_budget: None,
         };
         let next = state.inherit_for_new_turn();
         assert_eq!(next.requirement.as_deref(), Some("跨 turn"));

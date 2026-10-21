@@ -1,8 +1,9 @@
 //! Shared multi-round agent loop (stream → tools → compact → repeat).
 
 use super::compaction::{
-    estimate_prompt_tokens, micro_compact_messages, needs_compaction, request_size_chars,
-    split_for_compaction, Calibration,
+    advance_frontier, build_request_tail, estimate_prompt_tokens,
+    estimate_prompt_tokens_calibrated, needs_compaction, request_size_chars, split_for_compaction,
+    Calibration, MICRO_COMPACT_KEEP_TOOL_RESULTS,
 };
 use super::compactor::{fallback_micro_compact, is_payload_too_large_error};
 use super::config::RuntimeConfig;
@@ -79,6 +80,42 @@ impl StreamStyle {
 /// Recoverable lenient-parse cases (some fields extracted) do not count.
 pub const MAX_CONSECUTIVE_PARSE_ERRORS: usize = 3;
 
+/// Max auto-continuation rounds when the provider reports output-token
+/// exhaustion (`finish_reason` "length"/"max_tokens"). Each continuation asks
+/// the model to pick up exactly where it stopped; past this cap the turn ends
+/// truncated (terminal `StreamDone{length}`) so frontends can surface it.
+pub const MAX_LENGTH_CONTINUATIONS: usize = 3;
+
+/// True when a finish reason means "the output-token budget ran out" — the
+/// response was cut mid-generation and can be continued, not an error.
+/// Anthropic "max_tokens" is normalized to "length" in `src/api`, but accept
+/// both spellings for OpenAI-compatible providers that emit the raw form.
+fn is_length_reason(reason: &str) -> bool {
+    matches!(reason, "length" | "max_tokens")
+}
+
+/// Withholds round-level `StreamDone` events that signal output-token
+/// exhaustion. The loop decides after the round whether the truncation is
+/// terminal (re-emits the event itself) or whether it auto-continues (event
+/// stays suppressed), so downstream sinks — notably the daemon's
+/// `DaemonEventSink`, which publishes a terminal `TurnDone` on the first
+/// non-tool-calls `StreamDone` — never end the turn while continuation rounds
+/// are still streaming. All other events pass through untouched.
+struct LengthGateSink<'a> {
+    inner: &'a dyn EventSink,
+}
+
+impl EventSink for LengthGateSink<'_> {
+    fn emit(&self, event: RuntimeEvent) {
+        if let RuntimeEvent::StreamDone { ref finish_reason } = event {
+            if is_length_reason(finish_reason) {
+                return;
+            }
+        }
+        self.inner.emit(event);
+    }
+}
+
 /// Mutable flags for one turn of the shared loop.
 #[derive(Debug, Default)]
 pub struct LoopTurnState {
@@ -92,6 +129,13 @@ pub struct LoopTurnState {
     /// view but remain in the stored history (and the saved session). `0` means
     /// no compaction has occurred.
     pub compaction_boundary: usize,
+    /// Sticky micro-compaction frontier (absolute index into the raw history).
+    /// Tool results before it are compacted to markers in the API view; `[frontier..]`
+    /// stays verbatim. Only advances when the calibrated estimate crosses the
+    /// micro-compaction watermark — between triggers the view is append-only so
+    /// the request prefix remains prompt-cache stable. Runtime-only: not
+    /// persisted; restored sessions start verbatim (0).
+    pub micro_compact_frontier: usize,
     /// Consecutive tool rounds with irrecoverable JSON arg failures.
     pub consecutive_parse_errors: usize,
     /// Rounds since the model last called `task_management`; drives ready-task nudges.
@@ -109,6 +153,10 @@ pub struct LoopTurnState {
     /// been attempted this turn, a second payload-too-large error aborts
     /// instead of retrying.
     pub micro_compact_attempted: bool,
+    /// Auto-continuation rounds issued because the provider hit the
+    /// output-token limit (`finish_reason` length/max_tokens). Capped by
+    /// [`MAX_LENGTH_CONTINUATIONS`].
+    pub length_continuations: usize,
 }
 
 /// Optional capabilities wired by each frontend.
@@ -185,8 +233,21 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         system_messages,
     } = args;
     let mut llm_rounds = 0usize;
+    // Text streamed by rounds that hit the output-token limit and were
+    // auto-continued; concatenated with the terminal round's content for the
+    // turn's return value so callers see the complete answer.
+    let mut accumulated = String::new();
+    // Round-level length/max_tokens StreamDone events are gated: the loop
+    // re-emits the event only when the truncation is actually terminal.
+    let gated_events = LengthGateSink { inner: events };
     let max_rounds = config.max_rounds;
-    let warn_rounds = max_rounds * 8 / 10;
+    // `Some(0)` configs resolve to usize::MAX ("unlimited"); the *8/10 would
+    // overflow there, and the warning would never fire anyway.
+    let warn_rounds = if max_rounds == usize::MAX {
+        usize::MAX
+    } else {
+        max_rounds * 8 / 10
+    };
 
     loop {
         if llm_rounds >= max_rounds {
@@ -224,21 +285,53 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         // never stored in history; only the raw tail is persisted to the saved
         // session. This keeps sessions compact while the live request always
         // carries the current system instructions.
+        //
+        // Lazy micro-compaction (cache-stable view): below the watermark the
+        // tail is verbatim, so the request prefix is byte-stable across rounds
+        // and provider prompt caches stay warm. Crossing the watermark advances
+        // a sticky frontier once — everything before it compacts to markers
+        // (failures keep an error digest, file_read stays verbatim) — and the
+        // view is append-only again until the next trigger. Replaces the old
+        // every-round micro_compact_messages call whose sliding keep-window
+        // flipped the most recent tool results to markers every round.
         let raw = history.get().await;
         let boundary = state.compaction_boundary.min(raw.len());
-        let tail_msgs = micro_compact_messages(&raw[boundary..]);
-        let mut messages = if state.compacted_summary.is_empty() {
-            let mut m = Vec::with_capacity(system_messages.len() + tail_msgs.len());
-            m.extend_from_slice(system_messages);
-            m.extend(tail_msgs);
-            m
-        } else {
-            super::compaction::assemble_post_compaction_history(
-                system_messages,
-                &state.compacted_summary,
-                &tail_msgs,
-            )
+        let fixed_overhead_chars = fixed_tool_def_chars(tools, stream_style, config);
+        let calibration = build_calibration(state);
+        let watermark = (config.context_window * 3 / 5).saturating_sub(config.max_tokens);
+        let mut frontier = state.micro_compact_frontier.max(boundary).min(raw.len());
+        let compacted_summary = state.compacted_summary.clone();
+        let build_view = |frontier: usize| {
+            let tail_msgs = build_request_tail(&raw, boundary, frontier);
+            if compacted_summary.is_empty() {
+                let mut m = Vec::with_capacity(system_messages.len() + tail_msgs.len());
+                m.extend_from_slice(system_messages);
+                m.extend(tail_msgs);
+                m
+            } else {
+                super::compaction::assemble_post_compaction_history(
+                    system_messages,
+                    &compacted_summary,
+                    &tail_msgs,
+                )
+            }
         };
+        let mut messages = build_view(frontier);
+        if estimate_prompt_tokens_calibrated(&messages, fixed_overhead_chars, calibration)
+            > watermark
+        {
+            let advanced = advance_frontier(&raw, MICRO_COMPACT_KEEP_TOOL_RESULTS);
+            if advanced > frontier {
+                tracing::debug!(
+                    frontier = advanced,
+                    raw_len = raw.len(),
+                    "micro-compaction watermark crossed; advancing sticky frontier"
+                );
+                frontier = advanced;
+                state.micro_compact_frontier = frontier;
+                messages = build_view(frontier);
+            }
+        }
         // Defensive boundary 1: demote `role="tool"` messages whose
         // `tool_call_id` has no matching preceding assistant `tool_calls`
         // entry. This happens for sessions saved by older builds that dropped
@@ -258,8 +351,6 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             obs.on_round_start(llm_rounds + 1, &messages);
         }
 
-        let fixed_overhead_chars = fixed_tool_def_chars(tools, stream_style, config);
-        let calibration = build_calibration(state);
         let want_compact = state.compact_requested
             || needs_compaction(
                 &messages,
@@ -282,20 +373,32 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         let new_boundary = split_for_compaction(&fresh).0.len();
                         state.compaction_boundary = new_boundary;
                         state.compacted_summary = summary.clone();
+                        // The frontier is an absolute index; keep it at or past
+                        // the new boundary so it never re-compacts a segment
+                        // the summary already replaced.
+                        state.micro_compact_frontier = state
+                            .micro_compact_frontier
+                            .max(new_boundary)
+                            .min(fresh.len());
                         // Build the post-compaction view to refresh the token
                         // estimate and guard against an infinite compaction loop
                         // (e.g. when the system prompt alone exceeds the
                         // threshold and no amount of summarizing helps).
-                        let tail = &fresh[new_boundary..];
-                        let tail_msgs = micro_compact_messages(tail);
+                        let tail_msgs =
+                            build_request_tail(&fresh, new_boundary, state.micro_compact_frontier);
                         let view = super::compaction::assemble_post_compaction_history(
                             system_messages,
                             &summary,
                             &tail_msgs,
                         );
+                        let post_compact_prompt_tokens = estimate_prompt_tokens(&view);
                         if let Some(tc) = hooks.token_counter {
-                            tc.set_prompt_tokens(estimate_prompt_tokens(&view));
+                            tc.set_prompt_tokens(post_compact_prompt_tokens);
                         }
+                        events.emit(RuntimeEvent::UsageUpdate {
+                            prompt_tokens: post_compact_prompt_tokens,
+                            cached_tokens: None,
+                        });
                         events.emit(RuntimeEvent::ContextCompacted {
                             summary_chars: summary.chars().count(),
                             compressed_len: new_boundary,
@@ -346,10 +449,10 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         } else {
             None
         };
-        let max_tokens = if stream_style.pass_max_tokens {
-            Some(config.max_tokens)
-        } else {
-            None
+        // 0 = "omit" (provider default output limit); never forward Some(0).
+        let max_tokens = match (stream_style.pass_max_tokens, config.max_tokens) {
+            (true, limit) if limit > 0 => Some(limit),
+            _ => None,
         };
         let plan_mode = if stream_style.pass_plan_mode && config.plan_mode {
             Some(true)
@@ -361,7 +464,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         // was assembled above; a compaction that triggered `continue` rebuilds
         // it on the next iteration, so no second fetch is needed here.
         let result = if stream_style.prefer_non_stream {
-            match complete_non_stream(llm, events, &messages, tool_defs).await {
+            match complete_non_stream(llm, &gated_events, &messages, tool_defs).await {
                 Ok(r) => r,
                 Err(e) => {
                     if is_payload_too_large_error(&e.to_string())
@@ -386,12 +489,13 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         } else {
             match stream_with_retry(
                 llm,
-                events,
+                &gated_events,
                 StreamRetryOpts {
                     messages: &messages,
                     tools: tool_defs,
                     preparing_tools_fired: &mut state.preparing_tools_fired,
                     max_retries: config.stream_max_retries,
+                    idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs),
                     max_tokens,
                     plan_mode,
                 },
@@ -435,11 +539,24 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             // far too early).
             state.last_measured_prompt_tokens = Some(usage.prompt_tokens);
             state.last_request_chars = Some(request_size_chars(&messages) + fixed_overhead_chars);
+            let usage_cached = usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens);
             if let Some(counter) = hooks.token_counter {
                 counter.add(usage.total_tokens);
                 counter.add_output(usage.completion_tokens);
                 counter.set_prompt_tokens(usage.prompt_tokens);
+                counter.set_cached_tokens(usage_cached);
             }
+            // Live context-occupancy feed: the same value the TUI context bar
+            // renders (token_counter.last_prompt_tokens), pushed to observing
+            // frontends after every API call so multi-round turns show the
+            // bar climbing in real time.
+            events.emit(RuntimeEvent::UsageUpdate {
+                prompt_tokens: usage.prompt_tokens,
+                cached_tokens: usage_cached,
+            });
             if let Some(obs) = hooks.observer {
                 obs.on_usage(usage.total_tokens);
             }
@@ -461,6 +578,12 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             if let Some(obs) = hooks.observer {
                 obs.on_usage(input_est + output_est);
             }
+            // Providers that omit usage still deserve a live context feed:
+            // push the same chars/4 estimate already used for cost counting.
+            events.emit(RuntimeEvent::UsageUpdate {
+                prompt_tokens: input_est,
+                cached_tokens: None,
+            });
         }
 
         if result.has_tool_calls && !result.tool_calls.is_empty() {
@@ -926,6 +1049,33 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                 .await;
         }
 
+        // Output-token budget exhausted (`finish_reason` length/max_tokens):
+        // the answer is incomplete — reasoning models can burn the entire
+        // budget on reasoning_content and stream little or no visible text.
+        // Instead of ending the turn truncated, ask the model to pick up
+        // exactly where it stopped and keep streaming. The round-level
+        // StreamDone was already gated above, so frontends still see one
+        // uninterrupted stream. Bounded by MAX_LENGTH_CONTINUATIONS; past the
+        // cap the terminal StreamDone below reports `length` so clients can
+        // surface the truncation.
+        if is_length_reason(&result.finish_reason)
+            && state.length_continuations < MAX_LENGTH_CONTINUATIONS
+        {
+            state.length_continuations += 1;
+            accumulated.push_str(&result.content);
+            tracing::info!(
+                attempt = state.length_continuations,
+                "finish_reason=length; auto-continuing the truncated response"
+            );
+            history
+                .push(ChatMessage::user(
+                    "Your previous response was cut off at the output token limit. Continue exactly where it stopped: do not repeat or rephrase text you already produced, do not re-plan, and output only the remaining part of the answer.".to_string(),
+                ))
+                .await;
+            events.emit(RuntimeEvent::SaveSession);
+            continue;
+        }
+
         // Non-root subagent synthesis barrier: inject child results and continue.
         if let Some(synth) = hooks.synthesis {
             match synth.on_candidate_final(&result.content).await {
@@ -948,6 +1098,11 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             }
         }
 
+        let final_content = if accumulated.is_empty() {
+            result.content
+        } else {
+            format!("{accumulated}{}", result.content)
+        };
         events.emit(RuntimeEvent::StreamDone {
             finish_reason: result.finish_reason,
         });
@@ -956,7 +1111,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             let msgs = history.get().await;
             obs.on_completed(llm_rounds, &msgs);
         }
-        return Ok(result.content);
+        return Ok(final_content);
     }
 }
 

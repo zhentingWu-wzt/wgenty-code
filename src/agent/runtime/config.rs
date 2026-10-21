@@ -1,5 +1,15 @@
 //! Runtime configuration shared by every agent frontend.
 
+use crate::config::{
+    DEFAULT_MAX_ROUNDS, DEFAULT_STREAM_IDLE_TIMEOUT_SECS, DEFAULT_STREAM_MAX_RETRIES,
+    DEFAULT_SUBAGENT_TIMEOUT_SECS,
+};
+
+/// Fallback context window when no model lookup or settings entry provides one.
+const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
+/// Fallback max output tokens when settings provide none.
+const DEFAULT_MAX_TOKENS: usize = 4096;
+
 /// Static knobs for one agent session / turn runner.
 ///
 /// Frontends build this from `Settings` once and pass it into runtime helpers.
@@ -17,20 +27,24 @@ pub struct RuntimeConfig {
     pub agent_generation: u64,
     /// Mid-stream retry budget (not connection-level; those live in ApiClient).
     pub stream_max_retries: u32,
+    /// Idle gap between SSE chunks before a stream is considered stalled, in
+    /// seconds. Any received chunk (delta or keep-alive) resets the timer.
+    pub stream_idle_timeout_secs: u64,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            max_rounds: 100,
+            max_rounds: DEFAULT_MAX_ROUNDS,
             plan_mode: false,
-            subagent_timeout_secs: 1800,
-            context_window: 200_000,
-            max_tokens: 4096,
+            subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
+            context_window: DEFAULT_CONTEXT_WINDOW,
+            max_tokens: DEFAULT_MAX_TOKENS,
             session_id: String::new(),
             turn_id: None,
             agent_generation: 0,
-            stream_max_retries: 2,
+            stream_max_retries: DEFAULT_STREAM_MAX_RETRIES,
+            stream_idle_timeout_secs: DEFAULT_STREAM_IDLE_TIMEOUT_SECS,
         }
     }
 }

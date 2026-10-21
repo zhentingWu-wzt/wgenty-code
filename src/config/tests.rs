@@ -12,6 +12,129 @@ fn test_rlm_settings_default_all_enabled() {
 }
 
 #[test]
+#[serial_test::serial]
+fn set_rejects_keys_outside_the_settings_schema() {
+    // serde silently drops unknown fields, so a typo'd path must be caught
+    // by the round-trip check instead of "succeeding" while the real key
+    // lives elsewhere (top-level exec_session.* vs agent.exec_session.*).
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    let err = Settings::set("exec_session.auto_retry_max", "5").unwrap_err();
+    assert!(
+        format!("{err}").contains("unknown setting key"),
+        "got: {err:#}"
+    );
+
+    Settings::set("agent.exec_session.auto_retry_max", "5")
+        .expect("the real nested path must keep working");
+    std::env::remove_var("WGENTY_HOME");
+}
+
+/// Write an old-format (legacy `main`/`small`/`planner`) settings.json under
+/// a fake home and return its path-bearing dir. Caller must clean up
+/// `WGENTY_HOME` afterwards.
+fn seed_legacy_settings_home() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    std::fs::write(
+        cfg_dir.join("settings.json"),
+        r#"{
+            "models": {
+                "main": {"name": "glm-5.3", "base_url": "https://relay.example", "api_key": "k-main"},
+                "small": {"name": "haiku"},
+                "planner": {"name": "planner-x", "base_url": "https://planner.example"}
+            }
+        }"#,
+    )
+    .expect("seed settings");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    dir
+}
+
+/// Restore the pre-test `WGENTY_HOME` (None → remove). Tests mutating the
+/// global must run `#[serial_test::serial]` — the env var is process-wide.
+fn restore_wgenty_home(prev: Option<std::ffi::OsString>) {
+    match prev {
+        Some(v) => std::env::set_var("WGENTY_HOME", v),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn load_from_disk_migrates_legacy_model_fields() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+    let s = Settings::load_from_disk().expect("load");
+
+    // main → synthesized "main" profile, active.
+    assert_eq!(s.models.active_profile.as_deref(), Some("main"));
+    assert_eq!(s.models.profiles["main"].name, "glm-5.3");
+    assert_eq!(s.models.main.name, "glm-5.3", "runtime cache resynced");
+
+    // small → light-tier profile inheriting main's base_url.
+    let small = &s.models.profiles["small"];
+    assert_eq!(small.name, "haiku");
+    assert_eq!(small.tier, Some(crate::config::models::ModelTier::Light));
+    assert_eq!(small.base_url.as_deref(), Some("https://relay.example"));
+    assert_eq!(small.api_key.as_deref(), Some("k-main"));
+
+    // planner → profile + role ref.
+    assert_eq!(s.models.roles.planner.as_deref(), Some("planner"));
+    assert_eq!(s.models.profiles["planner"].name, "planner-x");
+    assert_eq!(
+        s.models.profiles["planner"].base_url.as_deref(),
+        Some("https://planner.example")
+    );
+
+    // Legacy slots consumed; save→reload round-trips the new format.
+    assert!(s.models.small.is_none() && s.models.planner.is_none());
+    s.save().expect("save");
+    let re = Settings::load_from_disk().expect("reload");
+    assert_eq!(re.models.active_profile.as_deref(), Some("main"));
+    assert!(re.models.profiles.contains_key("small"));
+    assert!(re.models.profiles.contains_key("planner"));
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn set_models_main_name_remaps_onto_active_profile_without_clobber() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+
+    // Legacy path: must patch the migrated "main" profile object — keeping
+    // sibling fields like base_url — instead of replacing `models.main`.
+    Settings::set("models.main.name", "\"glm-5.2\"").expect("set");
+
+    let s = Settings::load_from_disk().expect("reload");
+    let main_profile = s.models.profiles.get("main").expect("main profile exists");
+    assert_eq!(main_profile.name, "glm-5.2");
+    assert_eq!(
+        main_profile.base_url.as_deref(),
+        Some("https://relay.example"),
+        "sibling fields survive the legacy-path set"
+    );
+    assert_eq!(s.models.active_profile.as_deref(), Some("main"));
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn set_models_small_name_keeps_light_role() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+    // "small" light profile already exists post-migration → set targets it.
+    Settings::set("models.small.name", "\"haiku-2\"").expect("set");
+    let s = Settings::load_from_disk().expect("reload");
+    let small = &s.models.profiles["small"];
+    assert_eq!(small.name, "haiku-2");
+    assert_eq!(small.tier, Some(crate::config::models::ModelTier::Light));
+    restore_wgenty_home(prev);
+}
+
+#[test]
 fn test_rlm_settings_deserialize_partial() {
     let json = r#"{"enabled": false}"#;
     let rlm: RlmSettings = serde_json::from_str(json).unwrap();
@@ -161,43 +284,87 @@ fn test_subagent_overrides_default_none() {
 }
 
 #[test]
-fn test_resolve_subagent_config_noop_when_no_overrides() {
-    let s = Settings::default();
-    let r = s.resolve_subagent_config();
-    assert_eq!(r.agent.plan_mode, s.agent.plan_mode);
-    assert_eq!(r.agent.max_rounds, s.agent.max_rounds);
-    assert_eq!(r.agent.token_budget.main_k, s.agent.token_budget.main_k);
-    assert_eq!(r.agent.rlm.enabled, s.agent.rlm.enabled);
-    assert_eq!(r.prompt.include.skills, s.prompt.include.skills);
+fn test_resolve_max_rounds_mappings() {
+    // None → default cap.
+    assert_eq!(resolve_max_rounds(None), DEFAULT_MAX_ROUNDS);
+    // Some(0) → unlimited.
+    assert_eq!(resolve_max_rounds(Some(0)), usize::MAX);
+    // Some(n) → n.
+    assert_eq!(resolve_max_rounds(Some(7)), 7);
 }
 
 #[test]
-fn test_resolve_subagent_config_applies_overrides() {
+fn test_agent_effective_max_rounds() {
     let mut s = Settings::default();
-    s.agent.token_budget.main_k = 100;
-    s.agent.rlm.enabled = true;
-    s.prompt.include.skills = true;
-
-    s.agent.subagent.token_budget_k = Some(50);
-    s.agent.subagent.rlm.enabled = Some(false);
-    s.agent.subagent.prompt.include.skills = Some(false);
-
-    let r = s.resolve_subagent_config();
-    assert_eq!(r.agent.token_budget.main_k, 50);
-    assert!(!r.agent.rlm.enabled);
-    assert!(!r.prompt.include.skills);
-    // Source unchanged
-    assert_eq!(s.agent.token_budget.main_k, 100);
-    assert!(s.agent.rlm.enabled);
+    assert_eq!(s.agent.effective_max_rounds(), DEFAULT_MAX_ROUNDS);
+    s.agent.max_rounds = Some(0);
+    assert_eq!(s.agent.effective_max_rounds(), usize::MAX);
+    s.agent.max_rounds = Some(300);
+    assert_eq!(s.agent.effective_max_rounds(), 300);
 }
 
 #[test]
-fn test_resolve_subagent_max_rounds_zero_means_unlimited() {
+fn test_subagent_effective_max_rounds_inherits_agent() {
     let mut s = Settings::default();
-    s.agent.max_rounds = Some(50);
+    // Both unset → default.
+    assert_eq!(s.subagent_effective_max_rounds(), DEFAULT_MAX_ROUNDS);
+    // Subagent unset inherits agent value.
+    s.agent.max_rounds = Some(300);
+    assert_eq!(s.subagent_effective_max_rounds(), 300);
+    // Subagent override wins; Some(0) = unlimited.
     s.agent.subagent.max_rounds = Some(0);
-    let r = s.resolve_subagent_config();
-    assert_eq!(r.agent.max_rounds, None);
+    assert_eq!(s.subagent_effective_max_rounds(), usize::MAX);
+    s.agent.subagent.max_rounds = Some(5);
+    assert_eq!(s.subagent_effective_max_rounds(), 5);
+    // Agent unlimited propagates too.
+    s.agent.subagent.max_rounds = None;
+    s.agent.max_rounds = Some(0);
+    assert_eq!(s.subagent_effective_max_rounds(), usize::MAX);
+}
+
+#[test]
+fn test_agent_stream_max_retries_default_and_serde() {
+    // Programmatic default.
+    assert_eq!(
+        Settings::default().agent.stream_max_retries,
+        DEFAULT_STREAM_MAX_RETRIES
+    );
+    // Missing field in settings.json → serde default (not 0).
+    let json = r#"{"plan_mode": false}"#;
+    let cfg: AgentConfig = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(cfg.stream_max_retries, DEFAULT_STREAM_MAX_RETRIES);
+    // Explicit value round-trips.
+    let mut s = Settings::default();
+    s.agent.stream_max_retries = 5;
+    let round: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(round.agent.stream_max_retries, 5);
+}
+
+#[test]
+fn test_agent_stream_idle_timeout_default_and_serde() {
+    // Programmatic default.
+    assert_eq!(
+        Settings::default().agent.stream_idle_timeout_secs,
+        DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+    );
+    // Missing field in settings.json → serde default (not 0).
+    let json = r#"{"plan_mode": false}"#;
+    let cfg: AgentConfig = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(
+        cfg.stream_idle_timeout_secs,
+        DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+    );
+    // Explicit value round-trips.
+    let mut s = Settings::default();
+    s.agent.stream_idle_timeout_secs = 180;
+    let round: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(round.agent.stream_idle_timeout_secs, 180);
+    // `0` resolves to the default via the effective accessor.
+    s.agent.stream_idle_timeout_secs = 0;
+    assert_eq!(
+        s.agent.effective_stream_idle_timeout_secs(),
+        DEFAULT_STREAM_IDLE_TIMEOUT_SECS
+    );
 }
 
 #[test]
@@ -492,7 +659,7 @@ fallback_models = ["claude-sonnet-4", "gpt-4o"]
     fn subagent_trace_context_char_limit_defaults_to_2000() {
         let trace = SubagentTraceConfig::default();
         assert_eq!(trace.context_char_limit, 2000);
-        assert_eq!(trace.sink, TraceSinkMode::File);
+        assert_eq!(trace.sink, TraceSinkMode::Both);
         assert!(trace.dir.is_none());
     }
 

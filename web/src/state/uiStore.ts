@@ -3,10 +3,13 @@
  * 只持有 UI 事实，不碰会话数据（会话在 sessionManager）。
  */
 import { create } from "zustand";
+import type { GitChangeKind } from "../api/types";
 import { applyTheme, readStoredTheme, type ThemeMode } from "../lib/theme";
 
 export type RightPanelId =
   | "sessions"
+  | "files"
+  | "scm"
   | "skills"
   | "memory"
   | "checkpoints"
@@ -15,6 +18,36 @@ export type RightPanelId =
   | "mcp"
   | "subagents"
   | "inspector";
+
+/** Metadata for a subagent detail tab (`subagent:<nodeId>`). */
+export interface SubagentTabMeta {
+  nodeId: string;
+  label: string;
+  /** Root daemon session id the subagent belongs to (capability API param). */
+  rootSessionId: string;
+}
+
+/** Metadata for a workspace file preview tab (`preview:<absPath>`).
+ *  Mirrors the subagent tab pattern (design D5) — no separate store. */
+export interface PreviewTabMeta {
+  /** Registered workspace root (canonicalized) the file belongs to. */
+  workspaceRoot: string;
+  absPath: string;
+  relPath: string;
+  /** Extension-based first guess by the caller; the panel re-checks against
+   *  the actual fetchFile response kind. */
+  kind: "text" | "binary";
+}
+
+/** Metadata for a file diff tab (`diff:<absPath>`) — mirrors the preview
+ *  tab pattern; opened from the Source Control panel. */
+export interface DiffTabMeta {
+  /** Registered workspace root (canonicalized) the file belongs to. */
+  workspaceRoot: string;
+  absPath: string;
+  relPath: string;
+  status: GitChangeKind;
+}
 
 interface UiState {
   theme: ThemeMode;
@@ -37,11 +70,33 @@ interface UiState {
   /** 把 id 移动到 targetId 的位置（向下拖时落在其后）。 */
   moveTab: (id: string, targetId: string) => void;
   pruneTabs: (ids: string[]) => void;
+
+  /** 统一活动 tab：session id 或 `subagent:<nodeId>`。null = 无活动 tab。 */
+  activeTabId: string | null;
+  setActiveTab: (id: string | null) => void;
+  /** subagent 详情 tab 元数据，key = tab id（`subagent:<nodeId>`）。 */
+  subagentTabs: Record<string, SubagentTabMeta>;
+  /** 打开（或聚焦）一个 subagent 详情 tab 并激活。 */
+  openSubagentTab: (meta: SubagentTabMeta) => void;
+
+  /** 文件预览 tab 元数据，key = tab id（`preview:<absPath>`）。 */
+  previewTabs: Record<string, PreviewTabMeta>;
+  /** 打开（或聚焦）一个文件预览 tab 并激活；同 path 幂等（不加新 tab）。 */
+  openPreviewTab: (meta: PreviewTabMeta) => void;
+
+  /** 文件 diff tab 元数据，key = tab id（`diff:<absPath>`）。 */
+  diffTabs: Record<string, DiffTabMeta>;
+  /** 打开（或聚焦）一个文件 diff tab 并激活；同 path 幂等。 */
+  openDiffTab: (meta: DiffTabMeta) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
   theme: readStoredTheme(),
-  leftCollapsed: false,
+  // 移动端（<md，768px）默认收起左栏：抽屉展开态是 fixed 遮罩覆盖，首屏
+  // 糊脸体验差；桌面端保持默认展开。
+  leftCollapsed:
+    typeof window !== "undefined" &&
+    window.matchMedia("(max-width: 767px)").matches,
   leftWidth: 256,
   rightPanel: null,
 
@@ -55,8 +110,7 @@ export const useUiStore = create<UiState>((set) => ({
   toggleRightPanel: (p) => set((s) => ({ rightPanel: s.rightPanel === p ? null : p })),
 
   openTabs: [],
-  openTab: (id) =>
-    set((s) => (s.openTabs.includes(id) ? s : { openTabs: [...s.openTabs, id] })),
+  openTab: (id) => set((s) => (s.openTabs.includes(id) ? s : { openTabs: [...s.openTabs, id] })),
   closeTab: (id) => {
     let next: string | null = null;
     set((s) => {
@@ -64,7 +118,32 @@ export const useUiStore = create<UiState>((set) => ({
       const openTabs = s.openTabs.filter((t) => t !== id);
       // 优先右侧邻居，删尾 tab 时取新的末尾。idx < 0 时 id 本就不在，无需激活切换。
       next = idx < 0 ? null : (openTabs[Math.min(idx, openTabs.length - 1)] ?? null);
-      return { openTabs };
+      // subagent / preview tab 关闭时顺带清理各自的元数据。
+      const subagentTabs =
+        id.startsWith("subagent:") && s.subagentTabs[id]
+          ? (() => {
+              const c = { ...s.subagentTabs };
+              delete c[id];
+              return c;
+            })()
+          : s.subagentTabs;
+      const previewTabs =
+        id.startsWith("preview:") && s.previewTabs[id]
+          ? (() => {
+              const c = { ...s.previewTabs };
+              delete c[id];
+              return c;
+            })()
+          : s.previewTabs;
+      const diffTabs =
+        id.startsWith("diff:") && s.diffTabs[id]
+          ? (() => {
+              const c = { ...s.diffTabs };
+              delete c[id];
+              return c;
+            })()
+          : s.diffTabs;
+      return { openTabs, subagentTabs, previewTabs, diffTabs };
     });
     return next;
   },
@@ -77,6 +156,46 @@ export const useUiStore = create<UiState>((set) => ({
       openTabs.splice(to, 0, id);
       return { openTabs };
     }),
-  pruneTabs: (ids) =>
-    set((s) => ({ openTabs: s.openTabs.filter((t) => !ids.includes(t)) })),
+  pruneTabs: (ids) => set((s) => ({ openTabs: s.openTabs.filter((t) => !ids.includes(t)) })),
+
+  activeTabId: null,
+  setActiveTab: (activeTabId) => set({ activeTabId }),
+  subagentTabs: {},
+  openSubagentTab: (meta) => {
+    const tabId = `subagent:${meta.nodeId}`;
+    set((s) => {
+      const openTabs = s.openTabs.includes(tabId) ? s.openTabs : [...s.openTabs, tabId];
+      return {
+        openTabs,
+        subagentTabs: { ...s.subagentTabs, [tabId]: meta },
+        activeTabId: tabId,
+      };
+    });
+  },
+
+  previewTabs: {},
+  openPreviewTab: (meta) => {
+    const tabId = `preview:${meta.absPath}`;
+    set((s) => {
+      const openTabs = s.openTabs.includes(tabId) ? s.openTabs : [...s.openTabs, tabId];
+      return {
+        openTabs,
+        previewTabs: { ...s.previewTabs, [tabId]: meta },
+        activeTabId: tabId,
+      };
+    });
+  },
+
+  diffTabs: {},
+  openDiffTab: (meta) => {
+    const tabId = `diff:${meta.absPath}`;
+    set((s) => {
+      const openTabs = s.openTabs.includes(tabId) ? s.openTabs : [...s.openTabs, tabId];
+      return {
+        openTabs,
+        diffTabs: { ...s.diffTabs, [tabId]: meta },
+        activeTabId: tabId,
+      };
+    });
+  },
 }));

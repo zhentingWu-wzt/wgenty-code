@@ -15,9 +15,11 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::identity::{AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId};
-use crate::agent::store::{AgentRecord, InMemoryAgentStore, LocalAgentView, StoreError};
+use crate::agent::store::{
+    AgentRecord, DirectoryEntry, InMemoryAgentStore, LocalAgentView, StoreError,
+};
 use crate::agent::task_group::{TaskGroupDelivery, TaskGroupError, TaskGroupId, TaskGroupStore};
+use crate::tools::context::{AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId};
 
 /// Default bounded shutdown timeout applied while awaiting cancelling children.
 ///
@@ -349,6 +351,13 @@ pub struct AgentCoordinator {
     /// cannot spawn children. The persistent root is never recorded here and
     /// therefore resolves to the `GeneralPurpose` contract (can spawn).
     node_types: Arc<RwLock<HashMap<(SessionId, AgentId), crate::org_graph::NodeType>>>,
+    /// Fan-out for "a task group just became ready (all direct-child results
+    /// recorded)". Carries the session id. The daemon's continuation scheduler
+    /// subscribes and turns ready root groups into synthesis runs, so clients
+    /// don't have to poll `claim_ready_root_group` to notice completed
+    /// subagent work. Pings are hints, not state: receivers re-verify
+    /// readiness by claiming, so lagging or loss is harmless.
+    ready_group_tx: tokio::sync::broadcast::Sender<SessionId>,
 }
 
 impl AgentCoordinator {
@@ -372,7 +381,15 @@ impl AgentCoordinator {
                 &crate::config::agent::SubagentLimits::default(),
             )),
             node_types: Arc::new(RwLock::new(HashMap::new())),
+            ready_group_tx: tokio::sync::broadcast::channel(64).0,
         }
+    }
+
+    /// Subscribe to task-group readiness pings (see the `ready_group_tx`
+    /// field docs). The receiver lagging only means redundant pings are
+    /// dropped — readiness is always re-checked via a claim.
+    pub fn subscribe_ready_groups(&self) -> tokio::sync::broadcast::Receiver<SessionId> {
+        self.ready_group_tx.subscribe()
     }
 
     /// Mark that a fallback has been used for the given key (a child id for
@@ -945,6 +962,13 @@ impl AgentCoordinator {
         match self.task_groups.record_result(&group_id, result).await {
             Ok(()) | Err(TaskGroupError::ResultAlreadyRecorded { .. }) => {
                 self.child_groups.write().await.remove(&child_key);
+                // Notify listeners right at the readiness transition so the
+                // daemon can deliver the completed group to the root agent
+                // without client-side polling. No-subscriber is normal (TUI
+                // claims by polling); the send result is intentionally ignored.
+                if self.task_groups.group_is_ready(&group_id).await {
+                    let _ = self.ready_group_tx.send(child.session_id.clone());
+                }
                 Ok(())
             }
             Err(error) => Err(error.into()),
@@ -1199,6 +1223,24 @@ impl AgentCoordinator {
     ) -> Result<(AgentRecord, Vec<AgentRecord>), CoordinatorError> {
         self.store
             .local_records_for_trusted_ui(session, agent)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Returns the recursive whole-tree directory rooted at `root` for a
+    /// trusted UI projection after navigation authority has already been
+    /// established.
+    ///
+    /// Hierarchy records only: progress cross-fill (tokens/elapsed/round)
+    /// stays in the daemon handler layer, mirroring `assemble_local_view`'s
+    /// separation of concerns.
+    pub(crate) async fn trusted_ui_directory(
+        &self,
+        session: &SessionId,
+        root: &AgentId,
+    ) -> Result<DirectoryEntry, CoordinatorError> {
+        self.store
+            .directory_for_trusted_ui(session, root)
             .await
             .map_err(Into::into)
     }
@@ -2302,6 +2344,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_ping_fires_only_when_the_group_becomes_ready() {
+        let coordinator = test_coordinator(4, 3);
+        let mut pings = coordinator.subscribe_ready_groups();
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let first = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("a"), group.clone())
+            .await
+            .unwrap();
+        let second = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("b"), group.clone())
+            .await
+            .unwrap();
+
+        // One of two children finished: no ping yet.
+        coordinator
+            .finish_child(&first.context, ChildTerminal::completed("a done"))
+            .await
+            .unwrap();
+        assert!(pings.try_recv().is_err(), "no ping before readiness");
+
+        // Last child finishes: exactly one ping naming the session.
+        coordinator
+            .finish_child(&second.context, ChildTerminal::completed("b done"))
+            .await
+            .unwrap();
+        let session = tokio::time::timeout(Duration::from_secs(1), pings.recv())
+            .await
+            .expect("readiness ping within timeout")
+            .expect("ping channel open");
+        assert_eq!(session, SessionId::new("s"));
+    }
+
+    #[tokio::test]
     async fn root_claim_cannot_claim_a_ready_non_root_group() {
         let coordinator = test_coordinator(4, 3);
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
@@ -3311,6 +3390,68 @@ mod tests {
                 .await,
             Err(CoordinatorError::NotVisible)
         ));
+    }
+
+    #[tokio::test]
+    async fn trusted_ui_directory_delegates_to_store_recursively() {
+        let coordinator = test_coordinator(8, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child_a = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("task a"))
+            .await
+            .unwrap();
+        let child_b = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("task b"))
+            .await
+            .unwrap();
+        let grandchild = coordinator
+            .reserve_child(&child_a.context, SpawnChildRequest::new("grandtask"))
+            .await
+            .unwrap();
+
+        // Empty session root maps to NotVisible through the store.
+        assert!(matches!(
+            coordinator
+                .trusted_ui_directory(&SessionId::new("empty"), &root.agent_id)
+                .await,
+            Err(CoordinatorError::NotVisible)
+        ));
+
+        let directory = coordinator
+            .trusted_ui_directory(&root.session_id, &root.agent_id)
+            .await
+            .unwrap();
+        assert_eq!(directory.agent_id, root.agent_id);
+        assert_eq!(directory.depth, 0);
+        assert_eq!(directory.children.len(), 2);
+        // Child entries must be sorted by agent_id ascending.
+        let child_ids: Vec<&str> = directory
+            .children
+            .iter()
+            .map(|c| c.agent_id.as_str())
+            .collect();
+        let mut sorted = child_ids.clone();
+        sorted.sort();
+        assert_eq!(child_ids, sorted);
+
+        let entry_a = directory
+            .children
+            .iter()
+            .find(|c| c.agent_id == child_a.context.agent_id)
+            .expect("child a present");
+        assert_eq!(entry_a.label, "task a");
+        assert_eq!(entry_a.depth, 1);
+        assert_eq!(entry_a.children.len(), 1);
+        assert_eq!(entry_a.children[0].agent_id, grandchild.context.agent_id);
+        assert_eq!(entry_a.children[0].label, "grandtask");
+        assert_eq!(entry_a.children[0].depth, 2);
+
+        let entry_b = directory
+            .children
+            .iter()
+            .find(|c| c.agent_id == child_b.context.agent_id)
+            .expect("child b present");
+        assert!(entry_b.children.is_empty());
     }
 }
 

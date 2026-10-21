@@ -1,3 +1,5 @@
+use crate::tui::app::AppEvent;
+use crate::tui::traits::EventHandler;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
@@ -275,6 +277,26 @@ pub fn render(f: &mut Frame, state: &PlanPanelState, area: Rect) {
             .title(title),
     );
     f.render_widget(para, area);
+}
+
+/// Owns the `TodosSnapshot` event: converts daemon todo items into plan-panel
+/// rows. Previously lived inline in the giant App event match.
+impl EventHandler for PlanPanelState {
+    fn handle_event(&mut self, event: &AppEvent) -> bool {
+        if let AppEvent::TodosSnapshot(todos) = event {
+            let items = todos
+                .clone()
+                .into_iter()
+                .map(|t| PlanItem {
+                    step: t.content,
+                    status: PlanStatus::parse_status(&t.status),
+                })
+                .collect::<Vec<_>>();
+            self.update(items);
+            return true;
+        }
+        false
+    }
 }
 
 #[cfg(test)]

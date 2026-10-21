@@ -172,3 +172,68 @@ async fn busy_run_final_save_precedes_background_continuation() {
 
     model_server.abort();
 }
+
+/// Queued-run contract + run-status reconciliation endpoint (web freeze
+/// regression): while a run holds the session slot, POST /run must queue the
+/// message and answer a NON-EMPTY pre-minted `run_id` (the legacy empty-string
+/// answer made the web observer filter out every event of the turn and freeze
+/// on "running" forever), and GET /sessions/:id/run must expose the active
+/// run id plus the FIFO depth so a sync_lost client can reconcile.
+#[tokio::test]
+async fn busy_session_queues_with_pre_minted_run_id_and_reports_run_status() {
+    let daemon = spawn_daemon_custom(|_| {}, |_| {}).await;
+    let session_id = create_session(&daemon, "queued-contract").await;
+
+    // Occupy the run slot without an HTTP run: the queue path only races the
+    // slot claim, so a direct claim is enough and avoids model timing.
+    let foreground_run_id = "foreground-run".to_string();
+    daemon
+        .state
+        .session_runs
+        .claim(
+            &session_id,
+            wgenty_code::daemon::run_loop::SessionRun {
+                run_id: foreground_run_id.clone(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                started_at: std::time::Instant::now(),
+            },
+        )
+        .expect("claim foreground slot");
+
+    let queued_response = daemon
+        .client
+        .post(format!("{}/sessions/{session_id}/run", daemon.base))
+        .json(&serde_json::json!({"message": "follow-up"}))
+        .send()
+        .await
+        .expect("queue while busy");
+    assert_eq!(queued_response.status(), reqwest::StatusCode::ACCEPTED);
+    let queued_body: serde_json::Value = queued_response.json().await.expect("queued body");
+    assert_eq!(queued_body["queued"], serde_json::json!(true));
+    assert_eq!(queued_body["queue_position"], serde_json::json!(1));
+    let queued_run_id = queued_body["run_id"]
+        .as_str()
+        .expect("pre-minted run id")
+        .to_string();
+    assert!(!queued_run_id.is_empty(), "queued run_id must be non-empty");
+
+    // Reconciliation snapshot: the foreground run is active, one message queued.
+    let run_status: serde_json::Value = daemon
+        .client
+        .get(format!("{}/sessions/{session_id}/run", daemon.base))
+        .send()
+        .await
+        .expect("get run status")
+        .json()
+        .await
+        .expect("run status body");
+    assert_eq!(run_status["run_id"], serde_json::json!(foreground_run_id));
+    assert_eq!(run_status["queued"], serde_json::json!(1));
+
+    // The scheduler will claim the queued head under the SAME pre-minted id
+    // once the slot frees (id reuse is unit-tested in run_loop::tests:
+    // `queued_message_waits_for_an_idle_session`).
+    let snapshot = daemon.state.queued_messages_snapshot(&session_id).await;
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].run_id, queued_run_id);
+}

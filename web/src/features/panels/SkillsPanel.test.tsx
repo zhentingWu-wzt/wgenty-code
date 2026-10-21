@@ -4,7 +4,11 @@ import { SkillsPanel } from "./SkillsPanel";
 import { DaemonClient } from "../../api/client";
 
 function mockFetch(payload: unknown, status = 200) {
-  const spy = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status }));
+  // Fresh Response per call: DaemonClient.authedFetch probes /__daemon-info
+  // first, and a single shared Response body cannot be read twice.
+  const spy = vi
+    .fn()
+    .mockImplementation(async () => new Response(JSON.stringify(payload), { status }));
   vi.stubGlobal("fetch", spy);
   return spy;
 }

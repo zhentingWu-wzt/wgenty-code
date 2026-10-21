@@ -5,8 +5,8 @@
 //! the Web client does. Foundation for migrating the TUI from a client-side
 //! loop to a server-side loop.
 
-use crate::agent::progress::{SubagentProgress, SubagentStatus};
 use crate::daemon::run_loop::{SessionEvent, SessionEventKind};
+use crate::progress::{SubagentProgress, SubagentStatus};
 use crate::teams::trace_sink::{TraceEvent, TraceEventKind};
 use crate::tui::app::types::AppEvent;
 use crate::tui::client::{DaemonClient, GlobalEventWire};
@@ -198,6 +198,38 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
         // TurnContext is consumed by web/Tauri inspector panels; the TUI has
         // its own in-process TurnContext via AppEvent::TurnContextCaptured.
         SessionEventKind::TurnContext => Vec::new(),
+        // Live context occupancy for web/Tauri status bars; the TUI reads its
+        // in-process TokenCounter directly.
+        SessionEventKind::UsageUpdate => Vec::new(),
+        // Daemon-truth turn phase: forward to the existing phase-deriving
+        // AppEvents (agent_phase_from_event picks them up), so server-side
+        // TUI turns show Connecting/Compacting like the in-process loop did.
+        SessionEventKind::PhaseChanged => {
+            let phase = ev.data.get("phase").and_then(|p| p.as_str()).unwrap_or("");
+            match phase {
+                "connecting" => {
+                    let attempt = ev
+                        .data
+                        .get("attempt")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1) as usize;
+                    let max_retries = ev
+                        .data
+                        .get("max_retries")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1) as usize;
+                    vec![AppEvent::Connecting {
+                        attempt,
+                        max_retries,
+                    }]
+                }
+                "preparing_tools" => vec![AppEvent::PreparingTools],
+                "compacting" => vec![AppEvent::CompactionStarted],
+                // "thinking" needs no AppEvent: the next delta/tool event
+                // transitions the phase anyway (Compacting included).
+                _ => Vec::new(),
+            }
+        }
     }
 }
 
@@ -404,7 +436,9 @@ fn trace_event_to_progress(ev: &TraceEvent) -> SubagentProgress {
         current_tool: ev.current_tool.clone(),
         current_params,
         action_log: Vec::new(),
-        text_snapshot: None,
+        // Terminal trace events carry the subagent's final result text; the
+        // SubagentTree preserves it on upsert for the focus view.
+        text_snapshot: ev.result.clone(),
         started_at: ev.ts,
         elapsed_ms: ev.elapsed_ms,
         metadata: None,
@@ -1029,6 +1063,50 @@ mod tests {
         assert!(matches!(&apps[1], AppEvent::TurnComplete));
     }
 
+    /// Daemon-truth phases map onto the existing phase-deriving AppEvents, so
+    /// server-side TUI turns show Connecting/Compacting like in-process ones.
+    #[test]
+    fn phase_changed_maps_to_phase_app_events() {
+        let connecting = session_event_to_app_events(ev(
+            6,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "connecting", "attempt": 2, "max_retries": 3}),
+        ));
+        assert_eq!(connecting.len(), 1);
+        assert!(matches!(
+            &connecting[0],
+            AppEvent::Connecting {
+                attempt: 2,
+                max_retries: 3
+            }
+        ));
+
+        let compacting = session_event_to_app_events(ev(
+            7,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "compacting"}),
+        ));
+        assert_eq!(compacting.len(), 1);
+        assert!(matches!(&compacting[0], AppEvent::CompactionStarted));
+
+        let preparing = session_event_to_app_events(ev(
+            8,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "preparing_tools"}),
+        ));
+        assert_eq!(preparing.len(), 1);
+        assert!(matches!(&preparing[0], AppEvent::PreparingTools));
+
+        // "thinking" needs no AppEvent: the next delta/tool event
+        // transitions the phase anyway.
+        let thinking = session_event_to_app_events(ev(
+            9,
+            SessionEventKind::PhaseChanged,
+            serde_json::json!({"phase": "thinking"}),
+        ));
+        assert!(thinking.is_empty());
+    }
+
     #[test]
     fn turn_done_tool_calls_is_round_boundary_not_complete() {
         // A tool_calls finish ends an LLM round, not the turn: commit the
@@ -1134,6 +1212,7 @@ mod tests {
             token_budget_k: Some(10),
             cumulative_tokens: 1234,
             error: None,
+            result: None,
             kind,
             permission: None,
             question: None,

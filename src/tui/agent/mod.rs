@@ -19,9 +19,6 @@ use crate::utils::stuck_detector::StuckDetector;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-pub(super) const MAX_RETRIES: u32 = 2;
-// MAX_LLM_ROUNDS (100 default, configurable via settings.json) defined inside run_agent_loop as safety valve.
-
 /// Structured error returned by the agent loop.
 ///
 /// Replaces bare `String` errors so callers match on variants instead of
@@ -88,6 +85,10 @@ pub struct AgentLoop {
     pub(super) compaction_failed: bool,
     pub(super) preparing_tools_fired: bool,
     pub(super) max_rounds: usize,
+    /// Mid-stream retry budget from settings.agent.stream_max_retries.
+    pub(super) stream_max_retries: u32,
+    /// SSE idle-stall timeout from settings.agent.stream_idle_timeout_secs.
+    pub(super) stream_idle_timeout_secs: u64,
     pub(super) stuck_detector: StuckDetector,
     pub(super) token_counter: crate::api::token_counter::TokenCounter,
     pub(super) plan_mode: bool,
@@ -136,6 +137,8 @@ impl AgentLoop {
         plan_mode: bool,
         planner_client: Option<crate::api::ApiClient>,
         max_rounds: usize,
+        stream_max_retries: u32,
+        stream_idle_timeout_secs: u64,
         token_counter: crate::api::token_counter::TokenCounter,
         hook_manager: std::sync::Arc<HookManager>,
         prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
@@ -158,6 +161,8 @@ impl AgentLoop {
             compaction_failed: false,
             preparing_tools_fired: false,
             max_rounds,
+            stream_max_retries,
+            stream_idle_timeout_secs,
             stuck_detector: StuckDetector::new(),
             token_counter,
             session_id,
@@ -292,7 +297,7 @@ impl AgentLoop {
                 variables: Default::default(),
             };
             match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(crate::runtime::hooks::FIRE_TIMEOUT_SECS),
                 self.hook_manager.fire(
                     &crate::runtime::hooks::HookEvent::UserPromptSubmit,
                     &hook_ctx,
@@ -305,7 +310,8 @@ impl AgentLoop {
                 Ok(v) => v,
                 Err(_) => {
                     tracing::warn!(
-                        "UserPromptSubmit hook timed out after 10s; proceeding with empty outcomes"
+                        "UserPromptSubmit hook timed out after {}s; proceeding with empty outcomes",
+                        crate::runtime::hooks::FIRE_TIMEOUT_SECS
                     );
                     Vec::new()
                 }
@@ -315,7 +321,8 @@ impl AgentLoop {
         // 1b. Collect injected fragments from hook outcomes.
         let injections = crate::runtime::hooks::collect_injections(&outcomes);
 
-        // 2. Build per-turn `<system-reminder>` from hook injections only.
+        // 2. Build per-turn `<system-reminder>` from hook injections and the
+        // turn's recalled memories (read from prompt_context by the builder).
         // Static WGENTY/AGENTS live in assembled_system_messages (system cascade).
         let reminder =
             crate::prompts::build_user_turn_reminder(self.prompt_context.as_ref(), &injections);
@@ -412,11 +419,13 @@ mod tests {
             vec![],
             false,
             None,
-            100,
+            crate::config::DEFAULT_MAX_ROUNDS,
+            crate::config::DEFAULT_STREAM_MAX_RETRIES,
+            crate::config::DEFAULT_STREAM_IDLE_TIMEOUT_SECS,
             crate::api::token_counter::TokenCounter::new(),
             std::sync::Arc::new(HookManager::default()),
             std::sync::Arc::new(crate::prompts::PromptContext::new()),
-            1800,
+            crate::config::DEFAULT_SUBAGENT_TIMEOUT_SECS,
             200_000,
             65536,
             mm.clone(),

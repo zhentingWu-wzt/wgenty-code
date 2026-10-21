@@ -13,6 +13,7 @@
 //! core runtime does not branch on it.
 
 pub mod coordinator;
+pub mod decompose;
 pub mod git;
 pub mod hooks;
 pub mod node;
@@ -27,6 +28,7 @@ pub mod verify_gate;
 pub mod work_graph;
 
 pub use coordinator::{RollbackResult, SessionCoordinator, SessionCoordinatorPort};
+pub use decompose::{DecomposeNodeTool, MAX_DECOMPOSE_DEPTH, MAX_DECOMPOSE_UNITS};
 pub use hooks::{
     NoHooks, RollbackContext, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
 };

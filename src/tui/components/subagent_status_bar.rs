@@ -4,7 +4,7 @@
 //! current tool/params. The selected item is highlighted for keyboard
 //! navigation (↑↓ to select, Enter to open the focus view).
 
-use crate::agent::progress::SubagentStatus;
+use crate::progress::SubagentStatus;
 use crate::tui::components::subagent_tree::{SubagentNode, SubagentTree};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -192,7 +192,7 @@ pub fn active_node_ids(tree: &SubagentTree) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::progress::SubagentProgress;
+    use crate::progress::SubagentProgress;
     use crate::tui::components::subagent_tree::SubagentNode;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

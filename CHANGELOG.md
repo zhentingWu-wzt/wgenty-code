@@ -7,6 +7,290 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed (Prompts)
+
+- **跨会话记忆召回移至 user 消息尾部 `<system-reminder>`**：此前
+  `assemble_instructions` 把逐轮变化的记忆召回写成 system 级 Layer 5b
+  `<relevant_memories>`，位于请求最前缀，导致 GLM/z.ai 等 OpenAI 兼容端点
+  的隐式前缀缓存逐轮失效。现在召回结果经 `build_user_turn_reminder` 挂在
+  user 消息尾部（hooks 之后、仅模型可见，Inspector 仍走 recalled_memories
+  展示），system 级联跨 turn 逐字节稳定；Layer 5c 全局记忆保留不动。
+
+### Added (API)
+
+- **Prompt 缓存命中可观测**：解析 OpenAI 兼容响应的
+  `usage.prompt_tokens_details.cached_tokens` 与 Anthropic
+  `cache_read_input_tokens`，贯通 TokenCounter → daemon turn_context →
+  web StatusBar `cache NN%` 徽标与 Inspector TokensTab。
+- **OpenAI 兼容请求默认剥离历史 `reasoning_content`**：GLM/OpenAI/自建
+  网关无需 echo-back，避免逐轮重复计费；DeepSeek 保留（官方要求 echo-back）。
+  新增 `models.transport.strip_reasoning_content`（`Option<bool>`）覆盖开关，
+  缺省按 provider 规则，`false` 强制保留、`true` 强制剥离。仅请求边界生效，
+  磁盘会话与回放不受影响。
+
+### Fixed (Config)
+
+- **`models.profiles` 含 null 条目不再阻断启动**：profiles 改为唯一数据
+  源的过渡期构建曾把角色绑定写成 null profile 条目（如 `"planner": null`），
+  当前 schema（`HashMap<String, ModelEndpoint>`）解析即报
+  `invalid type: null, expected struct ModelEndpoint` 并退出。现在反序列化
+  跳过 null 条目并记 warn；指向被丢弃条目的 `active_profile` 由
+  `migrate_legacy` 恢复为真实 profile，角色绑定在解析处回退 main。
+
+### Added (Config)
+
+- **新增 `agent.stream_idle_timeout_secs` 配置**（默认 60）：SSE 流空闲
+  （无任何字节到达）多久判定为 stall。此前硬编码 60s，推理模型在屏幕无
+  输出的静默阶段（隐藏 reasoning、工具参数生成）若遇上游/中转缓冲超过
+  60s 会被误杀并触发 "Stream stalled" 重试。现在可在 settings.json 中
+  调大（如 180）；`0` 视为默认值。
+
+### Fixed (Agent)
+
+- **流中断错误只显示外层 kind、无法定位根因**：reqwest 错误的 `Display`
+  只打印 "error decoding response body" 一类的外壳，真正原因（连接重置 /
+  提前 EOF / HTTP/2 RST_STREAM / 超时）藏在 `Error::source()` 里被丢弃，
+  于是 "Stream error, retrying... (error decoding response body)" 无法
+  区分网络抖动与网关断流。`format_error_chain`（新增 anyhow 变体）从
+  daemon handlers 提升为共享工具（`utils::http`），`ApiLlmPort` /
+  `DaemonLlmPort` 的流打开与 chunk 错误映射、daemon `/chat/stream` 的
+  发送阶段错误现在全部输出完整原因链；链中出现 timed out 时也会被
+  `from_stream_failure` 正确归类为超时类。
+
+### Fixed (Tools)
+
+- **`web_search` 全 provider 可用**：`ToolRegistry::with_settings` 此前对
+  Anthropic 等"自带搜索"的 provider 直接移除本地 `web_search` 工具，但
+  Anthropic 服务端 `web_search_20250305` 只有在工具列表存在 `web_search`
+  条目时才会由 `convert_tools_to_anthropic` 注入——移除导致该路径下搜索
+  能力完全消失。现在本地工具对所有 provider 保持注册（Anthropic 路径由
+  请求层自动转换为服务端工具）。
+- **国内网络搜索不可用**：新增免 key 的 Bing RSS 兜底后端
+  （`www.bing.com/search?q=...&format=rss`），搜索链路变为
+  DuckDuckGo → Bing → Tavily；DuckDuckGo/Bing 单请求超时收紧为 10s，
+  避免被墙网络下每次搜索空等满 30s 才走兜底。
+- **rustls 指纹被限流时的搜索兜底**：国内网络对 reqwest(rustls) 的
+  TLS 指纹做了限流，Bing/Brave/Ecosia 直接超时（同一网络 curl 可通）。
+  新增第三级免 key 后端 Baidu HTML（唯一稳定可达的引擎），自然结果的
+  `baidu.com/link?url=…` 跳转包装经 `Location` 头并行解析为真实 URL。
+  最终链路：DuckDuckGo → Bing → Baidu → Tavily。
+- **搜索响应解码失败**：`web_search_client` 此前手动发送
+  `Accept-Encoding: gzip, deflate, br`，但 reqwest 构建未启用压缩 feature、
+  无法解压，导致遵守该头的后端（如 Bing）返回压缩体后 `.text()` 解码失败
+  （"error decoding response body"）。现移除该头，请求以明文拉取。
+  另：`cn.bing.com`（国内地理重定向目标）经 HTTP/2 常在发完完整 body 后
+  不干净地重置流，reqwest 同样报解码错误——Bing 后端现改为手工累积分块
+  并容忍尾部断流（收满 `Content-Length` 即视为完整）。
+
+### Fixed (Security)
+
+- **`integrations.guardian` 配置生效**：daemon 的 `ToolExecutor` 与子代理
+  `SubagentPermissionContext` 此前用 `Guardian::default()`，使
+  `enabled` / `auto_deny_critical` 开关形同虚设。现在两处均从用户设置构造
+  `Guardian`。
+- **命令审查工具覆盖缺口**：`background`（后台执行任意 shell）、`write_stdin`
+  （向运行中会话注入命令）此前完全绕过 guardian 的 Critical 自动拒绝与
+  policy 的命令风险分类。新增共享的 `shell_text_for_tool()`，四个生效点
+  （daemon run loop、headless RegistryToolPort、TUI DaemonToolPort、子代理
+  GuardingToolPort）统一审查 `execute_command`/`exec_command`/`background`/
+  `write_stdin`。
+- **换行走私**：`split_shell_commands` 现按引号外的换行符切分子命令，
+  `echo hi\nchmod 777 /` 不再只按首个 `echo` 分类。
+- **命令替换内容纳入审查**：`$(...)` 与反引号包裹的命令体（嵌套上限 3 层）
+  同样按 base-name 风险分类，`echo $(chmod 777 /)` 现在会请求审批。
+- **guardian Critical 变体**：新增 token 级检测，`rm -r -f /`、`rm --recursive
+  -f /*`、`/usr/bin/rm -fr /` 等参数顺序/路径变体与无空格 fork 炸弹
+  （`:(){:|:&};:`）现在判为 Critical。
+- **未知写工具 fail-closed**：policy 中 `_ => Allow` 兜底改为每会话一次 Ask
+  （`tool:<name>` 规则）；`git_operations` 只读操作（status/log/diff/branch/
+  worktree_list）放行，其余操作需 `git:<op>` 审批并在 reason 中标注
+  `--force` 类旗标。
+
+### Changed
+
+- **identity 词汇表下沉到 `tools::context`**：`SessionId`/`AgentId`/
+  `ToolInvocationId`/`AgentExecutionContext`/`ToolContext`/`CheckpointCapture`
+  从 `agent::identity` 迁至 `tools::context`（`agent` 保留 re-export），
+  兑现 AGENTS.md「tools 不依赖 agent」的约定（子代理机制的深层耦合除外）。
+- **`thiserror` 统一为 2.x**（此前依赖树 1.x/2.x 共存）；
+  `TranscriptError` 改用 derive 实现。
+- **`tasks/management.rs` 移除生产路径调试代码**：不再向
+  `/tmp/wgenty-code-debug.log` 追加写入（每次任务读写都会触发），改走
+  `tracing::debug`。
+- **文档与实现对齐**：README/README.zh/WGENTY.md 的「两级（规则+LLM）
+  Guardian」「25 个工具」「8 层 prompt」「Linux seccomp-bpf」表述改为实际
+  实现（规则式 Guardian、29 个工具、10+ 层、bubblewrap/unshare）。
+
+### Refactor
+
+- **`agent::progress` 下沉为顶层 `progress` 模块**：子代理进度词汇表
+  （`SubagentProgress`/`ProgressCallback`/`SubagentStatus` 等，675 行）被
+  agent/teams/tools/transcript/daemon/TUI 十个模块共用，现迁至
+  `src/progress.rs`（`agent` 保留 re-export），tools 层不再经由 `agent`
+  引用这些类型。
+- **TUI `EventHandler` trait 首次投入使用**：`MemoryState`/`SessionState`/
+  `PlanPanelState` 各自实现 `tui::traits::EventHandler`，接管
+  `MemoryListLoaded`/`SessionListLoaded`/`TodosSnapshot` 三个事件；
+  `App::handle_event` 在主 match 前增加面板分发链，后续面板可按同一
+  模式迁移，逐步分解巨型 match（`Component` trait 此前已有
+  question/inspector/permission 三处实现并接线）。
+
+### Fixed (Work-Graph)
+
+- **verify 前的 decomposition 不再被 "budget must be initialized" 拒绝**：`begin_node`
+  从不初始化 work-graph budget（只有第一次 verify pass 会），因此首个
+  `decompose_node` 必然失败。现在 decompose 在 budget 未初始化时按
+  `auto_retry_max` 种子化（与 `prepare_work_graph_pass` 一致），且每 unit 分配额
+  封顶为 `remaining - 1`，保证父节点始终保留恰好一次迭代（原
+  `max(2, remaining/units)` 公式在单 unit 场景会吃光全部预算导致永久拒绝）。
+- **daemon 的 work-graph `auto_retry_max` 从配置读取**（`agent.exec_session.auto_retry_max`），
+  不再写死 2——原硬编码使任何 decomposition 都负担不起（N 个 unit 需
+  `2N + 1` 次迭代预算）。恢复当日被误丢弃的两个修复提交（86a4736c / bd3b8178）。
+
+### Changed (Runtime limits)
+
+- **`max_rounds` 默认值收敛为单一来源**：新增 `config::DEFAULT_MAX_ROUNDS`（100）与
+  `resolve_max_rounds()`，替换 7 处散落的 `unwrap_or(100)` 硬编码（daemon run loop、
+  TUI turn、headless CLI、task/run_script 子代理路径、`RuntimeConfig::default`）。
+- **`0 = unlimited` 生效**：`agent.max_rounds` / `agent.subagent.max_rounds` 设为 `0`
+  表示不限轮次（此前 `Some(0)` 会在第一轮立即触发 `MaxRoundsExceeded`）。子代理
+  未设置时继承 `agent.max_rounds`（此前固定回落 100，无视 agent 配置）。
+- **新增 `agent.stream_max_retries` 配置**（默认 2）：mid-stream 重试预算不再在
+  daemon/TUI/headless 各自写死。
+- **删除死代码 `Settings::resolve_subagent_config`**：无任何生产调用方，且其
+  `Some(0) → None` 映射与消费端 `unwrap_or(100)` 语义矛盾。
+- **硬编码收敛**：daemon 默认端口 8371 → `daemon::DEFAULT_PORT`（tui/cli 复用）；
+  hook fan-out 超时 10s → `hooks::FIRE_TIMEOUT_SECS`（daemon/TUI 复用）；
+  `exec_command`/`write_stdin` 的 yield 窗口与输出上限、`exec_background` 默认超时
+  提为 `tools::execution` 模块级常量；`RuntimeConfig::default` 全部改用 config 层常量。
+
+### Added (Daemon run queue)
+
+- **session run 槽位忙时消息自动排队**：`POST /api/v1/sessions/:id/run` 遇到活跃
+  run 不再直接 409，默认将消息存入 per-session FIFO（上限 8 条，超限 429），
+  响应 `202 {queued: true, queue_position: N}`（`run_id` 为空，客户端从该 turn
+  首个 SSE 事件认领）。run 结束后由 daemon scheduler 按 background results →
+  ready task groups → 排队消息的优先级自动启动下一轮；`"queue": false` 保留旧的
+  立即 409 契约。修复多客户端同 session、turn_done 与 final save 竞态窗口、
+  observer/重连状态失真等客户端本地队列覆盖不到的场景。
+- 新增队列管理端点：`GET /sessions/:id/queue`（查看）、
+  `DELETE /sessions/:id/queue`（清空）、`DELETE /sessions/:id/queue/:message_id`
+  （撤回单条）。队列为纯内存结构，daemon 重启后 pending 消息不保留。
+
+### Fixed (Daemon lifecycle)
+
+- 双实例竞态：旧 daemon 退出时无条件删除 `daemon.token` / `daemon.json`，会把仍在
+  运行的新实例的鉴权文件删掉（token 只在启动时写一次，不会重写）——web/TUI 全部
+  401 表现为"无法连接 daemon"，且因无 client 连接触发空闲关闭把新实例也杀掉。
+  三处清理点（daemon 退出、TUI 内嵌 daemon 退出、`kill_predecessor` 强杀后）均改为
+  所有权检查：仅当文件内容仍属于本实例（token 匹配 / pid 匹配）才删除。
+- vite dev proxy 读取 token 增加兜底：`daemon.token` 缺失时回退读 `daemon.json`
+  里的 token（discovery 文件由存活 daemon 的心跳每 30s 重写，更可靠）。
+- 优雅关闭永久悬挂：hyper 的 graceful shutdown 会等在途连接结束，而 SSE 长连接
+  （session events、trace 流、client 心跳）按设计永不主动结束——收到关闭请求后
+  进程变成僵尸（日志有 "initiating graceful shutdown" 但进程不退，旧实例堆积）。
+  现对排空阶段加 5s 兜底，超时强制退出。
+- `kill_predecessor` 误判旧实例已停止：此前以"健康探测失败"判定 down，但优雅关闭
+  中的 daemon 会立即停止 accept（探测失败）而进程仍在排空——于是提前宣告成功，
+  从不走到 SIGTERM/SIGKILL 升级，僵尸得以堆积。现改为同时确认 PID 已退出
+  （`kill -0` / `tasklist`），否则照常升级强杀。
+
+### Fixed (Subagent 结果回传)
+
+- **subagent 结果不实时通知主 agent（web 场景）**：`task` 工具是异步派发，
+  子代理终态结果汇入 coordinator 的 task-group 后，此前只有 TUI 客户端
+  轮询 `POST /agents/task-groups/claim` 来领取并发起综合轮；web 没有任何
+  claim 调用，daemon 自身的 run loop 也不感知 task-group——结果永远滞留，
+  主 agent 直到用户再发消息也拿不到。现改为 daemon 侧闭环：
+  - coordinator 在 group 就绪（全部直接子代理结果齐）时通过 broadcast
+    发出就绪 ping；
+  - daemon 的 continuation 调度器收到 ping 后自行 claim 就绪组并发起
+    synthesis 轮（`<child-results>` 消息格式与 TUI 一致）；会话正忙时跳过，
+    由 RunFinished 事件兜底重查；尊重 failed-save 屏障；
+  - claim 后照常广播 `task_group_result` 全局事件；
+  - web 新增 `useContinuationObserver`：订阅全局事件流
+    `GET /api/v1/events`，收到 `task_group_result` 后通过
+    `observeDaemonRun` 实时附着该会话的事件流渲染综合轮（此前 web 只渲染
+    自己发起的 run，daemon 发起的轮次刷新前不可见）。
+  TUI 的轮询路径保留，与 daemon claim 之间由 exactly-once 语义保证不重复。
+
+### Fixed (Web 通讯韧性)
+
+- **页面彻底卡死的传输层根因**：旧代码每轮 turn 泄漏一条 SSE 长连接（reader 从不
+  cancel），加上 HMR websocket、心跳、两条 trace 流，常驻连接累积到 Chrome 单域名
+  6 条 HTTP/1.1 上限后，所有新请求（发送、停止、健康检查）被浏览器永久排队——
+  表现为"发消息没响应、点停止也没反应"。修复组合：
+  - 长连接 SSE（session events、trace 流）改为**直连 daemon origin**
+    （`127.0.0.1:8371`，经 vite 新中间件 `/__daemon-info` 下发端口和 token），
+    与页面 origin 的连接配额分离；短请求仍走 vite 代理；
+  - 取消 session-scoped trace 流，冷启动恢复改用一次性 REST
+    `GET /subagents/trace/replay`（daemon 新增端点），常驻流每页再减一条；
+  - turn 的 reader 在结束时正确 cancel，不再泄漏连接；
+  - `runSession` / 订阅 fetch 增加 15s 超时兜底，被饿死的请求报可感知错误而非永久悬挂。
+  - 直连 daemon 被浏览器拦截（CORS / Private Network Access）时回退同源 vite 代理，
+    仅网络层 TypeError 触发回退，用户停止与看门狗 abort 仍照常生效。
+  - **`usePermissionTrace` 的 trace 流在每次会话切换时泄漏一条连接**（effect 依赖
+    `activeId`，cleanup 只翻转标记位，而 keepalive-only 流的 `reader.read()` 永不
+    返回，旧连接永久存活）——切换 4-5 次会话后直连 origin 的 6 连接预算被泄漏流
+    占满，发消息时 `sessionEvents` 连接被浏览器排队，15s 看门狗报
+    "stream connect timed out"。修复：流 effect 只依赖 `client`，cleanup 用
+    AbortController 真正中止在途 fetch（`traceStream` 新增 signal 参数）；会话切换
+    的一次性 replay 拆成独立 effect，不再重启流。
+- **"Failed to fetch" 的 daemon 侧根因**：CORS origin 白名单只写了
+  localhost/127.0.0.1:3000/5173，而 vite 常以 `--host` 运行——端口被占时用 5174、
+  或经局域网 IP / 主机名访问时，浏览器直接拦死跨域请求（网络层 TypeError，
+  daemon 日志里看不到任何请求）。daemon 仅监听回环且所有接口都要 bearer token，
+  origin 白名单无安全收益，已改为允许任意 origin 并应答
+  `Access-Control-Allow-Private-Network: true`（Chrome PNA 预检要求）。
+- 停止按钮失效：`stopRunning` 此前只 abort 一个未接入任何 fetch 的控制器且不清
+  `isRunning`；现在 abort 信号接入 subscribe/run 请求，且立即停止运行状态。
+- 每个 turn 结束后 UI 永远卡在 running：重读循环改为内层 `for(;;)` 后漏了在
+  `turn_done`/`turn_error` 时跳出——测试假流会关闭所以单测全过，但真实 daemon 的
+  SSE 在 turn 结束后保持打开（15s keepalive），读循环永远阻塞在下一次 `read()`。
+  现已在收到终态事件处理完缓冲后立即跳出，并新增"流不关闭也能完成 turn"的回归测试。
+
+- 发消息偶发"没有响应"：`runSessionTurn` 改为**先订阅事件流再 POST /run**（此前顺序
+  相反，快速 turn 会在订阅前的间隙内完成，live-only 流漏掉 `turn_done`，UI 永远卡在
+  running）；事件流中途断开后按 `after=<lastSeq>` 重连续传（daemon 重放缺失事件），
+  连续空断连退避后抛出可感知的 transport 错误；按 `run_id` 过滤旧 run 的残留事件、
+  按 `seq` 去除重放接缝重复；`sync_lost` 控制帧对齐游标。
+- 审批弹窗刷新/重连后消失、daemon 无限期等待：trace 流每次（重）连成功后拉取一次
+  `GET /tools/pending-permissions` 重新填充弹窗（`usePermissionTrace`）。
+- "Always allow" 点了仍反复弹：web 此前不传 `session_rule`，daemon 无法持久化规则；
+  `resolveSubagentPermission` 现在携带 `session_rule`。
+
+### Changed (Daemon lifecycle)
+
+- daemon 空闲自动关闭改为活动时间驱动：无 thin client 心跳连接**且** 300s 内无任何
+  已认证 API 请求时优雅退出（此前为最后客户端断开后 10s，且从未有客户端连过的
+  daemon 永不退出）。活动时间窗口从 daemon 启动起算，孤儿 daemon 也会自动回收；
+  公共 `/health` 探测不计为活动。
+- `wgenty-code daemon` 启动时若发现仍在运行的旧 daemon（discovery 文件 + 健康探测
+  确认），先经 `POST /api/v1/shutdown` 优雅停止，无响应则按 PID 升级 SIGTERM →
+  SIGKILL，保证每次启动都运行当前二进制，不再复用陈旧的常驻进程。
+- TUI 现在也算 thin client：启动后经 `DaemonClient::spawn_heartbeat_keeper` 持有
+  `/api/v1/client/heartbeat` 连接（断线指数退避重连），挂着的 TUI 即使不发请求
+  也会阻止 daemon 空闲关闭；TUI 退出后连接断开，空闲计时才开始。
+
+### Fixed (Subagent trace)
+
+- `task` 工具保存 transcript 时持久化终态 `summary`（此前硬编码 `None`），冷启动
+  trace 回放（`trace_event_from_header`）现在能把子代理结果文本送达重连/刷新后的
+  SSE 客户端；端到端验证：live 终态事件与 session-scoped 回放均携带 `result`。
+
+### Added (Daemon lifecycle)
+
+- CLI 新增 `wgenty-code daemon status` / `wgenty-code daemon stop`：status 输出
+  discovery 文件状态（端口/PID/心跳/token 一致性）并探测健康端点；stop 通过新的
+  鉴权端点 `POST /api/v1/shutdown` 触发优雅退出（与 SIGINT 同路径，清理 token 与
+  discovery 文件），并等待 daemon 停止应答。内嵌 daemon（TUI fallback）同样响应该端点。
+- TUI 的 `DaemonClient` 在请求收到 401 时自动重读 `~/.wgenty-code/daemon.token` 并重试
+  一次：daemon 重启后旧 TUI 不再因启动时缓存的 token 失效而全部 401（覆盖发消息、
+  SSE 事件流、chat、viewer 创建、session 保存等路径）。
+- TUI spawn 外部 daemon 后的健康探测从裸 TCP connect 升级为校验
+  `GET /api/v1/health` 返回合法的 wgenty health body，避免误连占用 8371 端口的
+  无关进程。
+
 ### Added (Desktop packaging)
 
 - Desktop 打包链路打通：`tauri.conf.json` 的 `bundle.externalBin` 配置

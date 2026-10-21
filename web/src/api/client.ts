@@ -13,15 +13,22 @@
  */
 import type {
   AddMcpServerRequest,
+  AgentDirectoryResponse,
   CheckpointInfo,
   ConfigResponse,
   CreateSessionRequest,
+  CreateViewerResponse,
   ExecuteToolRequest,
   ExecuteToolResponse,
+  FileContent,
+  FileVersion,
+  FsEntries,
   GetTodosResponse,
   HealthResponse,
   ListModelsResponse,
+  ListPendingPermissionsResponse,
   ListTasksResponse,
+  LocalAgentViewResponse,
   McpServerInfo,
   MemoryListQuery,
   MemoryListResponse,
@@ -30,18 +37,22 @@ import type {
   PruneResult,
   ProjectInfo,
   RunResponse,
+  SessionRunStatus,
   SessionInfo,
   SessionResponse,
   SkillInfoDto,
   SwitchModelRequest,
   SwitchModelResponse,
   TaskProgressResponse,
+  TraceEvent,
   UndoTurnResult,
   WorktreeBinding,
   WorktreeInfo,
   DirListing,
   PermissionMode,
   PermissionModeResponse,
+  FileDiff,
+  GitFileStatus,
 } from "./types";
 
 /** Error thrown when the daemon returns a non-2xx response. */
@@ -71,6 +82,75 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** Human-readable byte size ("12 B", "1.4 MB"). Exported for the file
+ *  preview panel header / oversize fallbacks. */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = -1;
+  do {
+    v /= 1024;
+    i++;
+  } while (v >= 1024 && i < units.length - 1);
+  const rounded = v >= 100 ? Math.round(v) : Math.round(v * 10) / 10;
+  return `${rounded} ${units[i]}`;
+}
+
+/** Direct daemon connection info served by the vite dev middleware. */
+export interface DaemonDirectInfo {
+  base: string;
+  token: string;
+}
+
+/**
+ * Long-lived SSE streams go DIRECTLY to the daemon origin instead of through
+ * the page's origin: browsers cap HTTP/1.1 at ~6 connections per origin, and
+ * every permanent stream held through the vite proxy (HMR websocket,
+ * heartbeat, trace SSE, per-turn session SSE) consumes one — two app tabs
+ * alone exceed the budget and every later fetch (send, stop, health) queues
+ * forever, wedging the page. Direct streams get their own per-origin budget
+ * on 127.0.0.1:<port>. Resolved fresh per call so a daemon restart (new
+ * token/port) is picked up on reconnect.
+ *
+ * Resolution chain: vite dev exposes `/__daemon-info` (direct 127.0.0.1:<port>
+ * origin); when the daemon hosts the bundle itself there is no vite middleware,
+ * so the same-origin `GET /auth/bootstrap` endpoint supplies the token and the
+ * base is `location.origin + /api/v1`. Returns null when neither is available
+ * (old daemon, desktop shell, bootstrap failure) → callers fall back to the
+ * same-origin proxy.
+ *
+ * Also used by the WebSocket push channel (wsChannel) to derive the direct
+ * `ws://` URL (token rides the `?token=` query — browser WebSocket APIs
+ * cannot set headers).
+ */
+export async function resolveDaemonDirect(): Promise<DaemonDirectInfo | null> {
+  try {
+    const res = await fetch("/__daemon-info");
+    if (res.ok) {
+      const info = (await res.json()) as { port?: number; token?: string };
+      if (typeof info.port === "number" && info.token) {
+        return { base: `http://127.0.0.1:${info.port}/api/v1`, token: info.token };
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  // __daemon-info 不可用（hosted 模式无 vite 中间件）。dev 下不尝试：vite dev server
+  // 会对未知路径回退返回 index.html（appType: "spa"），徒增一次无效往返。
+  if (import.meta.env.DEV) return null;
+  try {
+    const res = await fetch("/auth/bootstrap");
+    if (!res.ok) return null; // 旧 daemon：404 → null → 现行为
+    const info = (await res.json()) as { token?: string };
+    if (!info.token) return null;
+    // 绝对地址保证 wsChannel 的 ws:// 推导成立（设计 §3）
+    return { base: location.origin + "/api/v1", token: info.token };
+  } catch {
+    return null; // 客户端 bootstrap 失败 → 回退现行为（错误处理表）
+  }
+}
+
 export class DaemonClient {
   /**
    * Construct a client. `base` defaults to `/api/v1` (the Vite proxy prefix),
@@ -79,14 +159,74 @@ export class DaemonClient {
    */
   constructor(private readonly base = "/api/v1") {}
 
+  /** token 可用（dev 的 __daemon-info 或 hosted 的 bootstrap）时统一注入
+   *  Authorization 头。dev 下 vite 代理本身会注入同值 token，重复无害。 */
+  private async authedFetch(url: string, init?: RequestInit): Promise<Response> {
+    const direct = await resolveDaemonDirect();
+    if (!direct) return fetch(url, init);
+    const headers = new Headers(init?.headers);
+    headers.set("Authorization", `Bearer ${direct.token}`);
+    return fetch(url, { ...init, headers });
+  }
+
+  // ── Trusted UI viewer (scoped-agent endpoints) ─────────────────────────────
+
+  /** Cached viewer bearer token (`POST /ui/viewers`). Scoped-agent endpoints
+   *  require it in the `x-wgenty-viewer-token` header. Created lazily on first
+   *  use; concurrent callers share a single in-flight request. */
+  private viewerToken: string | null = null;
+  private viewerPromise: Promise<string> | null = null;
+
+  async ensureViewer(): Promise<string> {
+    if (this.viewerToken) return this.viewerToken;
+    if (!this.viewerPromise) {
+      this.viewerPromise = (async () => {
+        const res = await this.authedFetch(`${this.base}/ui/viewers`, { method: "POST" });
+        const r = await jsonOrThrow<CreateViewerResponse>(res);
+        this.viewerToken = r.viewer_token;
+        return r.viewer_token;
+      })();
+      // Clear the in-flight promise on settle so a failure can be retried;
+      // viewerToken (set only on success) survives for subsequent calls.
+      // The `.catch` only handles the promise *derived* from `.finally` —
+      // the original's rejection stays with its caller; without it, a failed
+      // viewer bootstrap (daemon unreachable) surfaces as an unhandled
+      // rejection (e.g. it fails the vitest run).
+      this.viewerPromise
+        .finally(() => {
+          this.viewerPromise = null;
+        })
+        .catch(() => {});
+    }
+    return this.viewerPromise;
+  }
+
+  /** Scoped-agent request with stale-viewer recovery (mirrors the TUI's
+   *  `send_scoped_request`): a 401/404 on a viewer-authed call almost always
+   *  means the daemon restarted with a fresh viewer registry, invalidating the
+   *  cached token. Re-create the viewer once and retry; a genuine not-found
+   *  simply comes back as the same status on the retry. Without this, the
+   *  subagents panel polls 404 forever after any daemon restart. */
+  private async scopedFetch(url: string, init?: RequestInit): Promise<Response> {
+    const attempt = async (): Promise<Response> => {
+      const headers = new Headers(init?.headers);
+      headers.set("x-wgenty-viewer-token", await this.ensureViewer());
+      return this.authedFetch(url, { ...init, headers });
+    };
+    const first = await attempt();
+    if (first.status !== 401 && first.status !== 404) return first;
+    this.viewerToken = null; // force ensureViewer() to mint a fresh token
+    return attempt();
+  }
+
   // ── Health / config ────────────────────────────────────────────────────────
 
   async health(): Promise<HealthResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/health`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/health`));
   }
 
   async getConfig(): Promise<ConfigResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/config`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/config`));
   }
 
   /**
@@ -98,7 +238,7 @@ export class DaemonClient {
     patch: Partial<Pick<ConfigResponse, "max_tokens" | "timeout" | "streaming" | "api_base">>,
   ): Promise<ConfigResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/config`, {
+      await this.authedFetch(`${this.base}/config`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(patch),
@@ -114,7 +254,9 @@ export class DaemonClient {
    */
   async getPermissionMode(sessionId: string): Promise<PermissionModeResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/permission-mode?session_id=${encodeURIComponent(sessionId)}`),
+      await this.authedFetch(
+        `${this.base}/permission-mode?session_id=${encodeURIComponent(sessionId)}`,
+      ),
     );
   }
 
@@ -123,7 +265,7 @@ export class DaemonClient {
     mode: PermissionMode,
   ): Promise<PermissionModeResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/permission-mode`, {
+      await this.authedFetch(`${this.base}/permission-mode`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mode, session_id: sessionId }),
@@ -135,7 +277,7 @@ export class DaemonClient {
 
   async executeTool(req: ExecuteToolRequest): Promise<ExecuteToolResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/tools/execute`, {
+      await this.authedFetch(`${this.base}/tools/execute`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -145,7 +287,7 @@ export class DaemonClient {
 
   async approveTool(sessionRule: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/tools/approve`, {
+      await this.authedFetch(`${this.base}/tools/approve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ session_rule: sessionRule }),
@@ -155,7 +297,7 @@ export class DaemonClient {
 
   async unapproveTool(sessionRule: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/tools/unapprove`, {
+      await this.authedFetch(`${this.base}/tools/unapprove`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ session_rule: sessionRule }),
@@ -163,30 +305,44 @@ export class DaemonClient {
     );
   }
 
-  /** Resolve a subagent async permission (from the trace SSE push channel). */
+  /** Resolve a subagent async permission (from the trace SSE push channel).
+   *  `sessionRule` lets "always allow" persist the standing rule server-side. */
   async resolveSubagentPermission(
     requestId: string,
     approved: boolean,
     always = false,
+    sessionRule?: string,
   ): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/tools/resolve-permission`, {
+      await this.authedFetch(`${this.base}/tools/resolve-permission`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ request_id: requestId, approved, always }),
+        body: JSON.stringify({
+          request_id: requestId,
+          approved,
+          always,
+          ...(sessionRule ? { session_rule: sessionRule } : {}),
+        }),
       }),
     );
+  }
+
+  /** GET /tools/pending-permissions — policy-Ask waiters still blocked
+   *  server-side. Used to re-surface prompts after a page refresh or a
+   *  trace-stream reconnect (pending state otherwise lives only in memory). */
+  async listPendingPermissions(): Promise<ListPendingPermissionsResponse> {
+    return jsonOrThrow(await this.authedFetch(`${this.base}/tools/pending-permissions`));
   }
 
   // ── Models ─────────────────────────────────────────────────────────────────
 
   async listModels(): Promise<ListModelsResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/models`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/models`));
   }
 
   async switchModel(req: SwitchModelRequest): Promise<SwitchModelResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/model/switch`, {
+      await this.authedFetch(`${this.base}/model/switch`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -197,7 +353,7 @@ export class DaemonClient {
   // ── Sessions ───────────────────────────────────────────────────────────────
 
   async listSessions(): Promise<SessionInfo[]> {
-    return jsonOrThrow(await fetch(`${this.base}/sessions`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/sessions`));
   }
 
   /**
@@ -208,13 +364,13 @@ export class DaemonClient {
   async searchSessions(query: string): Promise<SessionInfo[]> {
     const q = query.trim();
     return jsonOrThrow(
-      await fetch(`${this.base}/sessions/search?q=${encodeURIComponent(q)}`),
+      await this.authedFetch(`${this.base}/sessions/search?q=${encodeURIComponent(q)}`),
     );
   }
 
   async createSession(req: CreateSessionRequest = {}): Promise<SessionResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/sessions`, {
+      await this.authedFetch(`${this.base}/sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -223,33 +379,35 @@ export class DaemonClient {
   }
 
   async loadSession(id: string): Promise<SessionResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(id)}`));
   }
 
   async deleteSession(id: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
     );
   }
 
   // ── Todos / Tasks ──────────────────────────────────────────────────────────
 
   async getTodos(): Promise<GetTodosResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/todos`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/todos`));
   }
 
   async listTasks(): Promise<ListTasksResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/tasks`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/tasks`));
   }
 
   async taskProgress(): Promise<TaskProgressResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/tasks/progress`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/tasks/progress`));
   }
 
   // ── Memory (Tier 2 ops-panel-api) ──────────────────────────────────────────
 
   async memoryStatus(): Promise<MemoryStatus> {
-    return jsonOrThrow(await fetch(`${this.base}/memory/status`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/memory/status`));
   }
 
   async listMemory(query: MemoryListQuery = {}): Promise<MemoryListResponse> {
@@ -259,11 +417,11 @@ export class DaemonClient {
       params.set("min_importance", String(query.min_importance));
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     const qs = params.toString();
-    return jsonOrThrow(await fetch(`${this.base}/memory${qs ? `?${qs}` : ""}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/memory${qs ? `?${qs}` : ""}`));
   }
 
   async getMemory(id: string): Promise<MemoryItem> {
-    return jsonOrThrow(await fetch(`${this.base}/memory/${encodeURIComponent(id)}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/memory/${encodeURIComponent(id)}`));
   }
 
   /**
@@ -271,9 +429,11 @@ export class DaemonClient {
    * the pool ("project" or "global").
    */
   async deleteMemory(id: string, origin: "project" | "global"): Promise<void> {
-    const res = await fetch(
+    const res = await this.authedFetch(
       `${this.base}/memory/${encodeURIComponent(id)}?origin=${origin}`,
-      { method: "DELETE" },
+      {
+        method: "DELETE",
+      },
     );
     if (!res.ok) {
       const body = await res.text();
@@ -283,7 +443,7 @@ export class DaemonClient {
 
   async pruneMemory(dryRun = false): Promise<PruneResult> {
     return jsonOrThrow(
-      await fetch(`${this.base}/memory/prune`, {
+      await this.authedFetch(`${this.base}/memory/prune`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ dry_run: dryRun }),
@@ -293,16 +453,102 @@ export class DaemonClient {
 
   // ── Trace SSE (subagent progress + permission events) ──────────────────────
 
+  /** Fetch a streaming endpoint: direct to the daemon origin when the dev
+   *  middleware offers connection info, else through the same-origin proxy.
+   *  A 15s watchdog covers ONLY the connect/headers phase — once headers
+   *  arrive it is disarmed and the body streams until it ends or the
+   *  caller's signal aborts (a body-phase timeout would kill every SSE
+   *  stream 15s in).
+   *
+   *  A watchdog timeout means the browser QUEUED the request behind a full
+   *  per-origin budget (~6 HTTP/1.1 connections: trace + global-events +
+   *  per-run session streams + duplicate app tabs), not that the daemon is
+   *  down. Queued connects succeed as soon as any holder finishes, so one
+   *  retry absorbs transient contention instead of surfacing a hard error. */
+  private async fetchStream(path: string, signal?: AbortSignal): Promise<Response> {
+    const maxAttempts = 2;
+    for (let attempt = 1; ; attempt++) {
+      const ctl = new AbortController();
+      const onUserAbort = () => ctl.abort(signal!.reason);
+      if (signal) {
+        if (signal.aborted) ctl.abort(signal.reason);
+        // Deliberately not removed after connect: the same controller also
+        // governs body streaming, so the Stop button keeps working mid-stream.
+        else signal.addEventListener("abort", onUserAbort, { once: true });
+      }
+      const watchdog = setTimeout(
+        () => ctl.abort(new DOMException("stream connect timed out", "TimeoutError")),
+        15_000,
+      );
+      try {
+        const direct = await resolveDaemonDirect();
+        if (direct) {
+          try {
+            return await fetch(`${direct.base}${path}`, {
+              headers: { authorization: `Bearer ${direct.token}` },
+              signal: ctl.signal,
+            });
+          } catch (err) {
+            // Only fall back on a network-level failure (Chrome's TypeError
+            // "Failed to fetch" — e.g. CORS / Private Network Access blocking
+            // the cross-origin hop to 127.0.0.1). User stop and the connect
+            // watchdog surface as aborts and must propagate, not be retried
+            // through the proxy.
+            if (ctl.signal.aborted || !(err instanceof TypeError)) throw err;
+            console.warn(
+              "[client] direct daemon stream blocked, falling back to same-origin proxy:",
+              err,
+            );
+          }
+        }
+        return await fetch(`${this.base}${path}`, { signal: ctl.signal });
+      } catch (err) {
+        // Watchdog-fired (not user-aborted) connect timeout → retry once;
+        // a slot usually frees as soon as a concurrent run/stream ends.
+        const connectTimeout =
+          err instanceof DOMException && err.name === "TimeoutError" && !signal?.aborted;
+        if (!connectTimeout || attempt >= maxAttempts) throw err;
+        console.warn(
+          `[client] ${path}: SSE connect queued >15s ` +
+            "(per-origin connection budget exhausted by concurrent streams/tabs?); retrying…",
+        );
+        // Drop this attempt's user-abort listener so retries don't stack
+        // listeners on the caller's signal.
+        signal?.removeEventListener("abort", onUserAbort);
+      } finally {
+        clearTimeout(watchdog);
+      }
+    }
+  }
+
   /**
-   * Open the global trace SSE stream (`GET /subagents/trace/stream`). Returns
-   * the raw byte stream; the caller parses newline-delimited JSON TraceEvents.
+   * Open the trace SSE stream (`GET /subagents/trace/stream`, global live).
+   * Returns the raw byte stream; the caller parses newline-delimited JSON
+   * TraceEvents.
    *
    * This is the push channel for subagent permission prompts (design D2.1):
-   * instead of polling /tools/pending-permissions, the frontend subscribes here
-   * and dispatches on `event.kind`.
+   * instead of polling /tools/pending-permissions, the frontend subscribes
+   * here and dispatches on `event.kind`. Cold-start recovery of terminal
+   * results uses the one-shot `traceReplay` below, not a second stream —
+   * every permanent SSE connection counts against the browser's per-origin
+   * connection budget.
    */
-  async traceStream(): Promise<{ body: ReadableStream<Uint8Array> }> {
-    const res = await fetch(`${this.base}/subagents/trace/stream`);
+  async traceStream(
+    sessionId?: string,
+    since?: number,
+    /** Aborts the underlying fetch. ESSENTIAL on hook cleanup: without it the
+     *  keepalive-only stream never ends and the connection leaks from the
+     *  browser's per-origin budget. */
+    signal?: AbortSignal,
+  ): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("session_id", sessionId);
+    if (since !== undefined) params.set("since", String(since));
+    const query = params.toString();
+    const res = await this.fetchStream(
+      `/subagents/trace/stream${query ? `?${query}` : ""}`,
+      signal,
+    );
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
       throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
@@ -310,15 +556,81 @@ export class DaemonClient {
     return { body: res.body };
   }
 
+  /** One-shot replay of a session's persisted trace headers (JSON, non-SSE).
+   *  Replaces the old session-scoped trace stream for cold-start recovery. */
+  async traceReplay(sessionId: string, since?: number): Promise<TraceEvent[]> {
+    const params = new URLSearchParams({ session_id: sessionId });
+    if (since !== undefined) params.set("since", String(since));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/subagents/trace/replay?${params}`));
+  }
+
+  // ── Scoped agent views (subagent local view + transcript + cancel) ─────────
+
+  /** `GET /agents/self?session_id=<id>` -- root local view (self + direct
+   *  children, each with a fresh navigation capability). */
+  async getAgentSelf(sessionId: string): Promise<LocalAgentViewResponse> {
+    return jsonOrThrow(
+      await this.scopedFetch(`${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`),
+    );
+  }
+
+  /** `GET /agents/directory?session_id=<id>` -- full recursive subagent tree
+   *  for the session (root agent plus nested children, with depth). */
+  async getAgentDirectory(sessionId: string): Promise<AgentDirectoryResponse> {
+    return jsonOrThrow(
+      await this.scopedFetch(
+        `${this.base}/agents/directory?session_id=${encodeURIComponent(sessionId)}`,
+      ),
+    );
+  }
+
+  /** `GET /agents/children/:capability?session_id=<id>` -- navigate one level
+   *  into the child bound by `capability`; returns that child's local view. */
+  async navigateAgentView(sessionId: string, capability: string): Promise<LocalAgentViewResponse> {
+    return jsonOrThrow(
+      await this.scopedFetch(
+        `${this.base}/agents/children/${encodeURIComponent(capability)}?session_id=${encodeURIComponent(sessionId)}`,
+      ),
+    );
+  }
+
+  /** `GET /agents/children/:capability/transcript?session_id=<id>` -- read the
+   *  transcript of the direct child bound by `capability`. */
+  async getChildTranscript(
+    sessionId: string,
+    capability: string,
+  ): Promise<{ transcript: unknown }> {
+    return jsonOrThrow(
+      await this.scopedFetch(
+        `${this.base}/agents/children/${encodeURIComponent(capability)}/transcript?session_id=${encodeURIComponent(sessionId)}`,
+      ),
+    );
+  }
+
+  /** `POST /agents/children/:capability/cancel?session_id=<id>` -- cancel the
+   *  direct child bound by `capability`. Returns true on 204. */
+  async cancelChild(sessionId: string, capability: string): Promise<void> {
+    const res = await this.scopedFetch(
+      `${this.base}/agents/children/${encodeURIComponent(capability)}/cancel?session_id=${encodeURIComponent(sessionId)}`,
+      { method: "POST" },
+    );
+    if (!res.ok) {
+      throw new DaemonError(
+        (await res.text().catch(() => "")) || `${res.status} ${res.statusText}`,
+        res.status,
+      );
+    }
+  }
+
   // ── Command center: projects / worktrees / skills / checkpoints ────────────
 
   async listProjects(): Promise<ProjectInfo[]> {
-    return jsonOrThrow(await fetch(`${this.base}/projects`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/projects`));
   }
 
   async addProject(path: string): Promise<ProjectInfo> {
     return jsonOrThrow(
-      await fetch(`${this.base}/projects`, {
+      await this.authedFetch(`${this.base}/projects`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ path }),
@@ -329,7 +641,7 @@ export class DaemonClient {
   /** Unregister a project (registry only — files on disk are untouched). */
   async removeProject(path: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/projects?path=${encodeURIComponent(path)}`, {
+      await this.authedFetch(`${this.base}/projects?path=${encodeURIComponent(path)}`, {
         method: "DELETE",
       }),
     );
@@ -339,16 +651,90 @@ export class DaemonClient {
    *  Omit `path` to list the user home directory. Read-only, daemon-side. */
   async listDirs(path?: string): Promise<DirListing> {
     const qs = path ? `?path=${encodeURIComponent(path)}` : "";
-    return jsonOrThrow(await fetch(`${this.base}/fs/dirs${qs}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/fs/dirs${qs}`));
   }
+
+  // ── Workspace file preview (read-only, path-bounded) ──────────────────────
+
+  /** `GET /fs/entries?path=<dir>` — mixed listing (dirs first, then files,
+   *  case-insensitive) for the workspace file tree. The path must resolve
+   *  inside a registered project/worktree root; the daemon 403s otherwise. */
+  async listEntries(path: string): Promise<FsEntries> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/fs/entries?path=${encodeURIComponent(path)}`),
+    );
+  }
+
+  /** `GET /fs/git-status?path=<root>` — changed files (added/modified/deleted,
+   *  incl. untracked) under a registered workspace root. Non-git roots return
+   *  an empty list; failures degrade to no colors in the file tree. */
+  /** `GET /fs/git-diff?path=<file>` — full inline diff vs HEAD (staged +
+   *  unstaged) with line numbers; untracked files diff against /dev/null. */
+  async gitDiff(path: string): Promise<FileDiff> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/fs/git-diff?path=${encodeURIComponent(path)}`),
+    );
+  }
+
+  async gitStatus(path: string): Promise<GitFileStatus[]> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/fs/git-status?path=${encodeURIComponent(path)}`),
+    );
+  }
+
+  /** `GET /fs/file?path=<file>` — file content for the preview panel.
+   *  Branches on the response Content-Type (design D3):
+   *  - `application/json` → text (`{lines, version}`) or the non-whitelisted
+   *    binary marker (`{is_binary, version}` → "binary-unsupported");
+   *  - anything else → raw bytes as a Blob with the header's mime. */
+  async fetchFile(path: string): Promise<FileContent> {
+    const res = await this.authedFetch(`${this.base}/fs/file?path=${encodeURIComponent(path)}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (res.status === 413) {
+        // Oversize (design D6): the body carries {size, limit} — surface the
+        // real numbers readably instead of a bare status line.
+        let msg: string | null = null;
+        try {
+          const info = JSON.parse(body) as { size?: unknown; limit?: unknown };
+          if (typeof info.size === "number" && typeof info.limit === "number") {
+            msg = `file too large to preview: ${formatBytes(info.size)} exceeds the ${formatBytes(info.limit)} limit`;
+          }
+        } catch {
+          // Non-JSON body — fall through to the raw text below.
+        }
+        throw new DaemonError(msg || body || `${res.status} ${res.statusText}`, res.status);
+      }
+      throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
+    }
+    const mime = res.headers.get("content-type") ?? "";
+    if (mime.startsWith("application/json")) {
+      const data = (await res.json()) as {
+        lines?: string[];
+        is_binary?: boolean;
+        version: FileVersion;
+      };
+      if (Array.isArray(data.lines)) {
+        return { kind: "text", lines: data.lines, version: data.version };
+      }
+      if (data.is_binary) {
+        return { kind: "binary-unsupported", version: data.version };
+      }
+      // Contract violation (daemon newer/older than web) — fail loudly.
+      throw new DaemonError("unexpected /fs/file response shape", res.status);
+    }
+    const blob = await res.blob();
+    return { kind: "blob", mime: mime || blob.type || "application/octet-stream", blob };
+  }
+
   async listWorktrees(project?: string): Promise<WorktreeInfo[]> {
     const qs = project ? `?project=${encodeURIComponent(project)}` : "";
-    return jsonOrThrow(await fetch(`${this.base}/worktrees${qs}`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/worktrees${qs}`));
   }
 
   async createWorktree(req: { path: string; branch: string; project?: string }): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/worktrees`, {
+      await this.authedFetch(`${this.base}/worktrees`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -360,25 +746,25 @@ export class DaemonClient {
     const params = new URLSearchParams({ path });
     if (project) params.set("project", project);
     await jsonOrThrow(
-      await fetch(`${this.base}/worktrees?${params.toString()}`, { method: "DELETE" }),
+      await this.authedFetch(`${this.base}/worktrees?${params.toString()}`, { method: "DELETE" }),
     );
   }
 
   async listSkills(): Promise<SkillInfoDto[]> {
-    return jsonOrThrow(await fetch(`${this.base}/skills`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/skills`));
   }
 
   // ── MCP servers ────────────────────────────────────────────────────────────
 
   async listMcpServers(): Promise<McpServerInfo[]> {
     const res = await jsonOrThrow<{ servers: McpServerInfo[] }>(
-      await fetch(`${this.base}/mcp/servers`),
+      await this.authedFetch(`${this.base}/mcp/servers`),
     );
     return res.servers;
   }
 
   async addMcpServer(req: AddMcpServerRequest): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers`, {
+    const res = await this.authedFetch(`${this.base}/mcp/servers`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(req),
@@ -387,33 +773,39 @@ export class DaemonClient {
   }
 
   async removeMcpServer(name: string): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}`, {
+    const res = await this.authedFetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}`, {
       method: "DELETE",
     });
     if (!res.ok) throw new DaemonError(await res.text(), res.status);
   }
 
   async startMcpServer(name: string): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}/start`, {
-      method: "POST",
-    });
+    const res = await this.authedFetch(
+      `${this.base}/mcp/servers/${encodeURIComponent(name)}/start`,
+      {
+        method: "POST",
+      },
+    );
     if (!res.ok) throw new DaemonError(await res.text(), res.status);
   }
 
   async stopMcpServer(name: string): Promise<void> {
-    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}/stop`, {
-      method: "POST",
-    });
+    const res = await this.authedFetch(
+      `${this.base}/mcp/servers/${encodeURIComponent(name)}/stop`,
+      {
+        method: "POST",
+      },
+    );
     if (!res.ok) throw new DaemonError(await res.text(), res.status);
   }
 
   async listCheckpoints(): Promise<CheckpointInfo[]> {
-    return jsonOrThrow(await fetch(`${this.base}/checkpoints`));
+    return jsonOrThrow(await this.authedFetch(`${this.base}/checkpoints`));
   }
 
   async undoTurns(turnIds: string[]): Promise<UndoTurnResult> {
     return jsonOrThrow(
-      await fetch(`${this.base}/tools/undo-turn`, {
+      await this.authedFetch(`${this.base}/tools/undo-turn`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ turn_ids: turnIds }),
@@ -425,7 +817,7 @@ export class DaemonClient {
 
   async bindWorktree(sessionId: string, req: WorktreeBinding): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -435,7 +827,7 @@ export class DaemonClient {
 
   async unbindWorktree(sessionId: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
         method: "DELETE",
       }),
     );
@@ -443,7 +835,7 @@ export class DaemonClient {
 
   async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/archive`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/archive`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ archived }),
@@ -453,13 +845,18 @@ export class DaemonClient {
 
   // ── Server-side run (web as observer) ──────────────────────────────────────
 
-  /** POST /sessions/:id/run — daemon spawns the turn; returns immediately. */
-  async runSession(sessionId: string, message: string): Promise<RunResponse> {
+  /** POST /sessions/:id/run — daemon spawns the turn; returns immediately.
+   *  A 15s watchdog merges with the caller's signal: a request starved by
+   *  the per-origin connection budget must surface as an error, not hang. */
+  async runSession(sessionId: string, message: string, signal?: AbortSignal): Promise<RunResponse> {
     return jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ message }),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+          : AbortSignal.timeout(15_000),
       }),
     );
   }
@@ -467,15 +864,49 @@ export class DaemonClient {
   /** POST /sessions/:id/cancel — cancel an active run. */
   async cancelRun(sessionId: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/cancel`, {
         method: "POST",
       }),
     );
   }
 
-  /** GET /sessions/:id/events — SSE stream of SessionEvent from a server-side run. */
-  async sessionEvents(sessionId: string): Promise<{ body: ReadableStream<Uint8Array> }> {
-    const res = await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/events`);
+  /** GET /sessions/:id/run — active-run reconciliation (post-sync_lost). */
+  async getRunStatus(sessionId: string): Promise<SessionRunStatus> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`),
+    );
+  }
+
+  /** GET /sessions/:id/events — SSE stream of SessionEvent from a server-side
+   *  run. Without `after` the stream is live-only; with `after` the daemon
+   *  replays buffered events with `seq > after` first (or sends sync_lost).
+   *  `signal` aborts the underlying fetch (Stop button / connect watchdog).
+   *  Long-lived: opened directly against the daemon origin when possible
+   *  (see resolveDaemonDirect) so it doesn't consume the page origin's
+   *  connection budget. */
+  async sessionEvents(
+    sessionId: string,
+    after?: number,
+    signal?: AbortSignal,
+  ): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const query = after !== undefined ? `?after=${after}` : "";
+    const res = await this.fetchStream(
+      `/sessions/${encodeURIComponent(sessionId)}/events${query}`,
+      signal,
+    );
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => "");
+      throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
+    }
+    return { body: res.body };
+  }
+
+  /** GET /events — daemon-wide global SSE stream (todos changes, background
+   *  results, task-group results, ...). Live-only and low-frequency; clients
+   *  realign via the plain GET endpoints after any gap. Long-lived: opened
+   *  directly against the daemon origin like sessionEvents. */
+  async globalEvents(signal?: AbortSignal): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const res = await this.fetchStream(`/events`, signal);
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
       throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
@@ -486,7 +917,7 @@ export class DaemonClient {
   /** POST /interactions/:id/resolve — answer a pending ask_user_question. */
   async resolveInteraction(requestId: string, answer: string): Promise<void> {
     await jsonOrThrow(
-      await fetch(`${this.base}/interactions/${encodeURIComponent(requestId)}/resolve`, {
+      await this.authedFetch(`${this.base}/interactions/${encodeURIComponent(requestId)}/resolve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ answer }),

@@ -1,3 +1,9 @@
+//! Trusted identity & tool-execution context vocabulary.
+//!
+//! Lives in the tools layer (not `agent`) so tools never depend on `agent`
+//! (AGENTS.md module-dependency rule). The agent layer produces these values
+//! and re-exports them from `crate::agent`.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use tokio_util::sync::CancellationToken;
@@ -113,9 +119,7 @@ impl AgentLifecycleStatus {
 
 /// Per-turn file snapshot capture, used by mutating tools to record pre-edit
 /// file content before writing. Implemented by the tools-layer
-/// [`CheckpointStore`](crate::tools::CheckpointStore); the trait lives in the
-/// agent layer so [`ToolContext`] can reference it without a circular
-/// `tools` -> `agent` -> `tools` dependency.
+/// [`CheckpointStore`](crate::tools::CheckpointStore).
 ///
 /// Best-effort: implementations log failures internally and never propagate
 /// errors to the caller, so a capture miss never blocks the tool itself.

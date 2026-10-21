@@ -162,10 +162,10 @@ impl ToolPort for RegistryToolPort {
     async fn execute(&self, req: ToolRequest) -> ToolResponse {
         // YOLO bypasses the guardian critical-risk block so the agent can run
         // arbitrary commands (builds, tests, installs) in disposable sandboxes.
-        if self.effective_mode != EffectiveMode::Yolo
-            && (req.name == "execute_command" || req.name == "exec_command")
-        {
-            if let Some(cmd) = req.arguments.get("command").and_then(|v| v.as_str()) {
+        if self.effective_mode != EffectiveMode::Yolo {
+            if let Some(cmd) =
+                crate::runtime::guardian::shell_text_for_tool(&req.name, &req.arguments)
+            {
                 let risk = crate::runtime::guardian::classify_risk(cmd);
                 if risk >= crate::runtime::guardian::RiskLevel::Critical {
                     let content = format!(
@@ -460,9 +460,9 @@ pub async fn run_oneshot(
         });
 
     let config = RuntimeConfig {
-        max_rounds: max_rounds_override
-            .or(settings.agent.max_rounds)
-            .unwrap_or(100),
+        max_rounds: crate::config::resolve_max_rounds(
+            max_rounds_override.or(settings.agent.max_rounds),
+        ),
         plan_mode: false,
         subagent_timeout_secs: settings.agent.subagent.timeout_secs,
         context_window: resolve_context_window(
@@ -473,7 +473,8 @@ pub async fn run_oneshot(
         session_id,
         turn_id: Some(turn_id),
         agent_generation: 0,
-        stream_max_retries: 2,
+        stream_max_retries: settings.agent.stream_max_retries,
+        stream_idle_timeout_secs: settings.agent.effective_stream_idle_timeout_secs(),
     };
 
     let mut stuck_detector = crate::utils::stuck_detector::StuckDetector::new();

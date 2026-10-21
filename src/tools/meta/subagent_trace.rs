@@ -8,8 +8,9 @@
 //! The tool is read-only and requires a session_id. When no session_id is
 //! provided, it returns a usage hint.
 
-use crate::agent::{AgentCoordinator, ToolContext};
+use crate::agent::AgentCoordinator;
 use crate::teams::subagent_trace::SubagentTraceReporter;
+use crate::tools::context::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::sync::Arc;

@@ -208,6 +208,8 @@ impl ExecutionSessionRuntimeStore {
                 route: Some(GraphAuditRoute::Implement),
                 profile: None,
                 resolved_commands: None,
+                adapted: None,
+                parent_node_id: None,
                 budget,
                 timestamp: chrono::Utc::now().to_rfc3339(),
             });
@@ -309,6 +311,7 @@ impl ExecutionSessionRuntimeStore {
                 role: NodeType::RootCause,
                 child_agent_id: child_id_for_audit,
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                child_graph: None,
             });
         coordinator
             .capture_current_work_state()
@@ -353,6 +356,7 @@ impl ExecutionSessionRuntimeStore {
                 role: NodeType::RootCause,
                 child_agent_id: child_id_for_audit,
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                child_graph: None,
             });
         coordinator
             .capture_current_work_state()
@@ -414,6 +418,8 @@ impl ExecutionSessionRuntimeStore {
                 route: Some(GraphAuditRoute::Escalate),
                 profile: None,
                 resolved_commands: None,
+                adapted: None,
+                parent_node_id: None,
                 budget,
                 timestamp: chrono::Utc::now().to_rfc3339(),
             });
@@ -585,6 +591,35 @@ impl ExecutionSessionRuntimeStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn seed_decompose_context_for_test(
+        &self,
+        session_id: &SessionId,
+        max_iter: u32,
+        iter_used: u32,
+        graph_depth: u32,
+    ) {
+        use crate::org_graph::Budget;
+
+        let entry = self.entry_for(session_id).expect("runtime exists");
+        let mut coordinator = entry.coordinator.write().expect("coordinator lock");
+        coordinator
+            .work_state_mut()
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter,
+                    iter_used,
+                    token_used: 0,
+                },
+            )
+            .expect("seed budget");
+        coordinator.work_state_mut().set_graph_depth(graph_depth);
+        coordinator
+            .capture_current_work_state()
+            .expect("persist seeded decompose context");
+    }
+
+    #[cfg(test)]
     pub(crate) fn seed_root_cause_route_for_test(&self, session_id: &SessionId) {
         use crate::org_graph::{Budget, CompileResult};
 
@@ -621,6 +656,8 @@ impl ExecutionSessionRuntimeStore {
                 anchor: None,
                 commands: Vec::new(),
                 route: Some(GraphAuditRoute::RootCause),
+                adapted: None,
+                parent_node_id: None,
                 profile: None,
                 resolved_commands: None,
                 budget: Some(Budget {

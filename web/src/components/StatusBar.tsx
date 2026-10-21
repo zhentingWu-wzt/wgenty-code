@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { selectPendingApprovalCount, useSessionManager } from "../state/sessionManager";
 import type { DaemonClient } from "../api/client";
 import type { PermissionMode } from "../api/types";
+import { useWorkspaceRoot } from "../features/files/useWorkspaceRoot";
 
 const MODE_LABELS: Record<PermissionMode, string> = {
   normal: "normal",
@@ -16,18 +17,39 @@ interface StatusBarProps {
   onSwitchModel: () => void;
 }
 
-/** 底部状态栏：daemon 连接 · 运行状态 · 待审批数 · 权限模式 · 模型。 */
+/** 底部状态栏：daemon 连接 · 待审批数 · workspace · context bar · 权限模式 · 模型。
+ *  轮次 phase（spinner/文案/耗时）在输入框上方的 TurnStatus 条，不在这里。 */
 export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const connection = useSessionManager((s) => s.connection);
   const modelName = useSessionManager((s) => s.modelName);
   const permissionMode = useSessionManager((s) => s.permissionMode);
   const setPermissionMode = useSessionManager((s) => s.setPermissionMode);
-  const pendingApprovals = useSessionManager(selectPendingApprovalCount);
-  const activeStatus = useSessionManager((s) =>
-    s.activeId ? s.entries[s.activeId]?.status : undefined,
+  const contextWindow = useSessionManager((s) => s.contextWindow);
+  const activeStore = useSessionManager((s) =>
+    s.activeId ? (s.entries[s.activeId]?.store ?? null) : null,
   );
-  const isRunning = activeStatus === "running" || activeStatus === "awaiting_approval";
+  const pendingApprovals = useSessionManager(selectPendingApprovalCount);
+  // Workspace root of the ACTIVE session (worktree, else project path, else
+  // the main project) — shows which checkout a turn will land in.
+  const { root: workRoot } = useWorkspaceRoot(client);
   const [modeOpen, setModeOpen] = useState(false);
+
+  // Context-window occupancy of the active session, updated LIVE by
+  // usage_update events (after every LLM call) and re-synced by the turn-end
+  // turn_context snapshot. The per-session store lives outside React context
+  // here (StatusBar sits above the provider), so subscribe directly — the
+  // primitive snapshot re-renders only on real usage changes, and switching
+  // sessions re-subscribes via the new store's subscribe identity.
+  const contextTokens = useSyncExternalStore(
+    activeStore?.subscribe ?? noopSubscribe,
+    () => activeStore?.getState().contextTokens ?? null,
+  );
+  // Prompt-cache hit of the last LLM call (turn_context snapshot + live
+  // usage_update events). Null = gateway doesn't report it → hide the badge.
+  const cachedTokens = useSyncExternalStore(
+    activeStore?.subscribe ?? noopSubscribe,
+    () => activeStore?.getState().cachedTokens ?? null,
+  );
 
   const statusText =
     connection === "connected"
@@ -65,13 +87,57 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
         />
         {statusText}
       </span>
-      {isRunning && <span className="text-warning">working</span>}
       {pendingApprovals > 0 && (
         <span className="rounded-sm bg-warning/20 px-1 text-warning">
           {pendingApprovals} approval{pendingApprovals > 1 ? "s" : ""}
         </span>
       )}
+      {workRoot && (
+        // Full worktree paths overflow the narrow phone status bar (<md);
+        // desktop keeps the full path with a hover tooltip.
+        <span className="shrink-0 font-mono max-md:hidden" title={workRoot}>
+          {workRoot}
+        </span>
+      )}
       <div className="flex-1" />
+      {/* Context-usage bar — a real CSS track/fill bar (▓/░ shade glyphs read
+          as a solid block in web fonts, hiding the fill level). Fill color
+          mirrors the TUI context_bar: green < 50%, yellow 50–80%, red ≥ 80%.
+          Hidden until the first turn reports usage or the window is unknown. */}
+      {contextWindow !== null && contextWindow > 0 && contextTokens !== null && (
+        <span
+          className="flex items-center gap-1.5"
+          title={`context ${contextTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens`}
+        >
+          <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
+            <span
+              className={
+                contextTokens / contextWindow >= 0.8
+                  ? "block h-full bg-danger"
+                  : contextTokens / contextWindow >= 0.5
+                    ? "block h-full bg-warning"
+                    : "block h-full bg-success"
+              }
+              style={{
+                width: `${Math.round(Math.min(contextTokens / contextWindow, 1) * 100)}%`,
+              }}
+            />
+          </span>
+          <span className="tabular-nums">
+            {Math.round(Math.min(contextTokens / contextWindow, 1) * 100)}%
+          </span>
+        </span>
+      )}
+      {/* Cache-hit badge — provider prompt-cache % of the last LLM call
+          (cached / prompt tokens). Hidden until the gateway reports it. */}
+      {cachedTokens !== null && contextTokens !== null && contextTokens > 0 && (
+        <span
+          className="shrink-0 rounded-sm bg-success/15 px-1 tabular-nums text-success"
+          title={`cache ${cachedTokens.toLocaleString()} / ${contextTokens.toLocaleString()} tokens served from prompt cache`}
+        >
+          cache {Math.round(Math.min(cachedTokens / contextTokens, 1) * 100)}%
+        </span>
+      )}
       {/* Permission mode picker (normal / accept edits / yolo) */}
       <div className="relative">
         <button
@@ -120,3 +186,5 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
     </footer>
   );
 }
+
+const noopSubscribe = () => () => {};

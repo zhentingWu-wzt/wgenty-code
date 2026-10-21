@@ -14,6 +14,7 @@ use crate::runtime::guardian::classify_risk;
 use crate::runtime::hooks::HookManager;
 use crate::tui::app::{AppEvent, QuestionOption};
 use crate::tui::client::DaemonClient;
+use crate::utils::http::{format_anyhow_error_chain, format_error_chain};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
@@ -47,6 +48,9 @@ impl EventSink for TuiEventSink {
             RuntimeEvent::ReasoningDelta(text) => AppEvent::ReasoningDelta(text),
             RuntimeEvent::PreparingTools => AppEvent::PreparingTools,
             RuntimeEvent::StreamDone { finish_reason } => AppEvent::StreamDone { finish_reason },
+            // The TUI context bar reads the shared TokenCounter directly
+            // (same value); no AppEvent needed.
+            RuntimeEvent::UsageUpdate { .. } => return,
             RuntimeEvent::StreamError(msg) => AppEvent::StreamError(msg),
             RuntimeEvent::CompactionStarted => AppEvent::CompactionStarted,
             RuntimeEvent::ContextCompacted {
@@ -99,11 +103,11 @@ impl LlmPort for DaemonLlmPort {
             .client
             .chat_stream_with_plan(messages, max_tokens, plan_mode)
             .await
-            .map_err(|e| RuntimeError::from_stream_failure(e.to_string()))?;
+            .map_err(|e| RuntimeError::from_stream_failure(format_anyhow_error_chain(&e)))?;
 
-        let stream = response
-            .bytes_stream()
-            .map(|item| item.map_err(|e| RuntimeError::from_stream_failure(e.to_string())));
+        let stream = response.bytes_stream().map(|item| {
+            item.map_err(|e| RuntimeError::from_stream_failure(format_error_chain(&e)))
+        });
         Ok(Box::pin(stream))
     }
 }
@@ -239,17 +243,16 @@ impl DaemonToolPort {
 impl ToolPort for DaemonToolPort {
     async fn execute(&self, req: ToolRequest) -> ToolResponse {
         // Guardian: critical-risk shell commands never reach the daemon.
-        if req.name == "execute_command" || req.name == "exec_command" {
-            if let Some(cmd) = req.arguments.get("command").and_then(|v| v.as_str()) {
-                let risk = classify_risk(cmd);
-                if risk >= crate::runtime::guardian::RiskLevel::Critical {
-                    let msg = format!("GUARDIAN BLOCK: critical-risk command rejected. {}", cmd);
-                    tracing::warn!("{}", msg);
-                    return ToolResponse {
-                        content: format!(r#"{{"success":false,"error":"{}"}}"#, msg),
-                        success: false,
-                    };
-                }
+        if let Some(cmd) = crate::runtime::guardian::shell_text_for_tool(&req.name, &req.arguments)
+        {
+            let risk = classify_risk(cmd);
+            if risk >= crate::runtime::guardian::RiskLevel::Critical {
+                let msg = format!("GUARDIAN BLOCK: critical-risk command rejected. {}", cmd);
+                tracing::warn!("{}", msg);
+                return ToolResponse {
+                    content: format!(r#"{{"success":false,"error":"{}"}}"#, msg),
+                    success: false,
+                };
             }
         }
 

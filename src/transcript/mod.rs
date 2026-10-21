@@ -9,7 +9,7 @@ pub use store::SubagentTranscriptStore;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::progress::ErrorInfo;
+use crate::progress::ErrorInfo;
 use crate::teams::failure_diagnostics::FailureRootCause;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +37,10 @@ pub struct SubagentTranscript {
     /// future project-scoped CLI filtering since the transcript DB is global).
     #[serde(default)]
     pub project_path: Option<String>,
+    /// Trusted `NodeType` this run was dispatched as (resolved by the
+    /// org-graph contract layer); `None` for legacy rows predating this column.
+    #[serde(default)]
+    pub node_type: Option<crate::org_graph::NodeType>,
     pub events: Vec<SubagentEventRecord>,
 }
 
@@ -92,26 +96,20 @@ pub struct SubagentTranscriptHeader {
     /// Project root the subagent ran in.
     #[serde(default)]
     pub project_path: Option<String>,
+    /// Trusted `NodeType` this run was dispatched as; `None` for legacy rows.
+    #[serde(default)]
+    pub node_type: Option<crate::org_graph::NodeType>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum TranscriptError {
+    #[error("Database error: {0}")]
     Database(String),
+    #[error("Transcript not found: {0}")]
     NotFound(String),
+    #[error("IO error: {0}")]
     Io(String),
 }
-
-impl std::fmt::Display for TranscriptError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Database(msg) => write!(f, "Database error: {}", msg),
-            Self::NotFound(id) => write!(f, "Transcript not found: {}", id),
-            Self::Io(msg) => write!(f, "IO error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for TranscriptError {}
 
 impl From<rusqlite::Error> for TranscriptError {
     fn from(e: rusqlite::Error) -> Self {

@@ -45,6 +45,10 @@ pub enum SessionEventKind {
     ToolResult,
     TurnDone,
     TurnError,
+    /// Real-time context occupancy: prompt tokens of the most recent LLM call,
+    /// pushed after every API response (and after auto-compaction) so web
+    /// clients can render the context bar live during a turn.
+    UsageUpdate,
     Save,
     PermissionRequired,
     AskUser,
@@ -53,6 +57,14 @@ pub enum SessionEventKind {
     /// recalled memories, new messages, hook reminder, and token usage.
     /// Emitted once per run, after the loop exits and before the final save.
     TurnContext,
+    /// Daemon-truth turn phase (v2 of the status contract): published at the
+    /// transitions thin clients cannot derive from the other events —
+    /// `thinking` (run start / prompt assembly / post-compaction),
+    /// `connecting` (LLM stream open or retry, carries `attempt` and
+    /// `max_retries`), `preparing_tools`, `compacting`. Clients that derive
+    /// phases locally keep their derivation as the fallback (older daemons
+    /// never send this); when present it is authoritative.
+    PhaseChanged,
 }
 
 /// Broadcast channel over which one daemon run publishes [`SessionEvent`]s.
@@ -276,6 +288,22 @@ impl EventSink for DaemonEventSink {
                     );
                     return;
                 }
+                // An empty finish_reason means the provider stream terminated
+                // abnormally (mid-stream server error, truncated response).
+                // Publishing TurnDone here silently truncates the turn and
+                // leaves clients waiting on work that never arrives; surface
+                // TurnError so the turn ends with a visible failure instead.
+                if finish_reason.is_empty() {
+                    tracing::warn!("StreamDone with empty finish_reason; publishing TurnError");
+                    self.turn_done_published.swap(true, Ordering::Relaxed);
+                    self.publish(
+                        SessionEventKind::TurnError,
+                        serde_json::json!({
+                            "message": "Stream ended without a finish reason — the provider likely truncated the response. Please retry."
+                        }),
+                    );
+                    return;
+                }
                 // The loop re-emits StreamDone at turn completion (loop_.rs), so a
                 // terminal reason is seen twice; publish TurnDone exactly once per run.
                 if self.turn_done_published.swap(true, Ordering::Relaxed) {
@@ -291,6 +319,18 @@ impl EventSink for DaemonEventSink {
                 self.publish(
                     SessionEventKind::TurnError,
                     serde_json::json!({ "message": message }),
+                );
+            }
+            RuntimeEvent::UsageUpdate {
+                prompt_tokens,
+                cached_tokens,
+            } => {
+                self.publish(
+                    SessionEventKind::UsageUpdate,
+                    serde_json::json!({
+                        "prompt_tokens": prompt_tokens,
+                        "cached_tokens": cached_tokens,
+                    }),
                 );
             }
             RuntimeEvent::SaveSession => {
@@ -331,7 +371,44 @@ impl EventSink for DaemonEventSink {
                     });
                 }
             }
-            // v1: connection noise and UI-only signals are not broadcast.
+            // Daemon-truth turn phases thin clients cannot derive (v2 status
+            // contract, SessionEventKind::PhaseChanged): LLM connect/retry,
+            // tool prep, compaction start/end.
+            RuntimeEvent::Connecting {
+                attempt,
+                max_retries,
+            } => {
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({
+                        "phase": "connecting",
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                    }),
+                );
+            }
+            RuntimeEvent::PreparingTools => {
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({ "phase": "preparing_tools" }),
+                );
+            }
+            RuntimeEvent::CompactionStarted => {
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({ "phase": "compacting" }),
+                );
+            }
+            RuntimeEvent::ContextCompacted { .. } => {
+                // Compaction finished; the loop resumes with the next LLM
+                // round. Publishing "thinking" un-sticks a client that
+                // entered its compacting state.
+                self.publish(
+                    SessionEventKind::PhaseChanged,
+                    serde_json::json!({ "phase": "thinking" }),
+                );
+            }
+            // v1: background-task noise and UI-only signals are not broadcast.
             _ => {}
         }
     }
@@ -340,9 +417,11 @@ impl EventSink for DaemonEventSink {
 // ── RootToolPort (Task 3) ────────────────────────────────────────────────────
 
 use crate::agent::runtime::ports::{InteractionPort, ToolPort, ToolRequest, ToolResponse};
-use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+#[cfg(test)]
+use crate::agent::SessionId;
+use crate::agent::{AgentExecutionContext, ToolContext, ToolInvocationId};
 use crate::api::ToolDefinition;
-use crate::daemon::state::DaemonState;
+use crate::daemon::state::{DaemonState, MESSAGE_QUEUE_MAX_DEPTH};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::teams::permission_bridge::{PermissionBridge, StructuredApproval};
 use crate::tools::executor::validate_tool_call_shared;
@@ -421,7 +500,13 @@ impl RootToolPort {
     /// effective working root (see [`DaemonState::effective_session_root`]):
     /// tool path resolution, the permission-policy boundary, and checkpoint
     /// storage all follow it.
-    pub fn new(state: &DaemonState, session_id: &str, run_id: &str, root: PathBuf) -> Self {
+    pub fn new(
+        state: &DaemonState,
+        session_id: &str,
+        run_id: &str,
+        root: PathBuf,
+        agent: AgentExecutionContext,
+    ) -> Self {
         let (checkpoint_manager, checkpoint_store) = state.checkpoints_for_project(&root);
         Self {
             registry: Arc::clone(&state.tool_registry),
@@ -429,8 +514,8 @@ impl RootToolPort {
             session_rules: state.tool_executor.session_rules_handle(),
             bridge: Arc::clone(&state.permission_bridge),
             interaction_bridge: Arc::clone(&state.interaction_bridge),
+            agent,
             permission_modes: state.permission_modes.clone(),
-            agent: AgentExecutionContext::root(SessionId::new(session_id)),
             root,
             checkpoint_manager,
             checkpoint_store,
@@ -577,10 +662,7 @@ impl RootToolPort {
     /// Guardian pre-check, copied from the headless `RegistryToolPort`:
     /// critical-risk shell commands are blocked before execution.
     fn guardian_block(&self, req: &ToolRequest) -> Option<ToolResponse> {
-        if req.name != "execute_command" && req.name != "exec_command" {
-            return None;
-        }
-        let cmd = req.arguments.get("command").and_then(|v| v.as_str())?;
+        let cmd = crate::runtime::guardian::shell_text_for_tool(&req.name, &req.arguments)?;
         let risk = crate::runtime::guardian::classify_risk(cmd);
         if risk >= crate::runtime::guardian::RiskLevel::Critical {
             let content = format!(
@@ -831,8 +913,9 @@ impl RunRegistry {
             .contains_key(session_id)
     }
 
-    #[cfg(test)]
-    fn active_run_id(&self, session_id: &str) -> Option<String> {
+    /// The active run's id, if any (GET /sessions/:id/run exposes it so
+    /// clients can reconcile after a `sync_lost` event-window eviction).
+    pub fn active_run_id(&self, session_id: &str) -> Option<String> {
         self.inner
             .read()
             .expect("session_runs lock poisoned")
@@ -852,6 +935,21 @@ pub(crate) enum BackgroundSchedulerEvent {
         run_id: String,
         final_save_succeeded: bool,
     },
+    /// A task group transitioned to all-results-recorded (pinged by the
+    /// coordinator). Hints only — readiness is re-verified by claiming.
+    TaskGroupReady {
+        session_id: String,
+    },
+}
+
+impl BackgroundSchedulerEvent {
+    fn session_id(&self) -> &str {
+        match self {
+            Self::ResultReady { session_id }
+            | Self::RunFinished { session_id, .. }
+            | Self::TaskGroupReady { session_id } => session_id,
+        }
+    }
 }
 
 struct BackgroundContinuation {
@@ -859,6 +957,7 @@ struct BackgroundContinuation {
     run_id: String,
     cancel: CancellationToken,
     message: String,
+    plan_mode: bool,
 }
 
 /// Completes the session's run claim on drop. With a live scheduler it queues
@@ -909,6 +1008,108 @@ fn structured_background_continuation(
     .to_string()
 }
 
+/// User message carrying a claimed task-group delivery into a synthesis turn.
+/// Mirrors the TUI's `process_continuation` format so the model sees the same
+/// contract regardless of which client (or the daemon) initiated the turn.
+fn structured_task_group_continuation(results: &[crate::agent::ChildResult]) -> String {
+    let batch = serde_json::to_string(results)
+        .unwrap_or_else(|e| format!("{{\"serialize_error\":\"{e}\"}}"));
+    format!(
+        "<child-results>\n{batch}\n</child-results>\n\n\
+         A background subagent group completed. Synthesize these results into your current \
+         work and continue; do not repeat the subagent's steps.\n\n\
+         Continue from the delivered subagent results."
+    )
+}
+
+/// Try to turn one ready root task group into a daemon-owned synthesis run.
+/// This is the server-side counterpart of the TUI's `poll_ready_task_groups`:
+/// without it, a completed subagent group strands in the coordinator whenever
+/// no polling client (TUI) is attached — e.g. web sessions.
+///
+/// Returns `None` (leaving the group ready for a later attempt) when the
+/// session is busy, blocked by a failed-save barrier, or has no ready group.
+async fn prepare_task_group_continuation(
+    state: &Arc<DaemonState>,
+    session_id: &str,
+) -> Option<BackgroundContinuation> {
+    // Same durability barrier as background-result continuations: a failed
+    // final save must be retried by an explicit run before any synthesized
+    // history is layered on top.
+    if state.background_continuation_is_blocked(session_id).await {
+        return None;
+    }
+    state.resolve_session(session_id).await.as_ref()?;
+
+    // Serialize with user-driven runs: if a turn is active the group stays
+    // ready and is re-attempted from the `RunFinished` re-check.
+    let run_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    let next_run = SessionRun {
+        run_id: run_id.clone(),
+        cancel: cancel.clone(),
+        started_at: Instant::now(),
+    };
+    if state.session_runs.claim(session_id, next_run).is_err() {
+        return None;
+    }
+
+    let root = match state.root_context(session_id).await {
+        Ok(root) => root,
+        Err(error) => {
+            tracing::warn!(%session_id, %error, "task-group continuation: no root context");
+            state.session_runs.finish(session_id, &run_id);
+            return None;
+        }
+    };
+    let generation = state.coordinator.current_generation(&root.session_id).await;
+    let delivery = match state
+        .coordinator
+        .claim_ready_root_group(&root, generation)
+        .await
+    {
+        Ok(delivery) => delivery,
+        Err(error) => {
+            tracing::warn!(%session_id, %error, "task-group continuation: claim failed");
+            state.session_runs.finish(session_id, &run_id);
+            return None;
+        }
+    };
+    let Some(delivery) = delivery else {
+        state.session_runs.finish(session_id, &run_id);
+        return None;
+    };
+
+    // Mirror the client-driven claim endpoint's broadcast so listening UIs
+    // refresh their subagent panels regardless of who claimed.
+    let project = state.effective_session_root(session_id).await;
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::TaskGroupResult,
+        serde_json::json!({
+            "task_group_id": delivery.group_id.as_str(),
+            "session_id": session_id,
+            "generation": delivery.generation,
+            "project": project,
+            "result_count": delivery.results.len(),
+            "statuses": delivery.results.iter().map(|r| r.status).collect::<Vec<_>>(),
+        }),
+    );
+
+    tracing::info!(
+        %session_id,
+        group_id = %delivery.group_id.as_str(),
+        results = delivery.results.len(),
+        "daemon claimed ready task group; spawning synthesis continuation"
+    );
+    Some(BackgroundContinuation {
+        session_id: session_id.to_string(),
+        run_id,
+        cancel,
+        message: structured_task_group_continuation(&delivery.results),
+        plan_mode: false,
+    })
+}
+
 /// Prepare one scheduler event. Results move to a recoverable claim here and
 /// are acknowledged only after `run_session_turn` persists its start message.
 /// `RunFinished` is emitted after the turn returns, so normal handoff still
@@ -924,6 +1125,10 @@ async fn prepare_background_continuation(
             run_id,
             final_save_succeeded,
         } => (session_id, Some((run_id, final_save_succeeded))),
+        // The scheduler loop routes this variant to
+        // `prepare_task_group_continuation` instead; handled here only for
+        // exhaustiveness.
+        BackgroundSchedulerEvent::TaskGroupReady { session_id } => (session_id, None),
     };
 
     // A run that exited before acknowledging its start-save never consumed
@@ -997,6 +1202,62 @@ async fn prepare_background_continuation(
         run_id,
         cancel,
         message: structured_background_continuation(&results),
+        plan_mode: false,
+    })
+}
+
+/// Start the session's next queued user message (submitted while the run slot
+/// was busy) as a daemon-owned turn. Last priority: only reached when a
+/// finished run leaves no pending background results and no ready task group,
+/// so old-turn continuations always settle before a queued new turn starts.
+///
+/// The failed-save barrier applies equally here — queued messages must not
+/// layer new history on top of an unpersisted run; an explicit run (which
+/// re-persists) clears the barrier.
+async fn prepare_message_continuation(
+    state: &Arc<DaemonState>,
+    session_id: &str,
+) -> Option<BackgroundContinuation> {
+    if state.background_continuation_is_blocked(session_id).await {
+        return None;
+    }
+    state.resolve_session(session_id).await.as_ref()?;
+    // Peek the head's pre-minted run id BEFORE claiming the run slot: the
+    // slot must be claimed under the same id POST /run already returned to
+    // the submitting client, so its event subscription lines up.
+    let run_id = state.queued_head_run_id(session_id).await?;
+    let cancel = CancellationToken::new();
+    let next_run = SessionRun {
+        run_id: run_id.clone(),
+        cancel: cancel.clone(),
+        started_at: Instant::now(),
+    };
+    // Plain claim: every earlier path that returned None either finished the
+    // previous owner's registry claim or never owned it. A lost race simply
+    // fails here and the queue waits for the next RunFinished.
+    state.session_runs.claim(session_id, next_run).ok()?;
+
+    let queued = match state.claim_queued_message(session_id, &run_id).await {
+        Some(queued) => queued,
+        None => {
+            state.session_runs.finish(session_id, &run_id);
+            return None;
+        }
+    };
+    let remaining = state.message_queue_depth(session_id).await;
+    tracing::debug!(
+        session_id,
+        run_id = %run_id,
+        message_id = %queued.message_id,
+        remaining,
+        "scheduler starting queued user message"
+    );
+    Some(BackgroundContinuation {
+        session_id: session_id.to_string(),
+        run_id,
+        cancel,
+        message: queued.message,
+        plan_mode: queued.plan_mode,
     })
 }
 
@@ -1033,13 +1294,37 @@ pub(crate) fn spawn_background_continuation_scheduler(
             let Some(state) = state.upgrade() else {
                 break;
             };
-            if let Some(continuation) = prepare_background_continuation(&state, event).await {
+            let session_id = event.session_id().to_string();
+            let continuation = match event {
+                BackgroundSchedulerEvent::TaskGroupReady { .. } => {
+                    // An idle session may also hold queued user messages:
+                    // drain them whenever the group was not ready (or the
+                    // claim was lost to a user run).
+                    match prepare_task_group_continuation(&state, &session_id).await {
+                        Some(continuation) => Some(continuation),
+                        None => prepare_message_continuation(&state, &session_id).await,
+                    }
+                }
+                event => match prepare_background_continuation(&state, event).await {
+                    Some(continuation) => Some(continuation),
+                    // No background-result continuation happened (nothing
+                    // pending, blocked, or the claim moved on). The session may
+                    // be idle now with a ready task group waiting — e.g. the
+                    // group completed while this run was still active. Last,
+                    // drain any user message queued while the run was active.
+                    None => match prepare_task_group_continuation(&state, &session_id).await {
+                        Some(continuation) => Some(continuation),
+                        None => prepare_message_continuation(&state, &session_id).await,
+                    },
+                },
+            };
+            if let Some(continuation) = continuation {
                 spawn_claimed_session_turn(
                     state,
                     continuation.session_id,
                     continuation.run_id,
                     continuation.message,
-                    false,
+                    continuation.plan_mode,
                     continuation.cancel,
                 );
             }
@@ -1055,18 +1340,42 @@ pub struct RunRequest {
     /// Absent (e.g. the web client has no plan toggle) defaults to `false`.
     #[serde(default)]
     pub plan_mode: bool,
+    /// When a run is already active: `true` (default) parks the message in
+    /// the session's FIFO queue — the scheduler starts it after the current
+    /// run settles (pending background results and ready task groups first).
+    /// `false` preserves the legacy immediate-409 contract.
+    #[serde(default = "queue_default_true")]
+    pub queue: bool,
+}
+
+const fn queue_default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]
 pub struct RunResponse {
+    /// Always set — minted at POST time. A queued turn keeps this exact id
+    /// when the scheduler starts it, so clients can subscribe and filter on
+    /// it right away. (Historically an empty string was returned for queued
+    /// turns; clients were expected to adopt the id from the first event.)
     pub run_id: String,
     pub session_id: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
+    /// 1-based queue position, present only when queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<usize>,
 }
 
 /// POST /api/v1/sessions/:id/run — spawn a server-side agent turn.
 ///
-/// 400 empty message / 404 unknown session / 409 run already active; on
-/// success 202 with the run id and the turn proceeds in a spawned task.
+/// 400 empty message / 404 unknown session. On success 202: either the turn
+/// starts immediately (`queued: false`), or — when a run is already active
+/// and `queue != false` — the message joins the session FIFO (`queued: true`,
+/// `queue_position` set). In both cases `run_id` identifies the turn and is
+/// carried by every SessionEvent of that run. 409 only when `queue=false`
+/// collides with an active run; 429 when the queue is at
+/// `MESSAGE_QUEUE_MAX_DEPTH`.
 pub(crate) async fn post_run(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
@@ -1082,6 +1391,30 @@ pub(crate) async fn post_run(
         return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
     }
 
+    // Workflow slash-command routing (mirrors the TUI input layer): a
+    // `/comet …` message becomes an explicit workflow-invocation prompt so
+    // the agent deterministically `load_skill`s it, instead of guessing from
+    // raw text. Unknown/built-in slash input passes through untouched (the
+    // model sees the literal message, same as before).
+    let message = if body.message.trim_start().starts_with('/') {
+        let router = tokio::task::block_in_place(|| state.workflow_router());
+        match router.route(body.message.trim_start()) {
+            crate::runtime::command::RouteResult::Workflow {
+                name,
+                command,
+                args,
+            } => crate::runtime::command::workflow_invocation_prompt(
+                &name,
+                &command,
+                &args,
+                body.message.trim_start(),
+            ),
+            _ => body.message.clone(),
+        }
+    } else {
+        body.message.clone()
+    };
+
     let run_id = Uuid::new_v4().to_string();
     let cancel = CancellationToken::new();
     let run = SessionRun {
@@ -1089,13 +1422,49 @@ pub(crate) async fn post_run(
         cancel: cancel.clone(),
         started_at: Instant::now(),
     };
-    state.session_runs.claim(&id, run)?;
+    if state.session_runs.claim(&id, run).is_err() {
+        if !body.queue {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("session {id} already has an active run"),
+            ));
+        }
+        let queued = state
+            .enqueue_message(&id, message, body.plan_mode)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!("session {id} message queue full (max {MESSAGE_QUEUE_MAX_DEPTH})"),
+                )
+            })?;
+        let depth = state.message_queue_depth(&id).await;
+        tracing::debug!(
+            session_id = %id,
+            message_id = %queued.message_id,
+            run_id = %queued.run_id,
+            depth,
+            "run busy; user message queued"
+        );
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(RunResponse {
+                // Pre-minted id: the scheduler reuses it verbatim, so the
+                // client can subscribe/filter on it NOW instead of adopting
+                // the id from the first event.
+                run_id: queued.run_id,
+                session_id: id,
+                queued: true,
+                queue_position: Some(depth),
+            }),
+        ));
+    }
 
     spawn_claimed_session_turn(
         Arc::clone(&state),
         id.clone(),
         run_id.clone(),
-        body.message,
+        message,
         body.plan_mode,
         cancel,
     );
@@ -1105,6 +1474,8 @@ pub(crate) async fn post_run(
         Json(RunResponse {
             run_id,
             session_id: id,
+            queued: false,
+            queue_position: None,
         }),
     ))
 }
@@ -1116,6 +1487,81 @@ pub(crate) async fn post_cancel(
     Path(id): Path<String>,
 ) -> StatusCode {
     if state.session_runs.cancel(&id) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+/// GET /api/v1/sessions/:id/run — active-run reconciliation snapshot.
+///
+/// After a `sync_lost` (event buffer evicted the client's replay window, or
+/// the daemon restarted) a mid-turn subscriber can no longer trust the event
+/// stream to deliver its terminal `turn_done`: this endpoint answers whether
+/// the awaited run is still the active one (`run_id`), another run took
+/// over, or the session went idle (`run_id: null`, plus how many user
+/// messages still wait in the FIFO). 404 when the session is unknown.
+#[derive(Debug, Serialize)]
+pub struct RunStatusResponse {
+    /// Active run's id; null when the session's run slot is idle.
+    pub run_id: Option<String>,
+    /// Messages still waiting in the session's FIFO (not yet started).
+    pub queued: usize,
+}
+
+pub(crate) async fn get_run_status(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Result<Json<RunStatusResponse>, StatusCode> {
+    if state.resolve_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let run_id = state.session_runs.active_run_id(&id);
+    let queued = state.message_queue_depth(&id).await;
+    Ok(Json(RunStatusResponse { run_id, queued }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueueResponse {
+    pub session_id: String,
+    pub messages: Vec<crate::daemon::state::QueuedMessage>,
+}
+
+/// GET /api/v1/sessions/:id/queue — list the session's queued user messages
+/// (pending only; the claimed head is already being persisted by its run).
+pub(crate) async fn get_queue(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Json<QueueResponse> {
+    Json(QueueResponse {
+        session_id: id.clone(),
+        messages: state.queued_messages_snapshot(&id).await,
+    })
+}
+
+/// DELETE /api/v1/sessions/:id/queue — drop every still-pending message.
+/// 404 unknown session; 200 with the dropped count otherwise.
+pub(crate) async fn delete_queue(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if state.resolve_session(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let dropped = state.clear_queued_messages(&id).await;
+    Ok(Json(serde_json::json!({ "dropped": dropped })))
+}
+
+/// DELETE /api/v1/sessions/:id/queue/:message_id — retract one queued
+/// message. 404 unknown session or already-started/gone message.
+pub(crate) async fn delete_queued_message(
+    State(state): State<Arc<DaemonState>>,
+    Path((id, message_id)): Path<(String, String)>,
+) -> StatusCode {
+    if state.resolve_session(&id).await.is_none() {
+        return StatusCode::NOT_FOUND;
+    }
+    if state.remove_queued_message(&id, &message_id).await {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
@@ -1159,7 +1605,7 @@ pub(crate) fn plan_catch_up(after: Option<u64>, buf: &SessionEventBuffer) -> Cat
 
 /// Build the out-of-band `sync_lost` event for one connection (design §2.3).
 /// `seq: 0` and empty `run_id` mark it as control-plane, not run output.
-fn sync_lost_event(session_id: &str, reason: &str, latest_seq: u64) -> SessionEvent {
+pub(crate) fn sync_lost_event(session_id: &str, reason: &str, latest_seq: u64) -> SessionEvent {
     SessionEvent {
         seq: 0,
         session_id: session_id.to_string(),
@@ -1167,6 +1613,70 @@ fn sync_lost_event(session_id: &str, reason: &str, latest_seq: u64) -> SessionEv
         kind: SessionEventKind::SyncLost,
         data: serde_json::json!({ "reason": reason, "latest_seq": latest_seq }),
     }
+}
+
+/// A live session-event subscription opened by [`subscribe_session_events`]:
+/// the `after=` replay/attach decision, the initial dedup seam, and the live
+/// broadcast receiver.
+///
+/// Seam invariant: the receiver is subscribed to the hub *before* the caller
+/// replays [`CatchUp::Replay`] events, so no seam event can be lost; the
+/// caller dedups by dropping live events with `seq <= seam_seq`.
+pub(crate) struct SessionEventSubscription {
+    /// Replay/attach decision for the `after` cursor (design §2.2).
+    pub catch_up: CatchUp,
+    /// First live seq to forward — everything `<= seam_seq` was already
+    /// replayed or is skipped by the cursor.
+    pub seam_seq: u64,
+    /// Live receiver for the session hub.
+    pub live: tokio::sync::broadcast::Receiver<SessionEvent>,
+}
+
+/// Subscribe a caller to a session's event stream with an optional `after`
+/// cursor. Mirrors the `GET /sessions/:id/events` replay/attach semantics
+/// (design §2.2): compute [`CatchUp`], subscribe to the hub BEFORE the replay
+/// snapshot is consumed, and derive the initial `seam_seq`.
+pub(crate) fn subscribe_session_events(
+    after: Option<u64>,
+    buffer: &Arc<std::sync::RwLock<SessionEventBuffer>>,
+    hub: &SessionEventHub,
+) -> SessionEventSubscription {
+    let catch_up = {
+        let buf = buffer.read().expect("session buffer lock poisoned");
+        plan_catch_up(after, &buf)
+    };
+    // Subscribe BEFORE replaying so seam events can't be lost; dedup below.
+    let live = hub.subscribe();
+    let seam_seq = match &catch_up {
+        CatchUp::Replay(evs) => evs.last().map(|e| e.seq).unwrap_or(0),
+        CatchUp::SyncLost { latest_seq } => *latest_seq,
+        CatchUp::LiveOnly | CatchUp::UpToDate => after.unwrap_or(0),
+    };
+    SessionEventSubscription {
+        catch_up,
+        seam_seq,
+        live,
+    }
+}
+
+/// Handle a `Lagged` error on a live session-event subscription (design §2.3):
+/// jump the seam to the latest buffered seq and build the out-of-band
+/// `sync_lost` event (`reason: "lagged"`) for that one subscriber. Other
+/// subscribers are unaffected. Shared by the SSE handler and the upcoming
+/// WebSocket endpoint.
+pub(crate) fn plan_lagged_resync(
+    session_id: &str,
+    seam_seq: &mut u64,
+    buffer: &Arc<std::sync::RwLock<SessionEventBuffer>>,
+) -> SessionEvent {
+    let latest = buffer
+        .read()
+        .expect("session buffer lock poisoned")
+        .latest_seq()
+        .unwrap_or(*seam_seq);
+    let ev = sync_lost_event(session_id, "lagged", latest);
+    *seam_seq = latest; // skip everything up to latest; client resyncs
+    ev
 }
 
 /// GET /api/v1/sessions/:id/events — SSE stream of the session's events.
@@ -1192,16 +1702,17 @@ pub(crate) async fn get_session_events(
     }
 
     let buffer = state.session_buffer(&id);
-    let catch_up = {
-        let buf = buffer.read().expect("session buffer lock poisoned");
-        plan_catch_up(query.after, &buf)
-    };
+    let SessionEventSubscription {
+        catch_up,
+        mut seam_seq,
+        mut live,
+    } = subscribe_session_events(query.after, &buffer, &state.session_event_hub);
 
     let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
-    // Subscribe BEFORE replaying so seam events can't be lost; dedup below.
-    let mut live = state.session_event_hub.subscribe();
 
-    let mut seam_seq = match &catch_up {
+    // Replay the catch-up decision into the SSE channel. The hub was already
+    // subscribed by `subscribe_session_events`, so seam events can't be lost.
+    match &catch_up {
         CatchUp::Replay(evs) => {
             for ev in evs {
                 let data = serde_json::to_string(ev).unwrap_or_default();
@@ -1211,17 +1722,15 @@ pub(crate) async fn get_session_events(
                     );
                 }
             }
-            evs.last().map(|e| e.seq).unwrap_or(0)
         }
         CatchUp::SyncLost { latest_seq } => {
             let ev = sync_lost_event(&id, "evicted", *latest_seq);
             let data = serde_json::to_string(&ev).unwrap_or_default();
             let _ = tx.send(Ok(Event::default().data(data)));
             // Keep the stream open; the client decides to resubscribe (§2.3).
-            *latest_seq
         }
-        CatchUp::LiveOnly | CatchUp::UpToDate => query.after.unwrap_or(0),
-    };
+        CatchUp::LiveOnly | CatchUp::UpToDate => {}
+    }
 
     tokio::spawn(async move {
         loop {
@@ -1242,14 +1751,8 @@ pub(crate) async fn get_session_events(
                         lagged = n,
                         "session events SSE subscriber lagged; sending sync_lost to this subscriber"
                     );
-                    let latest = buffer
-                        .read()
-                        .expect("session buffer lock poisoned")
-                        .latest_seq()
-                        .unwrap_or(seam_seq);
-                    let ev = sync_lost_event(&id, "lagged", latest);
+                    let ev = plan_lagged_resync(&id, &mut seam_seq, &buffer);
                     let data = serde_json::to_string(&ev).unwrap_or_default();
-                    seam_seq = latest; // skip everything up to latest; client resyncs
                     if tx.send(Ok(Event::default().data(data))).is_err() {
                         return;
                     }
@@ -1358,6 +1861,31 @@ async fn save_session_history(
     true
 }
 
+/// Derive a session title from the first user message: collapse whitespace,
+/// cap at 48 chars, ellipsis when truncated. `None` when the seed has no
+/// user message (or it is empty) — the session keeps its previous name.
+fn title_from_first_user_message(seed: &[ChatMessage]) -> Option<String> {
+    let first = seed.iter().find(|m| m.role == "user")?;
+    let collapsed = first
+        .content
+        .as_deref()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    const MAX_TITLE_CHARS: usize = 48;
+    if collapsed.chars().count() > MAX_TITLE_CHARS {
+        Some(format!(
+            "{}…",
+            collapsed.chars().take(MAX_TITLE_CHARS).collect::<String>()
+        ))
+    } else {
+        Some(collapsed)
+    }
+}
+
 /// Body of one spawned run: seed history from the persisted session, run the
 /// shared agent loop against the run's cancel token, then persist the final
 /// history. Terminal events (TurnDone/TurnError) flow through the sink.
@@ -1375,6 +1903,15 @@ async fn run_session_turn(
         state.session_event_hub.clone(),
         state.session_seq_counter(session_id),
         state.session_buffer(session_id),
+    );
+
+    // Daemon-truth initial phase: the run is assembling the prompt (memory
+    // recall + hooks) before the first LLM connect — exactly the window thin
+    // clients used to guess "thinking" for. Observers attaching mid-run get
+    // the same anchor via buffer replay.
+    sink.publish(
+        SessionEventKind::PhaseChanged,
+        serde_json::json!({ "phase": "thinking" }),
     );
 
     // 1. Resolve the owning session store + persisted session (multi-project
@@ -1401,18 +1938,38 @@ async fn run_session_turn(
     let seed_len_before_run = seed.len(); // for TurnContext new_messages slice
 
     // 2. Start save: the user message is durable even if the run dies. A
-    // background batch remains claimed (and snapshot-visible) until this
-    // succeeds; failure requeues it for a later continuation attempt.
+    // background batch and any queued-message claim remain claimed (and
+    // snapshot-visible) until this succeeds; failure requeues them for a
+    // later continuation attempt.
     if !save_session_history(&sessions, session_id, &seed).await {
         state
             .requeue_background_result_claim(session_id, run_id)
             .await;
+        state.requeue_message_claim(session_id, run_id).await;
         sink.emit(RuntimeEvent::StreamError(
             "run start history save failed".to_string(),
         ));
         return false;
     }
     state.ack_background_result_claim(session_id, run_id).await;
+    state.ack_message_claim(session_id, run_id).await;
+
+    // 2b. Auto-title unnamed sessions from the first user message. Sessions
+    // created without an explicit name default `name` to the session id (a
+    // UUID) — the web rail and the TUI resume list would otherwise show raw
+    // UUIDs. Explicitly named sessions (`name != id`) are never touched. The
+    // reload after the seed save keeps `messages` current so the rename
+    // cannot clobber the just-saved history.
+    if let Ok(Some(mut session)) = sessions.load(session_id).await {
+        if session.name == session_id {
+            if let Some(title) = title_from_first_user_message(&seed) {
+                session.name = title;
+                if let Err(e) = sessions.save(&session).await {
+                    tracing::warn!(error = %e, session = session_id, "auto-title save failed");
+                }
+            }
+        }
+    }
 
     // 3. Live settings + LLM port (same wiring as the chat_stream handler).
     let settings = state
@@ -1431,7 +1988,16 @@ async fn run_session_turn(
     // > the session's project > main working_dir). Tool path resolution, the
     // permission-policy boundary, and checkpoint storage all follow it.
     let root = state.effective_session_root(session_id).await;
-    let tools = RootToolPort::new(state, session_id, run_id, root.clone());
+    let tools = {
+        let agent = match state.root_context(session_id).await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                sink.emit(RuntimeEvent::StreamError(format!("root context: {e}")));
+                return false;
+            }
+        };
+        RootToolPort::new(state, session_id, run_id, root.clone(), agent)
+    };
 
     // 5. System prompt — same PromptContext chain as the headless runtime,
     // with cwd = the session's effective root. Retain `layers` for the
@@ -1483,7 +2049,7 @@ async fn run_session_turn(
         variables: Default::default(),
     };
     let outcomes = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(crate::runtime::hooks::FIRE_TIMEOUT_SECS),
         state.hook_manager.fire(
             &crate::runtime::hooks::HookEvent::UserPromptSubmit,
             &hook_ctx,
@@ -1495,7 +2061,10 @@ async fn run_session_turn(
     {
         Ok(v) => v,
         Err(_) => {
-            tracing::warn!("UserPromptSubmit hook timed out (10s), skipping");
+            tracing::warn!(
+                "UserPromptSubmit hook timed out ({}s), skipping",
+                crate::runtime::hooks::FIRE_TIMEOUT_SECS
+            );
             Vec::new()
         }
     };
@@ -1516,7 +2085,7 @@ async fn run_session_turn(
 
     // 6. Per-run loop config/state; a fresh turn id per run.
     let config = RuntimeConfig {
-        max_rounds: settings.agent.max_rounds.unwrap_or(100),
+        max_rounds: settings.agent.effective_max_rounds(),
         plan_mode,
         subagent_timeout_secs: settings.agent.subagent.timeout_secs,
         context_window: crate::config::resolve_context_window(
@@ -1527,7 +2096,8 @@ async fn run_session_turn(
         session_id: session_id.to_string(),
         turn_id: Some(Uuid::new_v4().to_string()),
         agent_generation: 0,
-        stream_max_retries: 2,
+        stream_max_retries: settings.agent.stream_max_retries,
+        stream_idle_timeout_secs: settings.agent.effective_stream_idle_timeout_secs(),
     };
     let store = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
     let history_handle = store.handle();
@@ -1604,7 +2174,8 @@ async fn run_session_turn(
 
     // 9. TurnContext: broadcast inspector data (layers, recalled memories,
     // new messages, reminder, token usage). Emitted once per run after the
-    // loop exits and the final save completes.
+    // loop exits and the final save completes (clients keep their session
+    // subscription briefly open past TurnDone to receive it).
     let new_messages: Vec<_> = final_history
         .iter()
         .skip(seed_len_before_run)
@@ -1640,6 +2211,13 @@ async fn run_session_turn(
         "prompt_tokens": token_counter.turn_input_tokens(),
         "completion_tokens": token_counter.turn_output_tokens(),
         "total_tokens": token_counter.used_tokens(),
+        // Context-window occupancy at the last API call — the same measure
+        // the TUI context bar renders (drops after auto-compaction). Unlike
+        // prompt_tokens (a per-turn sum over rounds) this is not additive.
+        "context_tokens": token_counter.last_prompt_tokens(),
+        // Provider prompt-cache hit of the last call; null when the gateway
+        // doesn't report it (web shows "—").
+        "cached_tokens": token_counter.last_cached_tokens(),
     });
     sink.publish(
         SessionEventKind::TurnContext,
@@ -1701,6 +2279,176 @@ mod tests {
             plan_catch_up(Some(9), &empty),
             CatchUp::SyncLost { latest_seq: 0 }
         ));
+    }
+
+    /// The extracted subscription primitive must compute the same `after=`
+    /// catch-up decision and seam as the SSE handler (design §2.2), and
+    /// subscribe to the hub before the caller replays (seam invariant).
+    #[test]
+    fn subscribe_session_events_plans_catch_up_and_seam() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 3..=6 {
+                buf.push(ev(seq));
+            }
+        }
+        let (hub, _keep) = tokio::sync::broadcast::channel(8);
+
+        // No cursor → live-only, seam starts at 0.
+        let sub = subscribe_session_events(None, &buffer, &hub);
+        assert!(matches!(&sub.catch_up, CatchUp::LiveOnly));
+        assert_eq!(sub.seam_seq, 0);
+
+        // Buffer covers after+1 → replay [5,6], seam = last replayed seq.
+        let sub = subscribe_session_events(Some(4), &buffer, &hub);
+        match &sub.catch_up {
+            CatchUp::Replay(evs) => {
+                assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![5, 6])
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+        assert_eq!(sub.seam_seq, 6);
+
+        // Cursor fell out of the buffer → SyncLost, seam = latest buffered seq.
+        let sub = subscribe_session_events(Some(1), &buffer, &hub);
+        assert!(matches!(&sub.catch_up, CatchUp::SyncLost { latest_seq: 6 }));
+        assert_eq!(sub.seam_seq, 6);
+
+        // Cursor already at/after latest → nothing missed, seam = cursor.
+        let sub = subscribe_session_events(Some(6), &buffer, &hub);
+        assert!(matches!(&sub.catch_up, CatchUp::UpToDate));
+        assert_eq!(sub.seam_seq, 6);
+    }
+
+    /// The lagged-resync helper advances the seam past the latest buffered
+    /// seq and returns the `sync_lost` event — the behavior both the SSE
+    /// handler and the upcoming WebSocket endpoint need (design §2.3).
+    #[test]
+    fn lagged_resync_advances_seam_and_builds_sync_lost() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 1..=10 {
+                buf.push(ev(seq));
+            }
+        }
+        let mut seam = 8;
+        let sync = plan_lagged_resync("s", &mut seam, &buffer);
+        assert_eq!(sync.kind, SessionEventKind::SyncLost);
+        assert_eq!(sync.data["reason"], "lagged");
+        assert_eq!(sync.data["latest_seq"], 10);
+        assert_eq!(seam, 10);
+    }
+
+    /// Cursor resume (`after=3`): replay covers `seq > after` only, then the
+    /// live tail continues from `seam_seq` with no duplicate and no gap.
+    #[test]
+    fn subscribe_cursor_replay_seams_into_live_without_gap_or_dup() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(8)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 3..=6 {
+                buf.push(ev(seq));
+            }
+        }
+        let (hub, _keep) = tokio::sync::broadcast::channel(16);
+
+        let mut sub = subscribe_session_events(Some(3), &buffer, &hub);
+        let replayed: Vec<u64> = match &sub.catch_up {
+            CatchUp::Replay(events) => events.iter().map(|e| e.seq).collect(),
+            other => panic!("expected Replay after cursor resume, got {other:?}"),
+        };
+        assert_eq!(replayed, vec![4, 5, 6]);
+        assert_eq!(sub.seam_seq, 6);
+
+        // Live publishes after subscription. A duplicate of the seam event
+        // must be filtered out; events after the seam must flow through.
+        hub.send(ev(6)).expect("hub send");
+        hub.send(ev(7)).expect("hub send");
+        hub.send(ev(8)).expect("hub send");
+
+        let mut live = Vec::new();
+        while let Ok(event) = sub.live.try_recv() {
+            if event.seq > sub.seam_seq {
+                live.push(event.seq);
+            }
+        }
+        assert_eq!(live, vec![7, 8]);
+
+        // Seam invariant: replay ∪ live is exactly 4..=8 — contiguous,
+        // nothing duplicated, nothing dropped.
+        let mut combined = replayed;
+        combined.extend(live);
+        assert_eq!(combined, vec![4, 5, 6, 7, 8]);
+    }
+
+    /// Cursor slipped out of the replay window → `SyncLost{latest_seq}` with
+    /// the seam advanced to `latest_seq`; an empty buffer (fresh daemon)
+    /// reports `latest_seq: 0`.
+    #[test]
+    fn subscribe_sync_lost_on_stale_cursor_and_empty_buffer() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        {
+            let mut buf = buffer.write().expect("buffer lock poisoned");
+            for seq in 3..=6 {
+                buf.push(ev(seq));
+            }
+        }
+        let (hub, _keep) = tokio::sync::broadcast::channel(16);
+
+        // `after = 1`: 1 + 1 < oldest_seq(3) → the cursor is gone.
+        let sub = subscribe_session_events(Some(1), &buffer, &hub);
+        assert!(matches!(sub.catch_up, CatchUp::SyncLost { latest_seq: 6 }));
+        assert_eq!(sub.seam_seq, 6);
+
+        // Empty buffer → nothing to resume from.
+        let empty = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        let sub = subscribe_session_events(Some(9), &empty, &hub);
+        assert!(matches!(sub.catch_up, CatchUp::SyncLost { latest_seq: 0 }));
+        assert_eq!(sub.seam_seq, 0);
+    }
+
+    /// Two subscribers on the same hub see the identical live sequence and
+    /// draining one never consumes the other's events.
+    #[test]
+    fn multiple_subscribers_receive_identical_independent_sequence() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(8)));
+        let (hub, _keep) = tokio::sync::broadcast::channel(16);
+
+        let mut sub_a = subscribe_session_events(None, &buffer, &hub);
+        let mut sub_b = subscribe_session_events(None, &buffer, &hub);
+        assert!(matches!(sub_a.catch_up, CatchUp::LiveOnly));
+        assert!(matches!(sub_b.catch_up, CatchUp::LiveOnly));
+
+        for seq in 1..=5 {
+            hub.send(ev(seq)).expect("hub send");
+        }
+
+        let mut a_seqs = Vec::new();
+        while let Ok(event) = sub_a.live.try_recv() {
+            a_seqs.push(event.seq);
+        }
+        let mut b_seqs = Vec::new();
+        while let Ok(event) = sub_b.live.try_recv() {
+            b_seqs.push(event.seq);
+        }
+
+        assert_eq!(a_seqs, vec![1, 2, 3, 4, 5]);
+        assert_eq!(b_seqs, vec![1, 2, 3, 4, 5]);
+    }
+
+    /// On an empty buffer `plan_lagged_resync` has no newer cursor to jump to,
+    /// so it keeps the current seam and reports that as `latest_seq`.
+    #[test]
+    fn lagged_resync_on_empty_buffer_keeps_seam() {
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(4)));
+        let mut seam = 7;
+        let sync = plan_lagged_resync("s", &mut seam, &buffer);
+        assert_eq!(sync.kind, SessionEventKind::SyncLost);
+        assert_eq!(sync.data["reason"], "lagged");
+        assert_eq!(sync.data["latest_seq"], 7);
+        assert_eq!(seam, 7);
     }
 
     #[test]
@@ -1882,8 +2630,10 @@ mod tests {
 
     #[test]
     fn unmapped_variants_are_skipped() {
-        // Connecting/PreparingTools/StreamDone/CompactionStarted 等不产生事件
-        //（v1 不广播连接噪声）；StreamError → TurnError；StreamDone → TurnDone
+        // v2 status contract: Connecting/PreparingTools/CompactionStarted now
+        // broadcast PhaseChanged (daemon-truth phases); truly unmapped noise
+        // (BackgroundTaskResult) still produces nothing. StreamError →
+        // TurnError; StreamDone → TurnDone.
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
         let sink = DaemonEventSink::new(
             "s1".into(),
@@ -1902,11 +2652,43 @@ mod tests {
         sink.emit(RuntimeEvent::StreamError("boom".into()));
         assert!(rx
             .try_recv()
+            .is_ok_and(|e| e.kind == SessionEventKind::PhaseChanged));
+        assert!(rx
+            .try_recv()
             .is_ok_and(|e| e.kind == SessionEventKind::TurnDone));
         assert!(rx
             .try_recv()
             .is_ok_and(|e| e.kind == SessionEventKind::TurnError));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn empty_finish_reason_publishes_turn_error() {
+        // A stream that dies mid-generation reaches StreamDone with an empty
+        // finish_reason (loop emits the terminal event even when the provider
+        // never sent one). That must end the turn as a visible error, not a
+        // silent TurnDone that truncates the response.
+        let (hub, mut rx) = tokio::sync::broadcast::channel(16);
+        let sink = DaemonEventSink::new(
+            "s1".into(),
+            "r1".into(),
+            hub,
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
+        );
+        sink.emit(RuntimeEvent::StreamDone {
+            finish_reason: String::new(),
+        });
+        let event = rx.try_recv().expect("TurnError must be published");
+        assert_eq!(event.kind, SessionEventKind::TurnError);
+        assert!(event.data["message"]
+            .as_str()
+            .unwrap()
+            .contains("finish reason"));
+        assert!(
+            rx.try_recv().is_err(),
+            "no TurnDone may follow the TurnError"
+        );
     }
 
     #[test]
@@ -2026,6 +2808,19 @@ mod tests {
         assert!(with_field.plan_mode);
     }
 
+    #[test]
+    fn run_request_queue_defaults_true_and_reads_false() {
+        // Absent queue field defaults to true: a busy session parks the
+        // message instead of answering 409.
+        let no_field: RunRequest =
+            serde_json::from_str(r#"{"message":"hi"}"#).expect("deserialize");
+        assert!(no_field.queue);
+        // An explicit false preserves the legacy immediate-409 contract.
+        let legacy: RunRequest =
+            serde_json::from_str(r#"{"message":"hi","queue":false}"#).expect("deserialize");
+        assert!(!legacy.queue);
+    }
+
     fn write_req(path: &str) -> ToolRequest {
         ToolRequest {
             name: "file_write".into(),
@@ -2043,6 +2838,39 @@ mod tests {
         assert_eq!(decide_ask(true, true), AskDecision::Execute);
         assert_eq!(decide_ask(false, true), AskDecision::Execute);
         assert_eq!(decide_ask(false, false), AskDecision::Escalate);
+    }
+
+    #[test]
+    fn title_from_first_user_message_basic() {
+        let seed = vec![
+            ChatMessage::assistant("earlier"),
+            ChatMessage::user("  fix the   login bug  "),
+        ];
+        assert_eq!(
+            title_from_first_user_message(&seed).as_deref(),
+            Some("fix the login bug")
+        );
+    }
+
+    #[test]
+    fn title_from_first_user_message_truncates() {
+        let long = "x".repeat(60);
+        let title = title_from_first_user_message(&[ChatMessage::user(long)]).unwrap();
+        assert_eq!(title.chars().count(), 49); // 48 chars + ellipsis
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn title_from_first_user_message_none_cases() {
+        assert_eq!(title_from_first_user_message(&[]), None);
+        assert_eq!(
+            title_from_first_user_message(&[ChatMessage::assistant("hi")]),
+            None
+        );
+        assert_eq!(
+            title_from_first_user_message(&[ChatMessage::user("   ")]),
+            None
+        );
     }
 
     #[tokio::test]
@@ -2190,6 +3018,291 @@ mod tests {
             .await
             .expect("save test session");
         state
+    }
+
+    /// PhaseChanged publish contract (v2 status): Connecting / PreparingTools
+    /// / CompactionStarted / ContextCompacted map onto `phase_changed`
+    /// SessionEvents carrying the same phase vocabulary the TUI AgentPhase
+    /// and the web statusPhase render.
+    #[test]
+    fn event_sink_publishes_phase_changed_for_underivable_phases() {
+        use crate::agent::runtime::events::RuntimeEvent;
+        use crate::agent::runtime::ports::EventSink;
+
+        let hub = tokio::sync::broadcast::channel(64).0;
+        let next_seq = Arc::new(AtomicU64::new(1));
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(64)));
+        let sink = DaemonEventSink::new("s".into(), "r".into(), hub, next_seq, Arc::clone(&buffer));
+
+        sink.emit(RuntimeEvent::Connecting {
+            attempt: 2,
+            max_retries: 3,
+        });
+        sink.emit(RuntimeEvent::PreparingTools);
+        sink.emit(RuntimeEvent::CompactionStarted);
+        sink.emit(RuntimeEvent::ContextCompacted {
+            summary_chars: 10,
+            compressed_len: 5,
+        });
+
+        let phase_events: Vec<SessionEvent> = {
+            let buf = buffer.read().unwrap();
+            buf.events_after(0)
+                .filter(|e| e.kind == SessionEventKind::PhaseChanged)
+                .cloned()
+                .collect()
+        };
+        let phases: Vec<(String, u64, u64)> = phase_events
+            .iter()
+            .map(|e| {
+                (
+                    e.data
+                        .get("phase")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    e.data.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0),
+                    e.data
+                        .get("max_retries")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                )
+            })
+            .collect();
+        assert_eq!(
+            phases,
+            vec![
+                ("connecting".to_string(), 2, 3),
+                ("preparing_tools".to_string(), 0, 0),
+                ("compacting".to_string(), 0, 0),
+                ("thinking".to_string(), 0, 0),
+            ]
+        );
+    }
+
+    /// Drive a session-a root task group to readiness: one child, finished.
+    async fn make_ready_root_group(state: &Arc<DaemonState>) {
+        let root = state.root_context("session-a").await.expect("root context");
+        let group = state
+            .coordinator
+            .current_or_create_root_group(&root, "turn-1")
+            .await
+            .expect("root group");
+        let child = state
+            .coordinator
+            .reserve_child_in_group(&root, crate::agent::SpawnChildRequest::new("work"), group)
+            .await
+            .expect("child reservation");
+        state
+            .coordinator
+            .finish_child(
+                &child.context,
+                crate::agent::ChildTerminal::completed("subagent done"),
+            )
+            .await
+            .expect("finish child");
+    }
+
+    #[tokio::test]
+    async fn ready_task_group_yields_synthesis_continuation() {
+        let state = continuation_test_state().await;
+        make_ready_root_group(&state).await;
+
+        let continuation = prepare_task_group_continuation(&state, "session-a")
+            .await
+            .expect("ready root group should produce a continuation");
+        assert!(continuation.message.contains("<child-results>"));
+        assert!(continuation.message.contains("subagent done"));
+        // The continuation owns the session run.
+        assert!(state.session_runs.is_active("session-a"));
+
+        // The group was claimed exactly once: after the continuation's run
+        // releases, a second attempt finds nothing ready and must release the
+        // run claim it took while checking.
+        state.session_runs.finish("session-a", &continuation.run_id);
+        assert!(prepare_task_group_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert!(!state.session_runs.is_active("session-a"));
+    }
+
+    #[tokio::test]
+    async fn task_group_continuation_waits_for_an_idle_session() {
+        let state = continuation_test_state().await;
+        make_ready_root_group(&state).await;
+
+        // A user-driven run owns the session: the group stays ready, no
+        // continuation is prepared.
+        state
+            .session_runs
+            .claim("session-a", test_run("user-run"))
+            .expect("claim user run");
+        assert!(prepare_task_group_continuation(&state, "session-a")
+            .await
+            .is_none());
+
+        // Once the run finishes, the ready group is delivered.
+        state.session_runs.finish("session-a", "user-run");
+        let continuation = prepare_task_group_continuation(&state, "session-a")
+            .await
+            .expect("idle session with a ready group should continue");
+        assert!(continuation.message.contains("subagent done"));
+    }
+
+    #[tokio::test]
+    async fn task_group_continuation_respects_the_failed_save_barrier() {
+        let state = continuation_test_state().await;
+        make_ready_root_group(&state).await;
+        state.block_background_continuation("session-a").await;
+        assert!(prepare_task_group_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert!(!state.session_runs.is_active("session-a"));
+    }
+
+    // ── Queued user messages ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn queued_message_waits_for_an_idle_session() {
+        let state = continuation_test_state().await;
+        let queued = state
+            .enqueue_message("session-a", "follow-up".to_string(), true)
+            .await
+            .expect("enqueue");
+
+        // A user-driven run owns the session: the queued message stays put.
+        state
+            .session_runs
+            .claim("session-a", test_run("user-run"))
+            .expect("claim user run");
+        assert!(prepare_message_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert_eq!(state.message_queue_depth("session-a").await, 1);
+
+        // Once the run finishes, the queued message starts as the next run
+        // with its plan_mode preserved.
+        state.session_runs.finish("session-a", "user-run");
+        let continuation = prepare_message_continuation(&state, "session-a")
+            .await
+            .expect("idle session with a queued message should continue");
+        assert_eq!(continuation.message, "follow-up");
+        assert!(continuation.plan_mode);
+        // The scheduler must claim the run slot under the id POST /run
+        // already handed the client (pre-minted at enqueue time), so the
+        // client's subscription filter lines up with the started turn.
+        assert_eq!(continuation.run_id, queued.run_id);
+        assert_eq!(
+            state.session_runs.active_run_id("session-a").as_deref(),
+            Some(continuation.run_id.as_str())
+        );
+        // The head is claimed (not dropped) until the run's start save acks.
+        assert_eq!(state.message_queue_depth("session-a").await, 0);
+    }
+
+    #[tokio::test]
+    async fn message_continuation_respects_the_failed_save_barrier() {
+        let state = continuation_test_state().await;
+        state
+            .enqueue_message("session-a", "follow-up".to_string(), false)
+            .await
+            .expect("enqueue");
+        state.block_background_continuation("session-a").await;
+        assert!(prepare_message_continuation(&state, "session-a")
+            .await
+            .is_none());
+        assert!(!state.session_runs.is_active("session-a"));
+        assert_eq!(state.message_queue_depth("session-a").await, 1);
+    }
+
+    #[tokio::test]
+    async fn message_continuation_claim_requeues_on_failed_start_save() {
+        let state = continuation_test_state().await;
+        state
+            .enqueue_message("session-a", "follow-up".to_string(), false)
+            .await
+            .expect("enqueue");
+        let continuation = prepare_message_continuation(&state, "session-a")
+            .await
+            .expect("continuation");
+
+        // Simulate a failed start save: the claim returns to the queue head
+        // and the run slot is free for the next attempt.
+        assert!(
+            state
+                .requeue_message_claim("session-a", &continuation.run_id)
+                .await
+        );
+        state.session_runs.finish("session-a", &continuation.run_id);
+        assert_eq!(state.message_queue_depth("session-a").await, 1);
+
+        let retry = prepare_message_continuation(&state, "session-a")
+            .await
+            .expect("requeued message continues again");
+        assert_eq!(retry.message, "follow-up");
+
+        // A stale run id must not ack or requeue another run's claim.
+        assert!(!state.ack_message_claim("session-a", "stale-run").await);
+        assert!(!state.requeue_message_claim("session-a", "stale-run").await);
+
+        // After the start save succeeds the claim is acked for good.
+        assert!(state.ack_message_claim("session-a", &retry.run_id).await);
+        assert_eq!(state.message_queue_depth("session-a").await, 0);
+    }
+
+    #[tokio::test]
+    async fn queued_messages_are_fifo_and_retractable() {
+        let state = continuation_test_state().await;
+        let first = state
+            .enqueue_message("session-a", "one".to_string(), false)
+            .await
+            .expect("enqueue one");
+        state
+            .enqueue_message("session-a", "two".to_string(), false)
+            .await
+            .expect("enqueue two");
+
+        let snapshot = state.queued_messages_snapshot("session-a").await;
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].message, "one");
+        assert_eq!(snapshot[1].message, "two");
+
+        assert!(
+            state
+                .remove_queued_message("session-a", &first.message_id)
+                .await
+        );
+        assert!(
+            !state
+                .remove_queued_message("session-a", &first.message_id)
+                .await
+        );
+        let snapshot = state.queued_messages_snapshot("session-a").await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].message, "two");
+
+        assert_eq!(state.clear_queued_messages("session-a").await, 1);
+        assert!(state.queued_head_run_id("session-a").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn message_queue_enforces_max_depth() {
+        let state = continuation_test_state().await;
+        for i in 0..MESSAGE_QUEUE_MAX_DEPTH {
+            state
+                .enqueue_message("session-a", format!("msg {i}"), false)
+                .await
+                .expect("within capacity");
+        }
+        assert!(state
+            .enqueue_message("session-a", "overflow".to_string(), false)
+            .await
+            .is_err());
+        // A different session is unaffected.
+        assert!(state
+            .enqueue_message("session-b", "ok".to_string(), false)
+            .await
+            .is_ok());
     }
 
     #[test]

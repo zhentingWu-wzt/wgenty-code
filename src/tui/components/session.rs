@@ -1,5 +1,7 @@
+use crate::tui::app::AppEvent;
 use crate::tui::client::SessionInfo;
 use crate::tui::theme;
+use crate::tui::traits::EventHandler;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -237,6 +239,17 @@ fn short_session_id(id: &str) -> &str {
     }
     let end = id.char_indices().nth(8).map(|(i, _)| i).unwrap_or(id.len());
     &id[..end]
+}
+
+/// Owns the `SessionListLoaded` event so the giant App match does not.
+impl EventHandler for SessionState {
+    fn handle_event(&mut self, event: &AppEvent) -> bool {
+        if let AppEvent::SessionListLoaded(sessions) = event {
+            self.show(sessions.clone());
+            return true;
+        }
+        false
+    }
 }
 
 #[cfg(test)]

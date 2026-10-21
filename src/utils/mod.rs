@@ -188,6 +188,18 @@ pub fn remove_daemon_token() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Remove the token file only if it still holds `expected`. A shutting-down
+/// daemon must not delete the token of a NEWER daemon that has since started:
+/// the file is written once at startup and never rewritten, so an
+/// unconditional delete leaves the live daemon unreachable (every client
+/// reads this file for auth) — the classic two-instance race.
+pub fn remove_daemon_token_if_matches(expected: &str) -> anyhow::Result<()> {
+    if read_daemon_token().as_deref() == Some(expected) {
+        remove_daemon_token()?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod project_local_path_tests {
     use super::*;

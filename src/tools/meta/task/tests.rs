@@ -360,7 +360,8 @@ fn test_token_budget_zero_with_nonzero_default_falls_back_to_default() {
 
 // ── Coordinator-owned children: forge-field and depth tests ─────────────
 
-use crate::agent::{AgentCoordinator, AgentId, SessionId, ToolContext, ToolInvocationId};
+use crate::agent::AgentCoordinator;
+use crate::tools::context::{AgentId, SessionId, ToolContext, ToolInvocationId};
 
 /// Build a TaskTool wired to a coordinator with the given limits and a fresh
 /// tool registry (so `tool_registry.upgrade()` succeeds in execute_with_context).
