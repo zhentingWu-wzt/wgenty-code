@@ -16,6 +16,25 @@ const loadedId = (): string => `loaded-${++loadedCounter}`;
 const MISSING_RESULT = "tool result missing from saved history";
 
 /**
+ * Flatten a non-string `error`/`content` field to text. Older daemon builds
+ * persisted structured errors (Rust `ToolError` → `{code, message}` objects)
+ * in place of the string the wire type promises; rendering those raw crashes
+ * React ("objects are not valid as a React child"), so coerce here.
+ */
+function toText(v: unknown): string | undefined {
+  if (typeof v === "string") return v;
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (typeof o.message === "string") {
+      return typeof o.code === "string" ? `${o.message} (${o.code})` : o.message;
+    }
+    return JSON.stringify(v, null, 2);
+  }
+  return String(v);
+}
+
+/**
  * Best-effort reconstruction of an `ExecuteToolResponse` from a stored tool
  * message content. The daemon persists tool results as
  * `JSON.stringify(exec.response)`, so JSON.parse usually recovers the original
@@ -25,7 +44,14 @@ function parseToolResponse(raw: unknown): ExecuteToolResponse {
   if (typeof raw === "string" && raw.length > 0) {
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (parsed !== null && typeof parsed === "object") return parsed as ExecuteToolResponse;
+      if (parsed !== null && typeof parsed === "object") {
+        const o = parsed as Record<string, unknown>;
+        return {
+          ...(o as unknown as ExecuteToolResponse),
+          content: toText(o.content),
+          error: toText(o.error),
+        };
+      }
       // A JSON scalar (e.g. `"ok"`, `42`) — keep it as text content.
       return { success: true, content: raw };
     } catch {
