@@ -90,7 +90,9 @@ function LayersTab({ layers }: { layers: TurnContextLayer[] }) {
             onClick={() => setExpanded(expanded === layer.label ? null : layer.label)}
           >
             <span className="min-w-0 flex-1 truncate text-[12px]">{layer.label}</span>
-            <span className="shrink-0 text-[10px] text-muted-foreground">{layer.char_count} chars</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">
+              {layer.char_count} chars
+            </span>
           </button>
           {expanded === layer.label && (
             <div className="mt-1 text-[10px] text-muted-foreground">Source: {layer.source}</div>
@@ -111,7 +113,9 @@ function MemoriesTab({ memories }: { memories: TurnContextMemory[] }) {
         <li key={i} className="rounded-sm border border-border p-1.5">
           <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
             <span className="text-primary">{m.memory_type}</span>
-            <span className="ml-auto" title="importance">{m.importance.toFixed(2)}</span>
+            <span className="ml-auto" title="importance">
+              {m.importance.toFixed(2)}
+            </span>
           </div>
           <div className="pt-0.5 text-[12px]">{m.content_preview}</div>
         </li>
@@ -166,12 +170,38 @@ function TokensTab({ usage }: { usage: TurnContextData["usage"] }) {
       : `${cached.toLocaleString()} (${Math.round(
           Math.min(cached / Math.max(usage.prompt_tokens, 1), 1) * 100,
         )}%)`;
+  const totals = usage.session_cache_totals;
+  const weightedPct =
+    totals && totals.prompt_tokens > 0
+      ? Math.round(Math.min(totals.cached_tokens / totals.prompt_tokens, 1) * 100)
+      : null;
   return (
-    <div className="flex gap-4 p-1">
-      <Metric label="Prompt" value={usage.prompt_tokens} />
-      <Metric label="Completion" value={usage.completion_tokens} />
-      <Metric label="Total" value={usage.total_tokens} />
-      <Metric label="Cached" value={cachedDisplay} />
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-4 p-1">
+        <Metric label="Prompt (turn)" value={usage.prompt_tokens} />
+        <Metric label="Completion (turn)" value={usage.completion_tokens} />
+        <Metric label="Total" value={usage.total_tokens} />
+        <Metric label="Cached (last call)" value={cachedDisplay} />
+      </div>
+      {totals && (
+        <div className="rounded-sm border border-border p-1.5">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[10px] text-muted-foreground">
+              Session cache economy (weighted)
+            </span>
+            {weightedPct !== null && (
+              <span className="ml-auto text-[11px] font-semibold text-success tabular-nums">
+                {weightedPct}% hit
+              </span>
+            )}
+          </div>
+          <div className="flex gap-4 pt-1">
+            <Metric label="Σ Prompt" value={totals.prompt_tokens} />
+            <Metric label="Σ Cache read" value={totals.cached_tokens} />
+            <Metric label="Σ Cache write" value={totals.cache_write_tokens} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

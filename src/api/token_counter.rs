@@ -21,6 +21,16 @@ pub struct TokenCounter {
     last_prompt_tokens: Arc<AtomicUsize>,
     /// Provider prompt-cache hit of the most recent call (0 = None sentinel).
     last_cached_tokens: Arc<AtomicUsize>,
+
+    // ── Session-lifetime cache-economy accumulators ──
+    /// Σ prompt_tokens over all reported calls (OpenAI-inclusive denominator;
+    /// calls whose gateway didn't report usage are excluded entirely).
+    total_prompt_tokens: Arc<AtomicUsize>,
+    /// Σ cached (cache-read) tokens over all calls that reported them.
+    total_cached_tokens: Arc<AtomicUsize>,
+    /// Σ cache-write tokens over all calls that reported them (Anthropic
+    /// premium billing; OpenAI never reports this).
+    total_cache_write_tokens: Arc<AtomicUsize>,
 }
 
 impl TokenCounter {
@@ -32,6 +42,9 @@ impl TokenCounter {
             turn_output: Arc::new(AtomicUsize::new(0)),
             last_prompt_tokens: Arc::new(AtomicUsize::new(0)),
             last_cached_tokens: Arc::new(AtomicUsize::new(0)),
+            total_prompt_tokens: Arc::new(AtomicUsize::new(0)),
+            total_cached_tokens: Arc::new(AtomicUsize::new(0)),
+            total_cache_write_tokens: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -101,6 +114,58 @@ impl TokenCounter {
             0 => None,
             n => Some(n),
         }
+    }
+
+    // ── Session-lifetime cache-economy accumulators ────────────────────────
+
+    /// Record one completed API call's usage into the session totals.
+    ///
+    /// `prompt_tokens` is the inclusive denominator (OpenAI semantics: all
+    /// input tokens incl. cached ones). `cached` / `cache_write` are the
+    /// provider-reported splits; when the gateway reports neither, the call
+    /// still contributes to `total_prompt_tokens` — denominators must count
+    /// every billed call, only the splits are optional.
+    pub fn record_call_usage(
+        &self,
+        prompt_tokens: usize,
+        cached: Option<usize>,
+        cache_write: Option<usize>,
+    ) {
+        self.total_prompt_tokens
+            .fetch_add(prompt_tokens, Ordering::Relaxed);
+        if let Some(c) = cached {
+            self.total_cached_tokens.fetch_add(c, Ordering::Relaxed);
+        }
+        if let Some(w) = cache_write {
+            self.total_cache_write_tokens
+                .fetch_add(w, Ordering::Relaxed);
+        }
+    }
+
+    /// Σ prompt_tokens (incl. cached) over all recorded calls.
+    pub fn total_prompt_tokens(&self) -> usize {
+        self.total_prompt_tokens.load(Ordering::Relaxed)
+    }
+
+    /// Σ cache-read tokens over calls that reported them.
+    pub fn total_cached_tokens(&self) -> usize {
+        self.total_cached_tokens.load(Ordering::Relaxed)
+    }
+
+    /// Σ cache-write tokens over calls that reported them.
+    pub fn total_cache_write_tokens(&self) -> usize {
+        self.total_cache_write_tokens.load(Ordering::Relaxed)
+    }
+
+    /// Session-lifetime weighted hit rate: Σcached / Σprompt, `None` when no
+    /// call reported usage yet. This (not the mean of per-call percentages)
+    /// is the economically meaningful average.
+    pub fn total_hit_rate(&self) -> Option<f64> {
+        let prompt = self.total_prompt_tokens();
+        if prompt == 0 {
+            return None;
+        }
+        Some(self.total_cached_tokens() as f64 / prompt as f64)
     }
 }
 
@@ -188,5 +253,27 @@ mod tests {
         counter.set_prompt_tokens(100);
         counter.set_prompt_tokens(200);
         assert_eq!(counter.last_prompt_tokens(), 200);
+    }
+
+    // ── cache-economy accumulator tests ──────────────────────────────────
+
+    #[test]
+    fn test_record_call_usage_accumulates() {
+        let counter = TokenCounter::new();
+        counter.record_call_usage(1000, Some(800), Some(100));
+        counter.record_call_usage(2000, Some(1800), None);
+        // A call with no cache reporting still counts in the denominator.
+        counter.record_call_usage(500, None, None);
+        assert_eq!(counter.total_prompt_tokens(), 3500);
+        assert_eq!(counter.total_cached_tokens(), 2600);
+        assert_eq!(counter.total_cache_write_tokens(), 100);
+        let rate = counter.total_hit_rate().unwrap();
+        assert!((rate - 2600.0 / 3500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_hit_rate_none_before_first_usage() {
+        let counter = TokenCounter::new();
+        assert!(counter.total_hit_rate().is_none());
     }
 }

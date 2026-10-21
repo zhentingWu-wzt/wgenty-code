@@ -60,6 +60,54 @@ pub struct ModelEndpoint {
     /// auto-routing" (manual `/model` switch only).
     #[serde(default)]
     pub tier: Option<ModelTier>,
+    /// Pricing for session cache-economy cost estimates, USD per million
+    /// tokens. `pricing` without `cache_read` / `cache_write` falls back to
+    /// `input` (i.e. no-cache discount). When absent, the UI shows token
+    /// counts only and skips cost math.
+    #[serde(default)]
+    pub pricing: Option<ModelPricing>,
+}
+
+/// Per-million-token pricing (USD) for one endpoint. Field names follow the
+/// provider billing pages; `cache_write` multiplies `input` (Anthropic 1h TTL
+/// is typically `input * 2`, 5m is `input * 1.25`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ModelPricing {
+    /// USD per 1M uncached input tokens.
+    pub input: f64,
+    /// USD per 1M cached (read) input tokens; defaults to `input`.
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    /// USD per 1M cache-write tokens; defaults to `input` (OpenAI implicit
+    /// caching is free — leave unset and report no writes).
+    #[serde(default)]
+    pub cache_write: Option<f64>,
+    /// USD per 1M output tokens.
+    pub output: f64,
+}
+
+impl ModelPricing {
+    pub fn cache_read_price(&self) -> f64 {
+        self.cache_read.unwrap_or(self.input)
+    }
+
+    pub fn cache_write_price(&self) -> f64 {
+        self.cache_write.unwrap_or(self.input)
+    }
+
+    /// Cost of one call from its usage split (token counts, not millions).
+    pub fn call_cost(
+        &self,
+        uncached_input: usize,
+        cache_read: usize,
+        cache_write: usize,
+        output: usize,
+    ) -> f64 {
+        uncached_input as f64 * self.input / 1_000_000.0
+            + cache_read as f64 * self.cache_read_price() / 1_000_000.0
+            + cache_write as f64 * self.cache_write_price() / 1_000_000.0
+            + output as f64 * self.output / 1_000_000.0
+    }
 }
 
 impl ModelEndpoint {
@@ -100,6 +148,9 @@ pub(crate) fn overlay_endpoint(base: &ModelEndpoint, over: &ModelEndpoint) -> Mo
         // main model's display name would mislead the picker.
         display_name: over.display_name.clone(),
         tier: over.tier,
+        // Pricing inheritance mirrors cost truth: an override endpoint with
+        // its own price list must not silently inherit main's rates.
+        pricing: over.pricing.or(base.pricing),
     }
 }
 
@@ -331,6 +382,7 @@ impl Default for ModelsConfig {
                 temperature: None,
                 display_name: None,
                 tier: None,
+                pricing: None,
             },
             small: None,
             planner: None,
@@ -360,6 +412,7 @@ fn default_main() -> ModelEndpoint {
         temperature: None,
         display_name: None,
         tier: None,
+        pricing: None,
     }
 }
 
@@ -612,6 +665,30 @@ mod tests {
         assert!(cfg.llm_fallback);
         assert!((cfg.boundary_low - 0.3).abs() < 1e-9);
         assert!((cfg.boundary_high - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_pricing_serde_and_call_cost() {
+        // Anthropic-style: explicit cache discounts.
+        let json = r#"{"name":"claude","pricing":{"input":3.0,"cache_read":0.3,"cache_write":3.75,"output":15.0}}"#;
+        let ep: ModelEndpoint = serde_json::from_str(json).unwrap();
+        let p = ep.pricing.unwrap();
+        let cost = p.call_cost(5_000, 100_000, 2_000, 500);
+        let expected =
+            5_000.0 * 3.0 / 1e6 + 100_000.0 * 0.3 / 1e6 + 2_000.0 * 3.75 / 1e6 + 500.0 * 15.0 / 1e6;
+        assert!((cost - expected).abs() < 1e-9);
+
+        // OpenAI-style: cache_write absent → falls back to input price;
+        // cache_read absent → falls back to input (no discount modeled).
+        let json = r#"{"name":"gpt","pricing":{"input":2.5,"cache_read":1.25,"output":10.0}}"#;
+        let ep: ModelEndpoint = serde_json::from_str(json).unwrap();
+        let p = ep.pricing.unwrap();
+        assert!((p.cache_write_price() - 2.5).abs() < 1e-9);
+        assert!((p.cache_read_price() - 1.25).abs() < 1e-9);
+
+        // Absent pricing block → None (UI skips cost math).
+        let ep: ModelEndpoint = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+        assert!(ep.pricing.is_none());
     }
 
     #[test]

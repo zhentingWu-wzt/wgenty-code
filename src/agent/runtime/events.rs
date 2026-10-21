@@ -1,5 +1,28 @@
 //! Frontend-agnostic events emitted by the agent runtime.
 
+/// Session-lifetime cache-economy snapshot, attached to `UsageUpdate` so
+/// frontends can show a weighted average hit rate without accumulating
+/// events client-side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SessionCacheTotals {
+    /// Σ prompt_tokens (OpenAI-inclusive) over all calls that reported usage.
+    pub prompt_tokens: usize,
+    /// Σ cache-read tokens over calls that reported them.
+    pub cached_tokens: usize,
+    /// Σ cache-write tokens over calls that reported them (Anthropic only).
+    pub cache_write_tokens: usize,
+}
+
+impl SessionCacheTotals {
+    /// Weighted session hit rate Σcached/Σprompt; `None` before any usage.
+    pub fn hit_rate(&self) -> Option<f64> {
+        if self.prompt_tokens == 0 {
+            return None;
+        }
+        Some(self.cached_tokens as f64 / self.prompt_tokens as f64)
+    }
+}
+
 /// Events produced by the shared stream / loop engines.
 ///
 /// Frontends map these into their own UI event type (TUI `AppEvent`, CLI
@@ -21,10 +44,13 @@ pub enum RuntimeEvent {
     /// auto-compaction). Frontends with a context bar (web StatusBar) render
     /// this live, mid-turn, instead of waiting for the turn-end snapshot.
     /// `cached_tokens` carries the provider prompt-cache hit of that call
-    /// (None when the gateway doesn't report it or the value is an estimate).
+    /// (None when the gateway doesn't report it or the value is an estimate);
+    /// `session_totals` carries the lifetime weighted hit rate
+    /// (Σcached/Σprompt, None before the first usage report).
     UsageUpdate {
         prompt_tokens: usize,
         cached_tokens: Option<usize>,
+        session_totals: Option<SessionCacheTotals>,
     },
     /// Recoverable or terminal stream error message for display.
     StreamError(String),

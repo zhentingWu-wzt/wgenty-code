@@ -53,6 +53,7 @@ impl AnthropicStreamState {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
                         cache_read_input_tokens: usage.cache_read_input_tokens,
+                        cache_creation_input_tokens: usage.cache_creation_input_tokens,
                     });
                 }
             }
@@ -178,11 +179,15 @@ impl AnthropicStreamState {
                         input_tokens: self.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
                         output_tokens: u.output_tokens,
                         // MessageDelta usage omits cache fields; carry the
-                        // message_start value forward (matches billing truth).
+                        // message_start values forward (matches billing truth).
                         cache_read_input_tokens: self
                             .usage
                             .as_ref()
                             .and_then(|u| u.cache_read_input_tokens),
+                        cache_creation_input_tokens: self
+                            .usage
+                            .as_ref()
+                            .and_then(|u| u.cache_creation_input_tokens),
                     });
                 }
 
@@ -211,14 +216,23 @@ impl AnthropicStreamState {
                         finish_reason,
                     }],
                     usage: self.usage.as_ref().map(|u| crate::api::Usage {
-                        prompt_tokens: u.input_tokens,
+                        // Anthropic input_tokens excludes cached tokens; the
+                        // OpenAI-shaped prompt_tokens must include them (see
+                        // conversions.rs for the non-streaming twin).
+                        prompt_tokens: u.input_tokens
+                            + u.cache_read_input_tokens.unwrap_or(0)
+                            + u.cache_creation_input_tokens.unwrap_or(0),
                         completion_tokens: u.output_tokens,
-                        total_tokens: u.input_tokens + u.output_tokens,
+                        total_tokens: u.input_tokens
+                            + u.output_tokens
+                            + u.cache_read_input_tokens.unwrap_or(0)
+                            + u.cache_creation_input_tokens.unwrap_or(0),
                         prompt_tokens_details: u.cache_read_input_tokens.map(|cached| {
                             crate::api::PromptTokensDetails {
                                 cached_tokens: Some(cached),
                             }
                         }),
+                        cache_creation_tokens: u.cache_creation_input_tokens,
                     }),
                 };
                 sse_events.push(format!(
@@ -454,6 +468,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
             },
         };
         let chat_resp = convert_anthropic_response(&resp);
@@ -465,6 +480,40 @@ mod tests {
         assert_eq!(chat_resp.choices[0].finish_reason, Some("stop".to_string()));
         assert_eq!(chat_resp.usage.as_ref().unwrap().prompt_tokens, 10);
         assert_eq!(chat_resp.usage.as_ref().unwrap().completion_tokens, 5);
+    }
+
+    #[test]
+    fn test_convert_response_usage_includes_cached_tokens() {
+        // OpenAI semantics: prompt_tokens is the FULL input incl. cached
+        // portions. Anthropic's input_tokens excludes them — the conversion
+        // must add cache_read/cache_creation back or every downstream
+        // hit-rate / context-occupancy denominator is wrong.
+        let resp = AnthropicResponse {
+            id: "msg_003".to_string(),
+            response_type: "message".to_string(),
+            role: "assistant".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            content: vec![AnthropicContentBlock::Text {
+                text: "ok".to_string(),
+                cache_control: None,
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            stop_sequence: None,
+            usage: AnthropicUsage {
+                input_tokens: 5_000,
+                output_tokens: 500,
+                cache_read_input_tokens: Some(100_000),
+                cache_creation_input_tokens: Some(2_000),
+            },
+        };
+        let usage = convert_anthropic_response(&resp).usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 107_000);
+        assert_eq!(usage.total_tokens, 107_500);
+        assert_eq!(
+            usage.prompt_tokens_details.unwrap().cached_tokens,
+            Some(100_000)
+        );
+        assert_eq!(usage.cache_creation_tokens, Some(2_000));
     }
 
     #[test]
@@ -486,6 +535,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
             },
         };
         let chat_resp = convert_anthropic_response(&resp);
