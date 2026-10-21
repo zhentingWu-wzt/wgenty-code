@@ -546,20 +546,17 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             // far too early).
             state.last_measured_prompt_tokens = Some(usage.prompt_tokens);
             state.last_request_chars = Some(request_size_chars(&messages) + fixed_overhead_chars);
+            let (prompt_total, total_tokens) = usage.normalized_totals();
             let usage_cached = usage
                 .prompt_tokens_details
                 .as_ref()
                 .and_then(|d| d.cached_tokens);
             if let Some(counter) = hooks.token_counter {
-                counter.add(usage.total_tokens);
+                counter.add(total_tokens);
                 counter.add_output(usage.completion_tokens);
-                counter.set_prompt_tokens(usage.prompt_tokens);
+                counter.set_prompt_tokens(prompt_total);
                 counter.set_cached_tokens(usage_cached);
-                counter.record_call_usage(
-                    usage.prompt_tokens,
-                    usage_cached,
-                    usage.cache_creation_tokens,
-                );
+                counter.record_call_usage(prompt_total, usage_cached, usage.cache_creation_tokens);
             }
             // Live context-occupancy feed: the same value the TUI context bar
             // renders (token_counter.last_prompt_tokens), pushed to observing
@@ -572,12 +569,12 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                 cache_write_tokens: c.total_cache_write_tokens(),
             });
             events.emit(RuntimeEvent::UsageUpdate {
-                prompt_tokens: usage.prompt_tokens,
+                prompt_tokens: prompt_total,
                 cached_tokens: usage_cached,
                 session_totals,
             });
             if let Some(obs) = hooks.observer {
-                obs.on_usage(usage.total_tokens);
+                obs.on_usage(total_tokens);
             }
         } else if let Some(counter) = hooks.token_counter {
             let input_est: usize = messages
