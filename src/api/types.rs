@@ -303,6 +303,12 @@ pub struct Usage {
     /// legacy payloads parsing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// Tokens used to create/refresh provider cache entries this call
+    /// (Anthropic `cache_creation_input_tokens`, billed at a premium; OpenAI
+    /// implicit caching is free so it never reports this). `prompt_tokens`
+    /// already INCLUDES these tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<usize>,
 }
 
 /// Subset of OpenAI `prompt_tokens_details` we consume.

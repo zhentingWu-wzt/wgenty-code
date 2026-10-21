@@ -264,14 +264,25 @@ pub fn convert_anthropic_response(resp: &AnthropicResponse) -> ChatResponse {
             finish_reason,
         }],
         usage: Some(Usage {
-            prompt_tokens: resp.usage.input_tokens,
+            // OpenAI semantics: prompt_tokens is the FULL input (uncached +
+            // cache-read + cache-write). Anthropic's input_tokens excludes the
+            // cached portions, so add them back — otherwise denominators for
+            // hit-rate and context-occupancy are wrong and cached tokens get
+            // double-counted in total_tokens.
+            prompt_tokens: resp.usage.input_tokens
+                + resp.usage.cache_read_input_tokens.unwrap_or(0)
+                + resp.usage.cache_creation_input_tokens.unwrap_or(0),
             completion_tokens: resp.usage.output_tokens,
-            total_tokens: resp.usage.input_tokens + resp.usage.output_tokens,
+            total_tokens: resp.usage.input_tokens
+                + resp.usage.output_tokens
+                + resp.usage.cache_read_input_tokens.unwrap_or(0)
+                + resp.usage.cache_creation_input_tokens.unwrap_or(0),
             prompt_tokens_details: resp.usage.cache_read_input_tokens.map(|cached| {
                 crate::api::PromptTokensDetails {
                     cached_tokens: Some(cached),
                 }
             }),
+            cache_creation_tokens: resp.usage.cache_creation_input_tokens,
         }),
     }
 }
