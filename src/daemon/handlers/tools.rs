@@ -33,7 +33,7 @@ pub async fn execute_tool(
     // matches the execution workdir, and snapshot into that project's
     // checkpoint store.
     let session_root = state.effective_session_root(session_id).await;
-    let (cp_manager, cp_store) = state.checkpoints_for_project(&session_root);
+    let (_, cp_store) = state.checkpoints_for_project(&session_root);
 
     // Per-project permission mode for this session's working directory.
     let mode_entry = state.permission_modes.get(&session_root);
@@ -62,14 +62,6 @@ pub async fn execute_tool(
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let effective_mode = mode_entry.effective_mode;
-            // Ensure the turn snapshot exists when the client supplies a turn id
-            // (TUI/REPL generate one per user message). Plan mode skips capture
-            // inside maybe_capture_pre_edit via EffectiveMode::Plan.
-            if let Some(turn_id) = body.turn_id.as_deref() {
-                if let Err(e) = cp_manager.begin_turn(turn_id) {
-                    tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
-                }
-            }
             let tool_context = crate::agent::ToolContext {
                 agent: &root_context,
                 invocation_id: crate::agent::ToolInvocationId::new(
@@ -115,12 +107,8 @@ pub async fn execute_tool(
                     );
                 }
                 // Per-tool git-stash checkpoints removed: pre-edit capture happens
-                // inside ToolRegistry::execute_with_context via CheckpointStore.
-                if let Some(turn_id) = body.turn_id.as_deref() {
-                    if let Err(e) = cp_manager.begin_turn(turn_id) {
-                        tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
-                    }
-                }
+                // inside ToolRegistry::execute_with_context via CheckpointStore
+                // (snapshot materializes lazily on first capture).
                 let root_context = state
                     .root_context(session_id)
                     .await

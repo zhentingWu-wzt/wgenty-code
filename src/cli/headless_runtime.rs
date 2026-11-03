@@ -184,11 +184,6 @@ impl ToolPort for RegistryToolPort {
             .invocation_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        if let Some(turn_id) = req.turn_id.as_deref() {
-            if let Err(e) = self.registry.checkpoint_manager.begin_turn(turn_id) {
-                tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
-            }
-        }
         let context = ToolContext {
             agent: &self.agent,
             invocation_id: ToolInvocationId::new(inv_id),
@@ -438,12 +433,9 @@ pub async fn run_oneshot(
         });
     }
 
-    // One turn id for the whole headless run; open the snapshot up-front so
-    // prune runs even if no file tool fires.
+    // One turn id for the whole headless run. The snapshot materializes lazily
+    // on the first file-tool capture (pure-chat runs leave no empty snapshot).
     let turn_id = Uuid::new_v4().to_string();
-    if let Err(e) = registry.checkpoint_manager.begin_turn(&turn_id) {
-        tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
-    }
     let tools = RegistryToolPort::new(registry, &session_id);
     let tools = if yolo {
         tools.with_effective_mode(EffectiveMode::Yolo)

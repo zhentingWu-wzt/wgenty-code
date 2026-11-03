@@ -119,9 +119,12 @@ impl SessionCoordinator {
         let turn_id = format!("turn-{}", self.session.turns.len());
         let parent = self.session.current_turn.clone();
         let checkpoint_turn_id = uuid::Uuid::new_v4().to_string();
-        self.checkpoint_store
-            .begin_turn(&checkpoint_turn_id)
-            .with_context(|| format!("checkpoint begin_turn: {}", checkpoint_turn_id))?;
+        // Lazy snapshot: the checkpoint store no longer materializes the turn
+        // dir here — `try_capture_file` creates it on the first file capture.
+        // Pure-chat turns (no file edits) therefore leave no empty snapshot
+        // behind and never consume the prune budget. The UUID is still
+        // allocated up-front so `TurnRecord.checkpoint_turn_id` links the turn
+        // to its (future) snapshot for rewind/undo flows.
         let (git_refs, untracked_files) = record_git_state(&self.project_root);
         let now = chrono::Utc::now().to_rfc3339();
         let turn = TurnRecord {
@@ -686,9 +689,44 @@ mod tests {
         let mut coord = make_coordinator(dir.path());
         coord.begin_turn().unwrap();
         let ct_id = coord.session().turns[0].checkpoint_turn_id.clone();
-        // CheckpointStore should have created the turn dir + manifest.
+        // Lazy snapshots: begin_turn allocates the id but does NOT materialize
+        // the snapshot dir/manifest — try_capture_file does that on first
+        // capture. After begin_turn alone, no manifest exists yet.
         let checkpoint_root = dir.path().join(".wgenty-code").join("checkpoints");
+        assert!(!checkpoint_root.join(&ct_id).join("manifest.json").exists());
+        // Capturing a file materializes it under the same checkpoint id.
+        coord
+            .checkpoint_store()
+            .try_capture_file(&ct_id, "a.txt")
+            .unwrap();
         assert!(checkpoint_root.join(&ct_id).join("manifest.json").exists());
+    }
+
+    #[test]
+    fn begin_turn_lazy_snapshot_leaves_no_empty_dir() {
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap();
+        coord.end_turn().unwrap();
+        coord.begin_turn().unwrap();
+        coord.end_turn().unwrap();
+        // Pure-chat turns: no manifest.json is ever written. The turn dir may
+        // still exist (work_state.json sidecar), but `list()` — and therefore
+        // the checkpoints panel / undo picker — shows nothing, and the sidecar
+        // dirs never count against the snapshot prune budget.
+        let checkpoint_root = dir.path().join(".wgenty-code").join("checkpoints");
+        let manifests: Vec<_> = std::fs::read_dir(&checkpoint_root)
+            .map(|it| {
+                it.filter_map(|e| e.ok())
+                    .filter(|e| e.path().join("manifest.json").is_file())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(
+            manifests.is_empty(),
+            "no snapshot manifests expected: {manifests:?}"
+        );
+        assert!(coord.checkpoint_store().list().unwrap().is_empty());
     }
 
     #[test]
