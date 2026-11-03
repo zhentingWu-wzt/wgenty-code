@@ -130,14 +130,17 @@ describe("NewSessionModal", () => {
       <NewSessionModal
         client={client}
         onClose={() => {}}
-        preset={{ mode: "existing", project: "/repo", path: "/repo/.worktrees/feat", branch: "feat" }}
+        preset={{
+          mode: "existing",
+          project: "/repo",
+          path: "/repo/.worktrees/feat",
+          branch: "feat",
+        }}
       />,
     );
 
     expect(screen.getByRole("radio", { name: /existing worktree/i })).toBeChecked();
-    await waitFor(() =>
-      expect(screen.getByRole("combobox")).toHaveValue("/repo/.worktrees/feat"),
-    );
+    await waitFor(() => expect(screen.getByRole("combobox")).toHaveValue("/repo/.worktrees/feat"));
   });
 
   it("worktree creation failure shows inline error and creates no session", async () => {
@@ -185,6 +188,55 @@ describe("NewSessionModal", () => {
       expect(e?.projectPath).toBe("/repo");
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("preset main into No Project hides the workspace picker and creates there", async () => {
+    const npPath = "/home/u/.wgenty-code/no-project";
+    const spy = stubFetch();
+    vi.stubGlobal("fetch", spy);
+    const user = userEvent.setup();
+    render(
+      <NewSessionModal
+        client={client}
+        onClose={() => {}}
+        preset={{ mode: "main", project: npPath, noProject: true }}
+      />,
+    );
+
+    // No workspace radios — the scratch workspace has nothing to choose. The
+    // Create button is immediately usable.
+    expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create/i })).toBeEnabled();
+
+    await user.type(screen.getByPlaceholderText(/session name/i), "scratch chat");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      const create = spy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/v1/sessions" && i?.method === "POST",
+      );
+      expect(create).toBeDefined();
+      expect(JSON.parse(create![1]!.body as string)).toEqual({
+        name: "scratch chat",
+        project_path: npPath,
+      });
+      const e = useSessionManager.getState().entries["d1"];
+      expect(e?.daemonId).toBe("d1");
+      expect(e?.projectPath).toBe(npPath);
+    });
+  });
+
+  it("a path merely ending in /no-project without the flag keeps the picker", async () => {
+    // Regression guard: the flag (from the daemon's ProjectInfo), not a path
+    // suffix, decides whether the workspace picker is hidden.
+    render(
+      <NewSessionModal
+        client={client}
+        onClose={() => {}}
+        preset={{ mode: "main", project: "/repos/no-project" }}
+      />,
+    );
+    expect(screen.getByRole("radiogroup")).toBeInTheDocument();
   });
 
   it("preset project scopes the worktree list and new-worktree creation to it", async () => {

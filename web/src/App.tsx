@@ -10,6 +10,7 @@ import { SessionStoreContext } from "./state/sessionContext";
 import { ConfirmProvider } from "./components/ui/ConfirmModal";
 import { StatusBar } from "./components/StatusBar";
 import { TurnStatus } from "./components/TurnStatus";
+import { WelcomeView } from "./components/WelcomeView";
 import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { SessionTabBar } from "./components/layout/SessionTabBar";
 import { ChatView } from "./features/chat/ChatView";
@@ -80,14 +81,21 @@ export function App() {
   const diffTabMeta =
     activeTabId && activeTabId.startsWith("diff:") ? diffTabs[activeTabId] : undefined;
 
+  // Set once the startup restore below finishes (success or not); gates the
+  // welcome screen so it doesn't flash before history restores.
+  const [booted, setBooted] = useState(false);
+
   // Bootstrap: restore the most recent daemon sessions so the left rail shows
   // real history on startup, and activate the newest one (TUI-aligned). When
   // the daemon is unreachable (e.g. browser before the user starts it) or there
-  // is no history yet, fall back to one fresh local session. Must live in an
-  // effect — creating a session during render is a render-phase side effect
-  // (react-hooks purity rules).
+  // is no history yet, boot into the welcome screen instead of creating a
+  // throwaway session. Must live in an effect — creating a session during
+  // render is a render-phase side effect (react-hooks purity rules).
   useEffect(() => {
-    if (useSessionManager.getState().activeId) return; // already bootstrapped
+    if (useSessionManager.getState().activeId) {
+      setBooted(true);
+      return; // already bootstrapped
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -136,17 +144,17 @@ export function App() {
           const st = useSessionManager.getState();
           if (st.order.length > 0) {
             st.setActive(st.order[0]);
+            setBooted(true);
             return;
           }
           // History existed but every load failed (daemon died mid-restore) —
-          // fall through to a fresh local session rather than a blank rail.
+          // fall through to the welcome screen rather than a blank rail.
         }
       } catch {
-        // Daemon unreachable at startup — fall through to a fresh session.
+        // Daemon unreachable at startup — welcome screen (user can start a
+        // session explicitly; it will bind to the daemon on first message).
       }
-      if (!cancelled && !useSessionManager.getState().activeId) {
-        useSessionManager.getState().createLocalSession();
-      }
+      if (!cancelled) setBooted(true);
     })();
     return () => {
       cancelled = true;
@@ -314,8 +322,14 @@ export function App() {
     }
   };
 
-  // First render (before the bootstrap effect runs): no session yet.
-  if (!activeStore) return null;
+  // Bootstrap still in flight (first frame(s) before history restore lands):
+  // keep the old blank state — rendering ChatView with a null store throws.
+  if (!activeStore && !booted) return null;
+
+  // No active session: welcome screen (fresh launch with no restorable
+  // history, or after the last tab closed). Rendered inside the shell so the
+  // sidebar/topbar/status bar stay available.
+  const showWelcome = !activeStore;
 
   return (
     <ConfirmProvider>
@@ -330,7 +344,9 @@ export function App() {
             <div className="flex min-w-0 flex-1 flex-col">
               <SessionTabBar />
               <main className="min-h-0 flex-1 overflow-y-auto">
-                {subagentTabMeta ? (
+                {showWelcome ? (
+                  <WelcomeView client={client} />
+                ) : subagentTabMeta ? (
                   <SubagentDetailPanel
                     key={subagentTabMeta.nodeId}
                     client={client}
@@ -355,29 +371,33 @@ export function App() {
               {/* 权限/问答卡片内嵌在聊天区与输入框之间（非 fixed 悬浮）：
                   出现时 flex 列让聊天区收缩让位，底部消息可滚动查看，
                   不遮挡任何内容。仅活跃会话有待处理项时占位。 */}
-              <PermissionModal client={client} />
-              <QuestionModal client={client} />
+              {!showWelcome && <PermissionModal client={client} />}
+              {!showWelcome && <QuestionModal client={client} />}
               {/* 轮次状态条：仅 turn phase（spinner/文案/耗时），紧贴输入框
                   上方提高可见性；连接/模型/模式等常驻信息仍在底部 StatusBar。 */}
-              <TurnStatus />
-              <Composer
-                onSend={(text) => {
-                  if (!activeId || !activeStore) return;
-                  const state = activeStore.getState();
-                  if (state.isRunning) {
-                    // A turn is active — queue the message and auto-send it
-                    // once the current turn finishes cleanly. Mirrors the
-                    // TUI pending_inputs / submit_input path.
-                    state.enqueueInput(text);
-                  } else {
-                    void runSessionTurn(client, activeId, text);
-                  }
-                }}
-                onStop={() => {
-                  if (activeId) void stopSessionTurn(client, activeId);
-                }}
-                onCommand={handleCommand}
-              />
+              {!showWelcome && (
+                <>
+                  <TurnStatus />
+                  <Composer
+                    onSend={(text) => {
+                      if (!activeId || !activeStore) return;
+                      const state = activeStore.getState();
+                      if (state.isRunning) {
+                        // A turn is active — queue the message and auto-send it
+                        // once the current turn finishes cleanly. Mirrors the
+                        // TUI pending_inputs / submit_input path.
+                        state.enqueueInput(text);
+                      } else {
+                        void runSessionTurn(client, activeId, text);
+                      }
+                    }}
+                    onStop={() => {
+                      if (activeId) void stopSessionTurn(client, activeId);
+                    }}
+                    onCommand={handleCommand}
+                  />
+                </>
+              )}
             </div>
           </SessionStoreContext.Provider>
           <RightRail client={client} />

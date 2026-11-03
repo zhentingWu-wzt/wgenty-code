@@ -63,6 +63,9 @@ interface SessionManagerState {
   createLocalSession: (name?: string, opts?: CreateSessionOptions) => string;
   removeSession: (id: string) => void;
   setActive: (id: string) => void;
+  /** Deactivate (no active session) — the center pane shows the welcome
+   *  screen. Used when the last tab closes. */
+  clearActive: () => void;
   setStatus: (id: string, status: SessionStatus) => void;
   setPreview: (id: string, text: string) => void;
   setDaemonId: (id: string, daemonId: string) => void;
@@ -135,6 +138,8 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
   setActive: (id) => {
     if (get().entries[id]) set({ activeId: id });
   },
+
+  clearActive: () => set({ activeId: null }),
 
   setStatus: (id, status) => set((s) => ({ entries: patchEntry(s.entries, id, { status }) })),
 
