@@ -21,8 +21,9 @@ impl SkillRootResolver {
     ///
     /// Priority (highest to lowest):
     /// 1. Project `.wgenty-code/skills/`
-    /// 2. User `~/.wgenty-code/skills/`
-    /// 3. User `~/.claude/skills/` (legacy Claude Code)
+    /// 2. Project `.claude/skills/` (legacy Claude Code, read-only compat)
+    /// 3. User `~/.wgenty-code/skills/`
+    /// 4. User `~/.claude/skills/` (legacy Claude Code, read-only compat)
     pub fn roots() -> Vec<ExternalSkillRoot> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -37,6 +38,12 @@ impl SkillRootResolver {
                 project_root.join(".wgenty-code").join("skills"),
                 ExternalSkillSource::ProjectWgentyCode {
                     root: project_root.join(".wgenty-code").join("skills"),
+                },
+            ),
+            ExternalSkillRoot::new(
+                project_root.join(".claude").join("skills"),
+                ExternalSkillSource::ProjectClaude {
+                    root: project_root.join(".claude").join("skills"),
                 },
             ),
             ExternalSkillRoot::new(
@@ -64,7 +71,7 @@ mod tests {
         let home = Path::new("/tmp/test-home");
         let project = Path::new("/tmp/test-project");
         let roots = SkillRootResolver::roots_with(home, project);
-        assert_eq!(roots.len(), 3, "should return exactly 3 roots");
+        assert_eq!(roots.len(), 4, "should return exactly 4 roots");
     }
 
     #[test]
@@ -72,7 +79,7 @@ mod tests {
         let home = Path::new("/tmp/test-home");
         let project = Path::new("/tmp/test-project");
         let roots = SkillRootResolver::roots_with(home, project);
-        assert_eq!(roots.len(), 3);
+        assert_eq!(roots.len(), 4);
 
         // First priority: project
         assert_eq!(
@@ -85,25 +92,36 @@ mod tests {
             ExternalSkillSource::ProjectWgentyCode { .. }
         ));
 
-        // Second priority: user wgenty-code
+        // Second priority: project claude (legacy compat)
         assert_eq!(
             roots[1].source.priority_rank(),
             1,
-            "second root should be user wgenty-code (rank 1)"
+            "second root should be project claude (rank 1)"
         );
         assert!(matches!(
             roots[1].source,
-            ExternalSkillSource::UserWgentyCode { .. }
+            ExternalSkillSource::ProjectClaude { .. }
         ));
 
-        // Third priority: user claude
+        // Third priority: user wgenty-code
         assert_eq!(
             roots[2].source.priority_rank(),
             2,
-            "third root should be user claude (rank 2)"
+            "third root should be user wgenty-code (rank 2)"
         );
         assert!(matches!(
             roots[2].source,
+            ExternalSkillSource::UserWgentyCode { .. }
+        ));
+
+        // Fourth priority: user claude (legacy compat)
+        assert_eq!(
+            roots[3].source.priority_rank(),
+            3,
+            "fourth root should be user claude (rank 3)"
+        );
+        assert!(matches!(
+            roots[3].source,
             ExternalSkillSource::UserClaude { .. }
         ));
     }
@@ -120,10 +138,14 @@ mod tests {
         );
         assert_eq!(
             roots[1].skills_root,
-            Path::new("/tmp/test-home/.wgenty-code/skills")
+            Path::new("/tmp/test-project/.claude/skills")
         );
         assert_eq!(
             roots[2].skills_root,
+            Path::new("/tmp/test-home/.wgenty-code/skills")
+        );
+        assert_eq!(
+            roots[3].skills_root,
             Path::new("/tmp/test-home/.claude/skills")
         );
     }
