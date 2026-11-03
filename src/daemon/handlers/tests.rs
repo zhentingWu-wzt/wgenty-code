@@ -334,6 +334,80 @@ async fn multi_project_session_routing() {
 }
 
 #[tokio::test]
+async fn no_project_session_routes_to_scratch_workspace() {
+    use crate::config::Settings;
+    use crate::daemon::models::CreateSessionRequest;
+    use crate::state::AppState;
+    use axum::extract::{Path, State};
+    use axum::Json;
+
+    let main = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.storage.working_dir = main.path().to_path_buf();
+    let mut state = DaemonState::new(AppState::new(settings)).await;
+    // Isolate the registry; enable No Project at a tempdir scratch root.
+    let reg_store = tempfile::tempdir().unwrap();
+    let registry = crate::daemon::projects::ProjectRegistry::load(
+        main.path().to_path_buf(),
+        reg_store.path().join("projects.json"),
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_canon = scratch.path().canonicalize().unwrap();
+    registry.enable_no_project_at(scratch.path().to_path_buf());
+    state.projects = registry;
+    let state = Arc::new(state);
+
+    // The scratch root resolves like any registered project.
+    assert_eq!(
+        state.projects.resolve(scratch_canon.to_str().unwrap()),
+        Some(scratch_canon.clone())
+    );
+
+    // Creating with project_path = the scratch root stores under it.
+    let Json(created) = create_session(
+        State(state.clone()),
+        Json(CreateSessionRequest {
+            name: Some("scratch".to_string()),
+            project_path: Some(scratch_canon.to_string_lossy().to_string()),
+        }),
+    )
+    .await
+    .expect("create_session into No Project");
+    let sid = created.id;
+
+    assert!(crate::utils::project_sessions_dir(&scratch_canon)
+        .join(format!("{sid}.json"))
+        .is_file());
+    assert!(!crate::utils::project_sessions_dir(main.path())
+        .join(format!("{sid}.json"))
+        .is_file());
+
+    // list_sessions aggregates it with the scratch root as project_path.
+    let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
+    let entry = listed.iter().find(|s| s.id == sid).expect("listed");
+    assert_eq!(
+        entry.project_path.as_deref(),
+        Some(scratch_canon.to_string_lossy().as_ref())
+    );
+
+    // The session's effective working root is the scratch root — its file
+    // tools are policy-locked there instead of the main project.
+    assert_eq!(state.effective_session_root(&sid).await, scratch_canon);
+
+    // The scratch workspace cannot be removed via the endpoint contract.
+    assert!(state
+        .projects
+        .remove(scratch_canon.to_str().unwrap())
+        .is_err());
+
+    // delete routes to the owning store.
+    let _ = delete_session(State(state.clone()), Path(sid.clone()))
+        .await
+        .expect("delete routes to No Project store");
+    assert!(state.resolve_session(&sid).await.is_none());
+}
+
+#[tokio::test]
 async fn update_session_upsert_preserves_path_id_across_saves() {
     use crate::config::Settings;
     use crate::daemon::models::{SessionResponse, UpdateSessionRequest};

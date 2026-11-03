@@ -501,6 +501,9 @@ export interface ProjectInfo {
   path: string;
   name: string;
   is_main: boolean;
+  /** The synthetic "No Project" scratch workspace (welcome-screen sessions).
+   *  Never removable, never git-backed — hide remove/worktree actions. */
+  is_no_project: boolean;
   /** Non-git projects reject the worktree endpoints (400), so the UI must
    *  skip worktree calls and git-only actions for them. */
   is_git_repo: boolean;
