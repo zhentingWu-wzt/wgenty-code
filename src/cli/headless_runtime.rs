@@ -386,7 +386,8 @@ pub async fn run_oneshot(
         use crate::mcp::codegraph::{probe_install_state, CodegraphInstallState};
         let state = probe_install_state(&settings);
         if matches!(state, CodegraphInstallState::Ready) {
-            let config = crate::config::McpConfig::codegraph();
+            let config =
+                crate::config::McpConfig::codegraph_for_project(&settings.storage.working_dir);
             match crate::mcp::client::McpClientSession::spawn(&config).await {
                 Ok(session) => match session.list_tools().await {
                     Ok(tools) => {
