@@ -8,6 +8,11 @@ use thiserror::Error;
 pub enum ExternalSkillSource {
     /// Skill bundled in the project's `.wgenty-code/skills/` directory.
     ProjectWgentyCode { root: PathBuf },
+    /// Skill from the project's legacy Claude Code directory `.claude/skills/`.
+    /// Read-only compatibility: installers following the Claude Code
+    /// ecosystem convention (or agents acting on their training priors)
+    /// write here; wgenty-code consumes but never writes to this root.
+    ProjectClaude { root: PathBuf },
     /// Skill from the user's home directory `.wgenty-code/skills/`.
     UserWgentyCode { root: PathBuf },
     /// Skill from the user's Claude Code skills directory `~/.claude/skills/`.
@@ -27,10 +32,11 @@ impl ExternalSkillSource {
     pub fn priority_rank(&self) -> u8 {
         match self {
             Self::ProjectWgentyCode { .. } => 0,
-            Self::UserWgentyCode { .. } => 1,
-            Self::UserClaude { .. } => 2,
-            Self::PluginCache { .. } => 3,
-            Self::Configured { .. } => 4,
+            Self::ProjectClaude { .. } => 1,
+            Self::UserWgentyCode { .. } => 2,
+            Self::UserClaude { .. } => 3,
+            Self::PluginCache { .. } => 4,
+            Self::Configured { .. } => 5,
         }
     }
 
@@ -38,6 +44,7 @@ impl ExternalSkillSource {
     pub fn label(&self) -> String {
         match self {
             Self::ProjectWgentyCode { root } => format!("project:{}", root.display()),
+            Self::ProjectClaude { root } => format!("project-claude:{}", root.display()),
             Self::UserWgentyCode { root } => format!("user:{}", root.display()),
             Self::UserClaude { root } => format!("user-claude:{}", root.display()),
             Self::PluginCache {
@@ -58,6 +65,7 @@ impl ExternalSkillSource {
     pub fn root(&self) -> &Path {
         match self {
             Self::ProjectWgentyCode { root }
+            | Self::ProjectClaude { root }
             | Self::UserWgentyCode { root }
             | Self::UserClaude { root }
             | Self::PluginCache { root, .. }
@@ -238,7 +246,7 @@ mod tests {
         let source = ExternalSkillSource::UserClaude {
             root: PathBuf::from("/home/user/.claude/skills"),
         };
-        assert_eq!(source.priority_rank(), 2);
+        assert_eq!(source.priority_rank(), 3);
     }
 
     #[test]
@@ -266,6 +274,19 @@ mod tests {
         let json = serde_json::to_string(&source).unwrap();
         let deserialized: ExternalSkillSource = serde_json::from_str(&json).unwrap();
         assert_eq!(source, deserialized);
-        assert_eq!(deserialized.priority_rank(), 2);
+        assert_eq!(deserialized.priority_rank(), 3);
+    }
+
+    #[test]
+    fn test_project_claude_variant_ranked_below_project_wgenty() {
+        let source = ExternalSkillSource::ProjectClaude {
+            root: PathBuf::from("/repo/.claude/skills"),
+        };
+        let project_wgenty = ExternalSkillSource::ProjectWgentyCode {
+            root: PathBuf::from("/repo/.wgenty-code/skills"),
+        };
+        assert_eq!(source.priority_rank(), 1);
+        assert!(source.priority_rank() > project_wgenty.priority_rank());
+        assert!(source.label().starts_with("project-claude:"));
     }
 }

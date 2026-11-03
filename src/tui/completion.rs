@@ -98,8 +98,9 @@ impl CompletionEngine {
     }
 
     /// Scan skills directories for completion (both @skills and /commands).
-    /// Scans project `.wgenty-code/skills/`, user `~/.wgenty-code/skills/`,
-    /// and the legacy `~/.claude/skills/` directory.
+    /// Scans project `.wgenty-code/skills/`, project `.claude/skills/` (legacy
+    /// compat), user `~/.wgenty-code/skills/`, and the legacy
+    /// `~/.claude/skills/` directory.
     pub fn load(command_registry_commands: &[CommandEntry]) -> Self {
         let mut skills = Vec::new();
         let mut commands = command_registry_commands.to_vec();

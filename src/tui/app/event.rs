@@ -366,7 +366,15 @@ impl App {
 
                 // Load skills inventory (including external skills)
                 let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
+                // load_from_dirs appends "skills" to each base dir, so pass
+                // base dirs (resolver returns .../skills paths).
+                let skills_dirs = crate::knowledge::SkillRootResolver::roots_with(
+                    &home,
+                    &project_root,
+                )
+                .iter()
+                .map(|r| r.skills_root.parent().unwrap_or(&r.skills_root).to_path_buf())
+                .collect::<Vec<_>>();
                 let skill_loader =
                     crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
                 let mut skill_inventory: Vec<crate::prompts::SkillEntry> = Vec::new();

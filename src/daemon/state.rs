@@ -805,9 +805,16 @@ impl DaemonState {
         // Initialize skill loader (needed before registry so TaskTool can use it).
         let skill_loader = {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+            // load_from_dirs appends "skills" to each base dir; the resolver
+            // convention is <base>/.wgenty-code/skills (user) and
+            // <project>/.wgenty-code/skills (project).
             let base_dirs = vec![
                 home.join(".wgenty-code"),
-                app_state.settings.storage.working_dir.clone(),
+                app_state
+                    .settings
+                    .storage
+                    .working_dir
+                    .join(".wgenty-code"),
             ];
             let loader = SkillLoader::load_from_dirs(&base_dirs);
             Arc::new(loader)
