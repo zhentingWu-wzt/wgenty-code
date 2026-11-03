@@ -279,17 +279,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn undo_unknown_turn_errors() {
+    async fn undo_turn_without_snapshot_reports_skip() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(CheckpointStore::new(tmp.path()));
         let mgr = CheckpointManager::new(store);
-        let err = mgr
-            .undo(Some("does-not-exist"))
-            .await
-            .expect_err("unknown turn");
-        assert!(
-            err.contains("rewind failed") || err.contains("manifest"),
-            "unexpected error: {err}"
-        );
+        // Lazy snapshots: a turn without captured files never materialized a
+        // manifest. undo reports a skip (mirrors rewind_range semantics) —
+        // "missing manifest" no longer implies an unknown turn.
+        let summary = mgr.undo(Some("does-not-exist")).await.expect("undo");
+        assert!(summary.contains("skipped"), "unexpected summary: {summary}");
     }
 }

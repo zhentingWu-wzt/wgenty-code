@@ -295,6 +295,11 @@ impl CheckpointStore {
     /// human-readable summary string (kept for the `undo` tool/HTTP endpoint
     /// that pre-dates [`rewind_range`](Self::rewind_range)).
     pub fn rewind(&self, turn_id: &str) -> Result<String> {
+        if !self.manifest_path(turn_id).exists() {
+            // Lazy snapshot never materialized (pure-chat turn): nothing to
+            // restore. Match rewind_range's skip semantics instead of erroring.
+            return Ok(format!("Rewind {turn_id}: no snapshot (skipped, 0 files)"));
+        }
         let manifest = self.read_manifest(turn_id)?;
         let outcome = self.rewind_manifest(turn_id, &manifest);
         Ok(format!(
@@ -317,6 +322,12 @@ impl CheckpointStore {
         let json = serde_json::to_string_pretty(state)
             .with_context(|| format!("serialize work_state for turn {turn_id}"))?;
         let path = self.turn_dir(turn_id).join("work_state.json");
+        // Lazy snapshots: the turn dir may not exist yet (pure-chat turn with
+        // no captured files). Create it on demand instead of failing.
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create turn dir for work_state: {turn_id}"))?;
+        }
         std::fs::write(&path, json)
             .with_context(|| format!("write work_state.json for turn {turn_id}"))?;
         Ok(())
@@ -339,7 +350,12 @@ impl CheckpointStore {
         if !self.root.exists() {
             return Ok(0);
         }
-        let mut entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        // (path, mtime, is_snapshot): only dirs with a manifest count toward
+        // the keep_n budget. Pure-chat turns may still carry a work_state.json
+        // sidecar (no manifest); those are kept while newer than the oldest
+        // retained snapshot and deleted once older, so chat turns never evict
+        // real file snapshots from the budget.
+        let mut entries: Vec<(PathBuf, std::time::SystemTime, bool)> = Vec::new();
         for entry in std::fs::read_dir(&self.root)
             .with_context(|| format!("read checkpoints dir: {}", self.root.display()))?
         {
@@ -352,12 +368,22 @@ impl CheckpointStore {
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            entries.push((path, mtime));
+            let is_snapshot = path.join("manifest.json").is_file();
+            entries.push((path, mtime, is_snapshot));
         }
         entries.sort_by_key(|b| std::cmp::Reverse(b.1));
         let mut deleted = 0;
-        for (path, _) in entries.iter().skip(keep_n) {
-            if std::fs::remove_dir_all(path).is_ok() {
+        let mut kept_snapshots = 0;
+        for (path, _, is_snapshot) in &entries {
+            let retain = if *is_snapshot {
+                kept_snapshots += 1;
+                kept_snapshots <= keep_n
+            } else {
+                // Sidecar-only dirs ride along: once the snapshot budget is
+                // exhausted everything this old goes, snapshots included.
+                kept_snapshots < keep_n
+            };
+            if !retain && std::fs::remove_dir_all(path).is_ok() {
                 deleted += 1;
             }
         }
@@ -661,6 +687,32 @@ mod tests {
         assert_eq!(deleted, 3);
         let remaining = store.list().unwrap();
         assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn prune_sidecar_only_dirs_do_not_consume_snapshot_budget() {
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        // 3 real snapshots (with a captured file) interleaved with 4 pure-chat
+        // sidecar-only dirs (work_state.json, no manifest).
+        let work_state = crate::org_graph::WorkState::default();
+        for i in 0..7 {
+            let id = format!("t{}", i);
+            if i % 2 == 0 {
+                write_file(dir.path(), "a.txt", "v");
+                store.try_capture_file(&id, "a.txt").unwrap();
+            } else {
+                store.capture_work_state(&id, &work_state).unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let deleted = store.prune(2).unwrap();
+        // Snapshots t0/t2 evicted; sidecars t1/t3 ride along (older than the
+        // oldest retained snapshot t4). t5/t6 (incl. sidecar t5) survive.
+        assert_eq!(deleted, 4, "expected t0..t3 to be pruned");
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|i| i.turn_id == "t6" || i.turn_id == "t4"));
     }
 
     #[test]
