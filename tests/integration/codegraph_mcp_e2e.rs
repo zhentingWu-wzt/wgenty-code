@@ -21,8 +21,7 @@ async fn third_party_codegraph_is_discovered_and_called_over_mcp() {
         .expect("start codegraph init");
     assert!(status.success(), "codegraph init should succeed");
 
-    let mut config = McpConfig::codegraph();
-    config.cwd = Some(project.path().to_path_buf());
+    let config = McpConfig::codegraph_for_project(project.path());
     let session = McpClientSession::spawn(&config)
         .await
         .expect("connect to CodeGraph MCP server");
@@ -31,21 +30,28 @@ async fn third_party_codegraph_is_discovered_and_called_over_mcp() {
         .list_tools()
         .await
         .expect("discover CodeGraph tools");
-    let node_tool = tools
+    // CodeGraph >= 1.4 consolidated its tool surface down to the single
+    // `codegraph_explore` tool (older builds exposed codegraph_node/_search/
+    // _callers/...). Asserting on the consolidated name keeps this test
+    // meaningful across both old and new server versions.
+    let explore_tool = tools
         .iter()
-        .find(|tool| tool.name == "codegraph_node")
-        .expect("CodeGraph should expose codegraph_node");
-    let symbol_key = if node_tool.input_schema["properties"].get("symbol").is_some() {
-        "symbol"
+        .find(|tool| tool.name == "codegraph_explore")
+        .expect("CodeGraph should expose codegraph_explore");
+    let symbol_key = if explore_tool.input_schema["properties"]
+        .get("query")
+        .is_some()
+    {
+        "query"
     } else {
-        "name"
+        "symbol"
     };
     let mut arguments = serde_json::Map::new();
     arguments.insert(symbol_key.to_string(), json!("known_symbol"));
     let result = session
-        .call_tool("codegraph_node", serde_json::Value::Object(arguments))
+        .call_tool("codegraph_explore", serde_json::Value::Object(arguments))
         .await
-        .expect("call codegraph_node through MCP");
+        .expect("call codegraph_explore through MCP");
     let rendered = result.to_string();
     assert!(rendered.contains("known_symbol"), "result: {rendered}");
     assert!(rendered.contains("main.rs"), "result: {rendered}");
