@@ -84,24 +84,27 @@ async fn approval_request_response_roundtrip() {
 async fn worktree_isolation_parallel_checkouts() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
-    for (k, v) in [("user.name", "t"), ("user.email", "t@t.test")] {
-        let _ = std::process::Command::new("git")
-            .args(["config", "--global", k, v])
-            .status();
-    }
-    let _ = std::process::Command::new("git")
-        .arg("init")
-        .current_dir(root)
-        .status();
+    // Identity is set per-repo (not `--global`) so the test never rewrites the
+    // runner's real ~/.gitconfig. See init_repo() in src/teams/worktree.rs.
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git should be installed");
+        assert!(
+            out.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&(out.stderr))
+        );
+    };
+    run(&["init", "-b", "main"]);
+    run(&["config", "user.name", "t"]);
+    run(&["config", "user.email", "t@t.test"]);
     std::fs::write(root.join("README.md"), "init").unwrap();
-    let _ = std::process::Command::new("git")
-        .args(["add", "."])
-        .current_dir(root)
-        .status();
-    let _ = std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(root)
-        .status();
+    run(&["add", "."]);
+    run(&["commit", "-m", "init"]);
 
     // Two worktrees coexist.
     let wt_a = WorktreeIsolation::create(root, "agent-A", None).unwrap();
