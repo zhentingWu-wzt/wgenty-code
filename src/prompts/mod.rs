@@ -575,6 +575,14 @@ pub fn assemble_instructions(
 
 The following skills are available. Use the `load_skill` tool to read a skill's full instructions when needed.
 
+## Installing new skills
+
+When asked to install a new skill, write it to the wgenty-code skill directories (NOT `.claude/`):
+- Project-scoped: `.wgenty-code/skills/<name>/SKILL.md` (relative to the project root)
+- User-scoped: `~/.wgenty-code/skills/<name>/SKILL.md`
+
+Each skill is a directory containing a `SKILL.md` with `name` and `description` frontmatter, plus optional supporting files.
+
 {}",
             skills_lines.join("\n")
         );

@@ -487,6 +487,7 @@ pub async fn run_rlm_pipeline(
                     },
                     Err(_) => crate::agent::ChildTerminal::Failed {
                         code: "subagent_failed".to_string(),
+                        message: "sub-task failed".to_string(),
                         partial_result: None,
                     },
                 };
@@ -765,6 +766,7 @@ pub async fn run_rlm_pipeline(
                         },
                         Err(_) => crate::agent::ChildTerminal::Failed {
                             code: "subagent_failed".to_string(),
+                            message: "replacement sub-task failed".to_string(),
                             partial_result: None,
                         },
                     };

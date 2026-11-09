@@ -123,6 +123,27 @@ impl McpConfig {
             .with_env("NODE_OPTIONS", "--max-old-space-size=8192")
     }
 
+    /// CodeGraph configuration bound to an explicit project root.
+    ///
+    /// CodeGraph resolves which `.codegraph/` index to serve from its working
+    /// directory when `--path` is absent. That is fragile in two ways: a
+    /// caller-launched process may inherit an unrelated CWD (e.g. a shared
+    /// daemon serving multiple projects), and editors may pass an unexpanded
+    /// placeholder like `${workspaceFolder}` that silently falls back to the
+    /// nearest index. This constructor pins both anchors:
+    ///
+    /// - `cwd` is set to `root` so index discovery and relative paths resolve
+    ///   against the intended project even without `--path` support;
+    /// - `--path <root>` is passed explicitly so project ownership does not
+    ///   depend on process CWD at all.
+    pub fn codegraph_for_project(root: &std::path::Path) -> Self {
+        let mut config = Self::codegraph();
+        config.cwd = Some(root.to_path_buf());
+        config.args.push("--path".to_string());
+        config.args.push(root.to_string_lossy().to_string());
+        config
+    }
+
     /// Add an argument
     pub fn with_arg(mut self, arg: &str) -> Self {
         self.args.push(arg.to_string());
@@ -133,5 +154,34 @@ impl McpConfig {
     pub fn with_env(mut self, key: &str, value: &str) -> Self {
         self.env.insert(key.to_string(), value.to_string());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codegraph_for_project_pins_cwd_and_path() {
+        let root = std::path::Path::new("/tmp/demo-project");
+        let config = McpConfig::codegraph_for_project(root);
+
+        assert_eq!(config.name, "codegraph");
+        assert_eq!(config.cwd.as_deref(), Some(root));
+        assert_eq!(
+            config.args,
+            vec![
+                "serve".to_string(),
+                "--mcp".to_string(),
+                "--path".to_string(),
+                "/tmp/demo-project".to_string()
+            ]
+        );
+        // Heap guard for the Node.js indexer must survive the fork off
+        // `McpConfig::codegraph()`.
+        assert_eq!(
+            config.env.get("NODE_OPTIONS"),
+            Some(&"--max-old-space-size=8192".to_string())
+        );
     }
 }

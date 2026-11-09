@@ -20,6 +20,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/sessions", description: "Open sessions panel" },
   { name: "/memory", description: "Open memory panel" },
   { name: "/undo", description: "Open checkpoints panel" },
+  { name: "/reload-skills", description: "Rescan skill directories without restarting" },
 ];
 
 /** Dynamic skill commands (module-level cache; set once at app bootstrap). */

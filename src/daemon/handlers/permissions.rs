@@ -119,6 +119,12 @@ pub async fn set_permission_mode(
     state
         .permission_modes
         .set(session_root, body.mode, effective);
+    // Best-effort persistence so the mode survives daemon restarts. In-memory
+    // state stays authoritative; a failed write only costs durability (warned
+    // here), never the current session's mode.
+    if let Err(e) = state.permission_modes.persist() {
+        tracing::warn!(error = %e, "persist permission modes failed");
+    }
     tracing::info!(
         mode = ?body.mode,
         effective_mode = ?effective,

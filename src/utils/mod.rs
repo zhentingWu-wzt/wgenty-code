@@ -17,7 +17,14 @@ use std::path::{Path, PathBuf};
 
 /// Get the home directory
 pub fn home_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+    // `WGENTY_HOME` overrides the user home directory. On Windows,
+    // dirs::home_dir() prefers the Known Folder API over USERPROFILE, so env
+    // injection must go through this explicit override (same rationale as
+    // `Settings::config_path`).
+    std::env::var_os("WGENTY_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Get the config directory

@@ -272,4 +272,66 @@ describe("ProjectTree", () => {
     await screen.findByText("wgenty-code");
     expect(screen.queryByRole("button", { name: /remove project/i })).toBeNull();
   });
+
+  it("renders the No Project workspace with sessions and no remove button", async () => {
+    const npPath = "/home/u/.wgenty-code/no-project";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/v1/projects") {
+          return new Response(
+            JSON.stringify([
+              {
+                path: "/repo/wgenty-code",
+                name: "wgenty-code",
+                is_main: true,
+                is_no_project: false,
+                is_git_repo: true,
+                added_at: "2026-01-01T00:00:00Z",
+              },
+              {
+                path: npPath,
+                name: "No Project",
+                is_main: false,
+                is_no_project: true,
+                is_git_repo: false,
+                added_at: "2026-01-01T00:00:00Z",
+              },
+              {
+                path: "/repo/docs",
+                name: "docs",
+                is_main: false,
+                is_no_project: false,
+                is_git_repo: true,
+                added_at: "2026-01-01T00:00:00Z",
+              },
+            ]),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify([]), { status: 200 });
+      }),
+    );
+
+    const m = useSessionManager.getState();
+    m.createLocalSession("main chat");
+    m.createLocalSession("scratch chat", {
+      projectPath: npPath,
+    });
+
+    render(<ProjectTree client={client} />);
+
+    expect(await screen.findByText("No Project")).toBeInTheDocument();
+    expect(screen.getByText("scratch chat")).toBeInTheDocument();
+    expect(screen.getByText("main chat")).toBeInTheDocument();
+    // Scratch description shown; no remove-project button for the pseudo one.
+    expect(
+      screen.getByText(/Detached scratch space for sessions without a project/),
+    ).toBeInTheDocument();
+    expect(screen.queryByTitle("Remove project No Project")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Remove project docs")).toBeInTheDocument();
+    // The No Project node exposes its own "+ session" action.
+    expect(screen.getByTitle("New session in No Project")).toBeInTheDocument();
+  });
 });

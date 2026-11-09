@@ -366,7 +366,18 @@ impl App {
 
                 // Load skills inventory (including external skills)
                 let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
+                // load_from_dirs appends "skills" to each base dir, so pass
+                // base dirs (resolver returns .../skills paths).
+                let skills_dirs =
+                    crate::knowledge::SkillRootResolver::roots_with(&home, &project_root)
+                        .iter()
+                        .map(|r| {
+                            r.skills_root
+                                .parent()
+                                .unwrap_or(&r.skills_root)
+                                .to_path_buf()
+                        })
+                        .collect::<Vec<_>>();
                 let skill_loader =
                     crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
                 let mut skill_inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
@@ -992,6 +1003,45 @@ impl App {
             }
             AppEvent::ModelSwitchFailed(msg) => {
                 self.push_system_message(format!("Model switch failed: {msg}"));
+                self.phase = crate::state::agent_phase::AgentPhase::Idle;
+            }
+            AppEvent::SkillsReloadRequested => {
+                // 1) Ask the daemon to rescan (serves /skills API, the
+                //    load_skill tool, and server-side sessions).
+                // 2) Re-run the local discovery pipeline so this TUI's
+                //    system prompt inventory + completion engine stay in
+                //    sync with disk. Both run off-thread; results land via
+                //    SkillsReloaded / SkillsReady.
+                let client = self.daemon_client.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match client.reload_skills().await {
+                        Ok(count) => {
+                            let _ = event_tx.send(AppEvent::SkillsReloaded { count });
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(AppEvent::SkillsReloadFailed(format!("{e:#}")));
+                        }
+                    }
+                });
+                {
+                    let event_tx = self.event_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let payload = super::discover_skills_payload();
+                        let _ = event_tx.send(AppEvent::SkillsReady(Box::new(payload)));
+                    });
+                }
+            }
+            AppEvent::SkillsReloaded { count } => {
+                self.push_system_message(format!(
+                    "✓ Skills reloaded ({count} available). New/removed skills are now active."
+                ));
+                self.phase = crate::state::agent_phase::AgentPhase::Idle;
+            }
+            AppEvent::SkillsReloadFailed(msg) => {
+                self.push_system_message(format!(
+                    "✗ Skills reload failed: {msg}\n  (local TUI inventory was still refreshed)"
+                ));
                 self.phase = crate::state::agent_phase::AgentPhase::Idle;
             }
             AppEvent::AgentLocalView { view, generation } => {

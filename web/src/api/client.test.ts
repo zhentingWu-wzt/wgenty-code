@@ -50,6 +50,16 @@ describe("DaemonClient command-center endpoints", () => {
     expect(skills[0].name).toBe("alpha");
   });
 
+  it("reloadSkills POSTs /skills/reload", async () => {
+    const spy = mockFetch({ reloaded: true, count: 2, skills: [] });
+    const res = await client.reloadSkills();
+    const [url, init] = apiCall(spy);
+    expect(url).toBe("/api/v1/skills/reload");
+    expect(init.method).toBe("POST");
+    expect(res.count).toBe(2);
+    expect(res.reloaded).toBe(true);
+  });
+
   it("listCheckpoints GETs /checkpoints", async () => {
     mockFetch([{ turn_id: "t1", created_at: 123, file_count: 2 }]);
     const cps = await client.listCheckpoints();

@@ -481,9 +481,9 @@ pub struct RootToolPort {
     /// tool paths resolve there, and used as the permission-policy root so
     /// validation and execution never diverge.
     root: PathBuf,
-    /// Per-project checkpoint handles (snapshots live under the project the
-    /// session belongs to, not the daemon's main project).
-    checkpoint_manager: Arc<crate::tools::CheckpointManager>,
+    /// Per-project checkpoint store (snapshots live under the project the
+    /// session belongs to, not the daemon's main project; materializes lazily
+    /// on the first file capture).
     checkpoint_store: Arc<crate::tools::CheckpointStore>,
     /// Per-project task routing: `task_management` calls are intercepted and
     /// delegated to the session's project task manager instead of the
@@ -513,7 +513,7 @@ impl RootToolPort {
         root: PathBuf,
         agent: AgentExecutionContext,
     ) -> Self {
-        let (checkpoint_manager, checkpoint_store) = state.checkpoints_for_project(&root);
+        let checkpoint_store = state.checkpoints_for_project(&root).1;
         Self {
             registry: Arc::clone(&state.tool_registry),
             policy: ToolPermissionPolicy::new(root.clone()),
@@ -523,7 +523,6 @@ impl RootToolPort {
             agent,
             permission_modes: state.permission_modes.clone(),
             root,
-            checkpoint_manager,
             checkpoint_store,
             task_router: Arc::clone(&state.task_router),
             session_id: session_id.to_string(),
@@ -548,7 +547,6 @@ impl RootToolPort {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         Self {
-            checkpoint_manager: registry.checkpoint_manager.clone(),
             checkpoint_store: registry.checkpoint_store.clone(),
             registry,
             policy: ToolPermissionPolicy::new(policy_root.clone()),
@@ -739,14 +737,6 @@ impl ToolPort for RootToolPort {
             .invocation_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        // Ensure the turn snapshot exists when the caller supplies a turn id
-        // (mirrors the /tools/execute handler; Plan mode skips capture inside
-        // maybe_capture_pre_edit via EffectiveMode::Plan).
-        if let Some(turn_id) = req.turn_id.as_deref() {
-            if let Err(e) = self.checkpoint_manager.begin_turn(turn_id) {
-                tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
-            }
-        }
         let effective_mode = self.permission_modes.get(&self.root).effective_mode;
         let tool_context = ToolContext {
             agent: &self.agent,
@@ -2016,6 +2006,29 @@ async fn run_session_turn(
         .with_codegraph_state(crate::mcp::codegraph::probe_install_state_for(
             &cwd, &settings,
         ));
+
+    // 5a-0. Skill inventory: same exposure filter as the TUI's startup
+    // discovery (SkillLoader + external registry, should_expose_skill_by_
+    // default). The daemon's shared handle refreshes on TTL, so each new
+    // turn sees newly installed skills without a daemon restart.
+    {
+        let skill_loader = tokio::task::block_in_place(|| state.skill_loader.current());
+        let mut inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
+        for name in skill_loader.skill_names() {
+            if !crate::knowledge::should_expose_skill_by_default(&name) {
+                continue;
+            }
+            if let Some(skill) = skill_loader.load_skill(&name) {
+                inventory.push(crate::prompts::SkillEntry {
+                    name,
+                    description: skill.description.clone(),
+                });
+            }
+        }
+        if !inventory.is_empty() {
+            prompt_ctx = prompt_ctx.with_skills(inventory);
+        }
+    }
 
     // 5a. Per-turn memory recall (mirrors TUI turn.rs:229). Daemon previously
     // skipped this — a functional gap. Now recalls cross-session memories and

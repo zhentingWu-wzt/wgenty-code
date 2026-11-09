@@ -616,7 +616,10 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SubagentTraceProgress(..)
         | AppEvent::ServerPermissionResolved { .. }
         | AppEvent::ServerQuestionResolved { .. }
-        | AppEvent::ModelSwitchFailed(_) => None,
+        | AppEvent::ModelSwitchFailed(_)
+        | AppEvent::SkillsReloadRequested
+        | AppEvent::SkillsReloaded { .. }
+        | AppEvent::SkillsReloadFailed(_) => None,
     }
 }
 

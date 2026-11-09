@@ -286,6 +286,16 @@ impl App {
             }
             return;
         }
+        // /skills — force the daemon to rescan its skill directories so
+        // newly installed/removed skills appear without a daemon restart.
+        // The daemon reload runs in the async loop; the local prompt/completion
+        // refresh is re-derived from disk by the SkillsReloaded handler.
+        if slash == "/skills" {
+            self.push_system_message("🔄 Reloading skills…");
+            let _ = self.event_tx.send(AppEvent::SkillsReloadRequested);
+            self.phase = AgentPhase::Idle;
+            return;
+        }
         if slash == "/server-side" {
             self.server_side_loop = !self.server_side_loop;
             self.push_system_message(format!(

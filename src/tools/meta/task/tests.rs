@@ -256,7 +256,7 @@ fn test_small_model_never_complex() {
 #[test]
 fn test_token_budget_schema_description_is_accurate() {
     let schema = TaskTool::new(
-        Settings::default(),
+        std::sync::Arc::new(std::sync::RwLock::new(Settings::default())),
         std::sync::Weak::new(),
         std::sync::Arc::new(crate::agent::AgentCoordinator::new(5, 3)),
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -368,7 +368,7 @@ use crate::tools::context::{AgentId, SessionId, ToolContext, ToolInvocationId};
 fn task_tool_with_coordinator(max_concurrent: usize, max_depth: usize) -> TaskTool {
     let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
     TaskTool::new(
-        Settings::default(),
+        std::sync::Arc::new(std::sync::RwLock::new(Settings::default())),
         std::sync::Arc::downgrade(&registry),
         std::sync::Arc::new(AgentCoordinator::new(max_concurrent, max_depth)),
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -393,7 +393,7 @@ async fn root_task_fixture(
     let coordinator = std::sync::Arc::new(AgentCoordinator::new(max_concurrent, max_depth));
     let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
     let tool = TaskTool::new(
-        Settings::default(),
+        std::sync::Arc::new(std::sync::RwLock::new(Settings::default())),
         std::sync::Arc::downgrade(&registry),
         coordinator,
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -497,7 +497,7 @@ async fn forged_identity_fields_cannot_bypass_depth_limit() {
     // running parent. (In production the daemon does this via ensure_root.)
     let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
     let tool = TaskTool::new(
-        Settings::default(),
+        std::sync::Arc::new(std::sync::RwLock::new(Settings::default())),
         std::sync::Arc::downgrade(&registry),
         coordinator.clone(),
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -555,7 +555,7 @@ async fn nested_parent_depth_limit_triggers_structural_self_execute() {
     assert!(child.parent_id.is_some());
 
     let tool = TaskTool::new(
-        Settings::default(),
+        std::sync::Arc::new(std::sync::RwLock::new(Settings::default())),
         std::sync::Arc::downgrade(&registry),
         coordinator.clone(),
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),

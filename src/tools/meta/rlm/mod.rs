@@ -20,7 +20,7 @@ pub use pipeline::{extract_json, run_rlm_pipeline, RlmResult};
 pub use planner::{Planner, SubTask};
 
 use crate::agent::AgentCoordinator;
-use crate::config::Settings;
+use crate::config::watcher::SettingsHandle;
 use crate::progress::{SubagentProgress, SubagentStatus};
 use crate::tools::context::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
@@ -30,7 +30,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub struct RlmDelegateTool {
-    settings: Settings,
+    /// Shared hot-reloadable settings; read per delegation so `/model`
+    /// switches and config-file reloads take effect without a restart.
+    settings_handle: SettingsHandle,
     tool_registry: std::sync::Weak<ToolRegistry>,
     coordinator: Arc<AgentCoordinator>,
     progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
@@ -39,14 +41,14 @@ pub struct RlmDelegateTool {
 
 impl RlmDelegateTool {
     pub fn new(
-        settings: Settings,
+        settings_handle: SettingsHandle,
         tool_registry: std::sync::Weak<ToolRegistry>,
         coordinator: Arc<AgentCoordinator>,
         progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
         transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
     ) -> Self {
         Self {
-            settings,
+            settings_handle,
             tool_registry,
             coordinator,
             progress_store,
@@ -138,8 +140,14 @@ impl Tool for RlmDelegateTool {
                 },
             );
         }
+        // Clone settings into a local so the read guard drops before the await.
+        let settings_snapshot = self
+            .settings_handle
+            .read()
+            .expect("lock poisoned: settings")
+            .clone();
         let result = run_rlm_pipeline(
-            &self.settings,
+            &settings_snapshot,
             tool_registry,
             self.coordinator.clone(),
             context.agent,

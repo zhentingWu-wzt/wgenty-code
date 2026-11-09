@@ -331,93 +331,13 @@ impl App {
         let workflow_state: Option<Arc<RwLock<String>>> = None;
         let external_skill_registry: Option<crate::knowledge::ExternalSkillRegistry> = None;
 
-        // Spawn background skill discovery + workflow.yaml parsing
+        // Spawn background skill discovery + workflow.yaml parsing (shared
+        // with the `/skills` reload path via `discover_skills_payload`).
         {
             let tx = event_tx.clone();
             tokio::task::spawn_blocking(move || {
-                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
-                let skill_loader =
-                    crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
-                let mut skill_inventory: Vec<prompts::SkillEntry> = Vec::new();
-                for name in skill_loader.skill_names() {
-                    if !crate::knowledge::should_expose_skill_by_default(&name) {
-                        continue;
-                    }
-                    if let Some(skill) = skill_loader.load_skill(&name) {
-                        skill_inventory.push(prompts::SkillEntry {
-                            name,
-                            description: skill.description.clone(),
-                        });
-                    }
-                }
-
-                let project_root =
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let external_registry_roots =
-                    crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
-                let root_count = external_registry_roots.len();
-                let external_registry =
-                    crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
-                if let Some(ref reg) = external_registry {
-                    for skill_def in reg.list() {
-                        if !crate::knowledge::should_expose_skill_by_default(
-                            &skill_def.canonical_name,
-                        ) {
-                            continue;
-                        }
-                        if !skill_inventory
-                            .iter()
-                            .any(|s| s.name == skill_def.canonical_name)
-                        {
-                            skill_inventory.push(prompts::SkillEntry {
-                                name: skill_def.canonical_name.clone(),
-                                description: skill_def.description.clone(),
-                            });
-                        }
-                    }
-                    tracing::info!(
-                        total_skills = skill_inventory.len(),
-                        root_count,
-                        "Skill registry initialized with external skills"
-                    );
-                } else {
-                    tracing::info!(
-                        total_skills = skill_inventory.len(),
-                        root_count,
-                        "Skill registry initialized (no external skills discovered)"
-                    );
-                }
-
-                // Parse comet entry commands from workflow.yaml, falling back
-                // to the external registry if workflow.yaml is absent.
-                let mut comet_entry_commands: Vec<String> = Vec::new();
-                let workflow_yaml_path =
-                    std::path::PathBuf::from(".wgenty-code/skills/comet/workflow.yaml");
-                if workflow_yaml_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&workflow_yaml_path) {
-                        let entry_cmds = parse_yaml_list(&content, "entry_commands:");
-                        if !entry_cmds.is_empty() {
-                            comet_entry_commands = entry_cmds;
-                        }
-                    }
-                }
-                if comet_entry_commands.is_empty() {
-                    if let Some(ref reg) = external_registry {
-                        comet_entry_commands = reg
-                            .list()
-                            .iter()
-                            .filter(|s| s.canonical_name.starts_with("comet"))
-                            .map(|s| s.canonical_name.clone())
-                            .collect();
-                    }
-                }
-
-                let _ = tx.send(AppEvent::SkillsReady(Box::new(SkillsReadyData {
-                    skill_inventory,
-                    external_skill_registry: external_registry.map(std::sync::Arc::new),
-                    comet_entry_commands,
-                })));
+                let payload = discover_skills_payload();
+                let _ = tx.send(AppEvent::SkillsReady(Box::new(payload)));
             });
         }
 
@@ -1062,6 +982,102 @@ impl App {
         }
 
         Ok(())
+    }
+}
+
+/// Discover the current skill inventory (SkillLoader + external registry +
+/// comet workflow entry commands). Runs synchronous disk I/O — call from
+/// `spawn_blocking`. Shared by the startup background discovery and the
+/// `/skills` reload path so both feed the same `AppEvent::SkillsReady`
+/// pipeline (prompt inventory, external registry wiring, completion).
+pub(crate) fn discover_skills_payload() -> SkillsReadyData {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // load_from_dirs appends "skills" to each base dir, so pass base dirs
+    // (resolver returns .../skills paths).
+    let skills_dirs = crate::knowledge::SkillRootResolver::roots_with(&home, &project_root)
+        .iter()
+        .map(|r| {
+            r.skills_root
+                .parent()
+                .unwrap_or(&r.skills_root)
+                .to_path_buf()
+        })
+        .collect::<Vec<_>>();
+    let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
+    let mut skill_inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
+    for name in skill_loader.skill_names() {
+        if !crate::knowledge::should_expose_skill_by_default(&name) {
+            continue;
+        }
+        if let Some(skill) = skill_loader.load_skill(&name) {
+            skill_inventory.push(crate::prompts::SkillEntry {
+                name,
+                description: skill.description.clone(),
+            });
+        }
+    }
+
+    let external_registry_roots =
+        crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
+    let root_count = external_registry_roots.len();
+    let external_registry =
+        crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
+    if let Some(ref reg) = external_registry {
+        for skill_def in reg.list() {
+            if !crate::knowledge::should_expose_skill_by_default(&skill_def.canonical_name) {
+                continue;
+            }
+            if !skill_inventory
+                .iter()
+                .any(|s| s.name == skill_def.canonical_name)
+            {
+                skill_inventory.push(crate::prompts::SkillEntry {
+                    name: skill_def.canonical_name.clone(),
+                    description: skill_def.description.clone(),
+                });
+            }
+        }
+        tracing::info!(
+            total_skills = skill_inventory.len(),
+            root_count,
+            "Skill registry initialized with external skills"
+        );
+    } else {
+        tracing::info!(
+            total_skills = skill_inventory.len(),
+            root_count,
+            "Skill registry initialized (no external skills discovered)"
+        );
+    }
+
+    // Parse comet entry commands from workflow.yaml, falling back to the
+    // external registry if workflow.yaml is absent.
+    let mut comet_entry_commands: Vec<String> = Vec::new();
+    let workflow_yaml_path = std::path::PathBuf::from(".wgenty-code/skills/comet/workflow.yaml");
+    if workflow_yaml_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&workflow_yaml_path) {
+            let entry_cmds = parse_yaml_list(&content, "entry_commands:");
+            if !entry_cmds.is_empty() {
+                comet_entry_commands = entry_cmds;
+            }
+        }
+    }
+    if comet_entry_commands.is_empty() {
+        if let Some(ref reg) = external_registry {
+            comet_entry_commands = reg
+                .list()
+                .iter()
+                .filter(|s| s.canonical_name.starts_with("comet"))
+                .map(|s| s.canonical_name.clone())
+                .collect();
+        }
+    }
+
+    SkillsReadyData {
+        skill_inventory,
+        external_skill_registry: external_registry.map(std::sync::Arc::new),
+        comet_entry_commands,
     }
 }
 

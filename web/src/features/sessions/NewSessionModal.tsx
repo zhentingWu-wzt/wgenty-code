@@ -11,7 +11,7 @@ type Mode = "main" | "existing" | "new";
  *  tree node (e.g. a worktree's "+ session" button). `project` is the owning
  *  project's canonical path — all daemon calls are scoped to it. */
 export type NewSessionPreset =
-  | { mode: "main"; project: string }
+  | { mode: "main"; project: string; noProject?: boolean }
   | { mode: "existing"; project: string; path: string; branch: string };
 
 /**
@@ -34,10 +34,9 @@ export function NewSessionModal({
   const [name, setName] = useState("");
   const [mode, setMode] = useState<Mode>(preset?.mode ?? "main");
   const project = preset?.project;
+  const noProject = preset?.mode === "main" && preset.noProject === true;
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
-  const [selectedPath, setSelectedPath] = useState(
-    preset?.mode === "existing" ? preset.path : "",
-  );
+  const [selectedPath, setSelectedPath] = useState(preset?.mode === "existing" ? preset.path : "");
   const [branch, setBranch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -134,35 +133,42 @@ export function NewSessionModal({
           />
         </label>
 
-        <div className="flex flex-col gap-1" role="radiogroup" aria-label="Workspace">
-          <label className="flex items-center gap-1.5 text-[13px]">
-            <input
-              type="radio"
-              name="workspace"
-              checked={mode === "main"}
-              onChange={() => setMode("main")}
-            />
-            Main checkout
-          </label>
-          <label className="flex items-center gap-1.5 text-[13px]">
-            <input
-              type="radio"
-              name="workspace"
-              checked={mode === "existing"}
-              onChange={() => setMode("existing")}
-            />
-            Existing worktree
-          </label>
-          <label className="flex items-center gap-1.5 text-[13px]">
-            <input
-              type="radio"
-              name="workspace"
-              checked={mode === "new"}
-              onChange={() => setMode("new")}
-            />
-            New worktree
-          </label>
-        </div>
+        {!noProject && (
+          <div className="flex flex-col gap-1" role="radiogroup" aria-label="Workspace">
+            <label className="flex items-center gap-1.5 text-[13px]">
+              <input
+                type="radio"
+                name="workspace"
+                checked={mode === "main"}
+                onChange={() => setMode("main")}
+              />
+              Main checkout
+            </label>
+            <label className="flex items-center gap-1.5 text-[13px]">
+              <input
+                type="radio"
+                name="workspace"
+                checked={mode === "existing"}
+                onChange={() => setMode("existing")}
+              />
+              Existing worktree
+            </label>
+            <label className="flex items-center gap-1.5 text-[13px]">
+              <input
+                type="radio"
+                name="workspace"
+                checked={mode === "new"}
+                onChange={() => setMode("new")}
+              />
+              New worktree
+            </label>
+          </div>
+        )}
+        {noProject && (
+          <div className="rounded-md border border-border bg-muted/40 px-2 py-1.5 text-[12px] text-muted-foreground">
+            Creates a detached session in the No Project scratch workspace (no git, no worktrees).
+          </div>
+        )}
 
         {mode === "existing" && (
           <select

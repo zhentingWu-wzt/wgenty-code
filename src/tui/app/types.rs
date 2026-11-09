@@ -503,6 +503,17 @@ pub enum AppEvent {
     /// A `/model` switch failed (unknown profile, daemon error, etc.). Carries
     /// the actionable error message for display.
     ModelSwitchFailed(String),
+    /// `/skills` — ask the daemon to rescan its skill directories now. The
+    /// async loop calls `POST /skills/reload`; the result arrives as
+    /// [`AppEvent::SkillsReloaded`] (or [`AppEvent::SkillsReloadFailed`]).
+    SkillsReloadRequested,
+    /// Daemon finished a forced skill rescan. `count` is the daemon-side total
+    /// (unfiltered by the default-exposure policy).
+    SkillsReloaded {
+        count: usize,
+    },
+    /// The forced rescan failed (daemon down, auth, etc.). Carries the error.
+    SkillsReloadFailed(String),
 }
 
 /// Payload for [`AppEvent::SkillsReady`].

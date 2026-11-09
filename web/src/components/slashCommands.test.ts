@@ -3,7 +3,7 @@ import { filterSlashCommands, matchSlashCommand } from "./slashCommands";
 
 describe("filterSlashCommands", () => {
   it("lists all commands on bare slash", () => {
-    expect(filterSlashCommands("/")).toHaveLength(4);
+    expect(filterSlashCommands("/")).toHaveLength(5);
   });
 
   it("filters by prefix, case-insensitive", () => {

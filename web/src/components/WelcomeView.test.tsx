@@ -28,6 +28,7 @@ describe("WelcomeView", () => {
   });
 
   it("new session creates a local session entry", async () => {
+    // No /projects stub → daemon offline path → legacy local session.
     const user = userEvent.setup();
     render(<WelcomeView client={client} />);
 
@@ -36,6 +37,66 @@ describe("WelcomeView", () => {
     const s = useSessionManager.getState();
     expect(s.order).toHaveLength(1);
     expect(s.entries[s.order[0]].daemonId).toBeNull();
+  });
+
+  it("new session creates in the No Project workspace when known", async () => {
+    const npPath = "/home/u/.wgenty-code/no-project";
+    const createdCalls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/v1/projects") {
+          return new Response(
+            JSON.stringify([
+              {
+                path: "/repo/wgenty-code",
+                name: "wgenty-code",
+                is_main: true,
+                is_no_project: false,
+                is_git_repo: true,
+                added_at: "2026-01-01T00:00:00Z",
+              },
+              {
+                path: npPath,
+                name: "No Project",
+                is_main: false,
+                is_no_project: true,
+                is_git_repo: false,
+                added_at: "2026-01-01T00:00:00Z",
+              },
+            ]),
+            { status: 200 },
+          );
+        }
+        if (url === "/api/v1/sessions" && init?.method === "POST") {
+          createdCalls.push(String(init.body));
+          return new Response(
+            JSON.stringify({
+              id: "np-1",
+              name: "np-1",
+              created_at: "2026-01-01T00:00:00Z",
+              updated_at: "2026-01-01T00:00:00Z",
+              messages: [],
+              ui_messages: [],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<WelcomeView client={client} />);
+    await user.click(await screen.findByRole("button", { name: /new session/i }));
+
+    const s = useSessionManager.getState();
+    expect(s.order).toHaveLength(1);
+    const entry = s.entries[s.order[0]];
+    expect(entry.daemonId).toBe("np-1");
+    expect(entry.projectPath).toBe(npPath);
+    expect(createdCalls).toEqual([JSON.stringify({ project_path: npPath })]);
   });
 
   it("open saved session loads the browser without making a local session", async () => {

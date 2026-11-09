@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added (Permissions)
+
+- **权限模式跨 daemon 重启持久化**：`POST /permission-mode` 切换的模式现落盘至
+  `~/.wgenty-code/permission-modes.json`（按 canonical 项目路径为 key，原子写），
+  daemon 启动时回填 `PermissionModeStore`。此前 store 为纯内存，daemon 重启
+  （idle 自动退出、client-bound 跟随退出、手动 stop、崩溃）后静默回落 Normal，
+  web/TUI 表现为"切换后重启就丢"。Plan 为一次性工作流状态不持久化——落盘与
+  加载均归一化为 root_mode 派生值。文件位于用户配置目录而非项目内：仓库内
+  预置 `yolo` 的文件不得在克隆后自动武装全自动审批（信任边界=用户 home）。
+
 ### Changed (Prompts)
 
 - **跨会话记忆召回移至 user 消息尾部 `<system-reminder>`**：此前

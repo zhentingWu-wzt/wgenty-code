@@ -6,6 +6,11 @@
 //! persisted to `~/.wgenty-code/projects.json`. Every project-parameterized
 //! endpoint validates its target through [`ProjectRegistry::resolve`] so a
 //! client can never point the daemon at an arbitrary directory.
+//!
+//! A synthetic "No Project" scratch workspace ([`ProjectRegistry::no_project_root`])
+//! can be enabled via [`ProjectRegistry::enable_no_project`]. It participates in
+//! every routing path (sessions, memory, checkpoints, tasks) like a registered
+//! project but is never persisted to `projects.json` and cannot be removed.
 
 use axum::{
     extract::{Query, State},
@@ -32,6 +37,9 @@ pub struct ProjectResponse {
     pub path: String,
     pub name: String,
     pub is_main: bool,
+    /// The synthetic No Project scratch workspace (welcome-screen sessions).
+    /// Never removable, never git-backed.
+    pub is_no_project: bool,
     /// Whether the root looks like a git checkout (`.git` entry present).
     /// Non-git projects hide worktree/task features in the UI.
     pub is_git_repo: bool,
@@ -44,6 +52,8 @@ struct Inner {
     main_root: PathBuf,
     main_added_at: DateTime<Utc>,
     projects: Vec<ProjectInfo>,
+    /// Synthetic scratch workspace (see module docs). Not persisted.
+    no_project: Option<ProjectInfo>,
     persist_path: PathBuf,
 }
 
@@ -56,7 +66,11 @@ pub struct ProjectRegistry {
 impl ProjectRegistry {
     /// Registry persisted at the default location (`<config_dir>/projects.json`).
     pub fn load_default(main_root: PathBuf) -> Self {
-        Self::load(main_root, crate::utils::config_dir().join("projects.json"))
+        let reg = Self::load(main_root, crate::utils::config_dir().join("projects.json"));
+        // Production always exposes the No Project scratch workspace; plain
+        // `load` stays neutral so tests can inject one at a tempdir instead.
+        reg.enable_no_project();
+        reg
     }
 
     /// Load (or initialize) a registry persisted at `persist_path`.
@@ -89,9 +103,42 @@ impl ProjectRegistry {
                 main_added_at: Utc::now(),
                 main_root,
                 projects,
+                no_project: None,
                 persist_path,
             })),
         }
+    }
+
+    /// The well-known No Project scratch root: `<config_dir>/no-project`.
+    /// Sessions created outside any project (e.g. the web welcome screen) run
+    /// here, so they never silently attach to the main project.
+    pub fn no_project_root() -> PathBuf {
+        crate::utils::config_dir().join("no-project")
+    }
+
+    /// Enable the synthetic No Project workspace at the default root.
+    pub fn enable_no_project(&self) {
+        self.enable_no_project_at(Self::no_project_root());
+    }
+
+    /// Enable the synthetic No Project workspace at an arbitrary root (test
+    /// seam). Idempotent; directory creation is best-effort — routing only
+    /// needs the path, and the session store creates its own subdirs lazily.
+    pub fn enable_no_project_at(&self, root: PathBuf) {
+        let _ = std::fs::create_dir_all(&root);
+        let canon = root.canonicalize().unwrap_or(root);
+        let mut inner = self.inner.write().expect("project registry lock poisoned");
+        if inner.main_root == canon {
+            // Degenerate: the scratch root IS the main project (e.g. the daemon
+            // was started inside ~/.wgenty-code). Leave it disabled — routing
+            // already falls back to the main project for such sessions.
+            return;
+        }
+        inner.no_project = Some(ProjectInfo {
+            name: "No Project".to_string(),
+            path: canon,
+            added_at: Utc::now(),
+        });
     }
 
     /// The main project root (daemon working_dir, canonicalized).
@@ -104,6 +151,7 @@ impl ProjectRegistry {
     }
 
     /// Main project first, then registered projects in insertion order.
+    /// The synthetic No Project workspace (when enabled) is appended last.
     pub fn list(&self) -> Vec<ProjectInfo> {
         let inner = self.inner.read().expect("project registry lock poisoned");
         let mut out = Vec::with_capacity(inner.projects.len() + 1);
@@ -113,7 +161,18 @@ impl ProjectRegistry {
             added_at: inner.main_added_at,
         });
         out.extend(inner.projects.iter().cloned());
+        out.extend(inner.no_project.clone());
         out
+    }
+
+    /// Enabled synthetic No Project root, if any.
+    pub fn no_project_path(&self) -> Option<PathBuf> {
+        self.inner
+            .read()
+            .expect("project registry lock poisoned")
+            .no_project
+            .as_ref()
+            .map(|p| p.path.clone())
     }
 
     /// Register a new project directory. Errors are client-facing strings.
@@ -122,6 +181,9 @@ impl ProjectRegistry {
         let mut inner = self.inner.write().expect("project registry lock poisoned");
         if canon == inner.main_root {
             return Err("path is the main project".to_string());
+        }
+        if inner.no_project.as_ref().is_some_and(|p| p.path == canon) {
+            return Err(format!("project already registered: {}", canon.display()));
         }
         if inner.projects.iter().any(|p| p.path == canon) {
             return Err(format!("project already registered: {}", canon.display()));
@@ -143,6 +205,9 @@ impl ProjectRegistry {
     pub fn remove(&self, path: &str) -> Result<bool, String> {
         let canon = canonicalize_dir_lossy(path);
         let mut inner = self.inner.write().expect("project registry lock poisoned");
+        if inner.no_project.as_ref().is_some_and(|p| p.path == canon) {
+            return Err("cannot remove the No Project workspace".to_string());
+        }
         let before = inner.projects.len();
         inner.projects.retain(|p| p.path != canon);
         if inner.projects.len() == before {
@@ -157,7 +222,10 @@ impl ProjectRegistry {
     pub fn resolve(&self, path: &str) -> Option<PathBuf> {
         let canon = canonicalize_dir_lossy(path);
         let inner = self.inner.read().expect("project registry lock poisoned");
-        if canon == inner.main_root || inner.projects.iter().any(|p| p.path == canon) {
+        if canon == inner.main_root
+            || inner.projects.iter().any(|p| p.path == canon)
+            || inner.no_project.as_ref().is_some_and(|p| p.path == canon)
+        {
             Some(canon)
         } else {
             None
@@ -165,15 +233,15 @@ impl ProjectRegistry {
     }
 
     /// Registered (non-main) project roots — used to fan out per-project
-    /// session/memory/checkpoint lookups.
+    /// session/memory/checkpoint lookups. Includes the synthetic No Project
+    /// root when enabled, so every fan-out covers it without special cases.
     pub fn registered_roots(&self) -> Vec<PathBuf> {
-        self.inner
-            .read()
-            .expect("project registry lock poisoned")
-            .projects
-            .iter()
-            .map(|p| p.path.clone())
-            .collect()
+        let inner = self.inner.read().expect("project registry lock poisoned");
+        let mut out: Vec<PathBuf> = inner.projects.iter().map(|p| p.path.clone()).collect();
+        if let Some(np) = &inner.no_project {
+            out.push(np.path.clone());
+        }
+        out
     }
 }
 
@@ -221,11 +289,12 @@ fn persist_locked(inner: &Inner) -> Result<(), String> {
 
 use crate::daemon::state::DaemonState;
 
-fn to_response(info: &ProjectInfo, is_main: bool) -> ProjectResponse {
+fn to_response(info: &ProjectInfo, is_main: bool, is_no_project: bool) -> ProjectResponse {
     ProjectResponse {
         path: info.path.to_string_lossy().to_string(),
         name: info.name.clone(),
         is_main,
+        is_no_project,
         // `.git` may be a directory (normal checkout) or a file (worktree) —
         // either way `exists()` covers both.
         is_git_repo: info.path.join(".git").exists(),
@@ -236,11 +305,12 @@ fn to_response(info: &ProjectInfo, is_main: bool) -> ProjectResponse {
 /// GET /api/v1/projects — main project first, then registered projects.
 pub async fn list_projects(State(state): State<Arc<DaemonState>>) -> Json<Vec<ProjectResponse>> {
     let main = state.projects.main_root();
+    let no_project = state.projects.no_project_path();
     let out = state
         .projects
         .list()
         .iter()
-        .map(|p| to_response(p, p.path == main))
+        .map(|p| to_response(p, p.path == main, no_project.as_ref() == Some(&p.path)))
         .collect();
     Json(out)
 }
@@ -263,7 +333,7 @@ pub async fn add_project(
         .projects
         .add(body.path.trim())
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    Ok((StatusCode::CREATED, Json(to_response(&info, false))))
+    Ok((StatusCode::CREATED, Json(to_response(&info, false, false))))
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,11 +348,20 @@ pub async fn remove_project(
     State(state): State<Arc<DaemonState>>,
     Query(q): Query<RemoveProjectQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if state.projects.resolve(&q.path) == Some(state.projects.main_root()) {
+    let resolved = state.projects.resolve(&q.path);
+    if resolved == Some(state.projects.main_root()) {
         return Err((
             StatusCode::BAD_REQUEST,
             "cannot remove the main project".to_string(),
         ));
+    }
+    if let Some(np) = state.projects.no_project_path() {
+        if resolved == Some(np) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "cannot remove the No Project workspace".to_string(),
+            ));
+        }
     }
     match state.projects.remove(&q.path) {
         Ok(true) => Ok(StatusCode::NO_CONTENT),
@@ -306,6 +385,19 @@ mod tests {
             store.path().join("projects.json"),
         );
         (main, store, reg)
+    }
+
+    fn setup_no_project() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        ProjectRegistry,
+        PathBuf,
+    ) {
+        let (main, store, reg) = setup();
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch_canon = scratch.path().canonicalize().unwrap();
+        reg.enable_no_project_at(scratch.path().to_path_buf());
+        (main, store, reg, scratch_canon)
     }
 
     #[test]
@@ -345,6 +437,56 @@ mod tests {
         let (main, _store, reg) = setup();
         assert!(reg.add("/no/such/dir").is_err());
         assert!(reg.add(main.path().to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn no_project_is_listed_resolvable_and_not_persisted() {
+        let (main, _store, reg, scratch) = setup_no_project();
+
+        // Listed last alongside registered projects.
+        let list = reg.list();
+        let np = list.last().expect("no-project listed");
+        assert_eq!(np.name, "No Project");
+        assert_eq!(np.path, scratch);
+
+        // Part of the fan-out roots.
+        assert!(reg.registered_roots().contains(&scratch));
+
+        // resolve() accepts it (project-scoped endpoints may target it).
+        assert_eq!(
+            reg.resolve(scratch.to_str().unwrap()),
+            Some(scratch.clone())
+        );
+
+        // Cannot be registered (duplicate) or removed.
+        assert!(reg.add(scratch.to_str().unwrap()).is_err());
+        assert!(reg.remove(scratch.to_str().unwrap()).is_err());
+
+        // Main project stays first.
+        assert_eq!(reg.list()[0].path, main.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn no_project_not_persisted_to_projects_json() {
+        let (_main, store, reg, _scratch) = setup_no_project();
+        let proj = tempfile::tempdir().unwrap();
+        reg.add(proj.path().to_str().unwrap()).unwrap();
+        drop(reg);
+
+        // Reload from the same persist path: the registered project survives,
+        // the synthetic No Project entry does not (load() leaves it disabled).
+        let raw = std::fs::read_to_string(store.path().join("projects.json")).unwrap();
+        let parsed: Vec<ProjectInfo> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_ne!(parsed[0].name, "No Project");
+    }
+
+    #[test]
+    fn enable_no_project_skips_when_root_is_main() {
+        let (main, _store, reg) = setup();
+        reg.enable_no_project_at(main.path().to_path_buf());
+        assert!(reg.no_project_path().is_none());
+        assert_eq!(reg.list().len(), 1);
     }
 
     #[test]

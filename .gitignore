@@ -93,3 +93,7 @@ desktop/src-tauri/.wgenty-code/
 # pnpm store (web/ dev dependency cache)
 .pnpm-store/
 desktop/.wgenty-code/
+
+# Node dependencies and Playwright MCP artifacts
+node_modules/
+.playwright-mcp/

@@ -51,7 +51,14 @@ export function SessionTabBar() {
   const close = (id: string) => {
     const ui = useUiStore.getState();
     const next = ui.closeTab(id);
-    if (ui.activeTabId !== id || !next) return;
+    if (ui.activeTabId !== id) return;
+    if (!next) {
+      // Last tab closed — no active session; the center pane falls back to
+      // the welcome screen.
+      useUiStore.getState().setActiveTab(null);
+      useSessionManager.getState().clearActive();
+      return;
+    }
     if (
       next.startsWith(SUBAGENT_PREFIX) ||
       next.startsWith(PREVIEW_PREFIX) ||

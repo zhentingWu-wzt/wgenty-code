@@ -72,6 +72,8 @@ pub enum ChildTerminal {
     Failed {
         /// Machine-readable error code.
         code: String,
+        /// Short human-readable failure reason surfaced to the parent.
+        message: String,
         /// Optional partial result produced before failure.
         partial_result: Option<String>,
     },
@@ -160,6 +162,7 @@ impl ParentOutcome {
                 partial_result,
             } => ChildTerminal::Failed {
                 code: code.clone(),
+                message: format!("failed: {code}"),
                 partial_result: partial_result.clone(),
             },
             Self::Cancelled => ChildTerminal::Cancelled,
@@ -906,10 +909,12 @@ impl AgentCoordinator {
                 text: summary.clone(),
                 error_code: None,
             }),
-            ChildTerminal::Failed { code, .. } => Some(crate::agent::store::ChildSummary {
-                text: String::new(),
-                error_code: Some(code.clone()),
-            }),
+            ChildTerminal::Failed { code, message, .. } => {
+                Some(crate::agent::store::ChildSummary {
+                    text: message.clone(),
+                    error_code: Some(code.clone()),
+                })
+            }
             ChildTerminal::Cancelled => None,
         };
 
@@ -948,8 +953,13 @@ impl AgentCoordinator {
             ChildTerminal::Completed { summary } => (summary.as_str(), None, None),
             ChildTerminal::Failed {
                 code,
+                message,
                 partial_result,
-            } => ("", Some(code.as_str()), partial_result.as_deref()),
+            } => (
+                message.as_str(),
+                Some(code.as_str()),
+                partial_result.as_deref(),
+            ),
             ChildTerminal::Cancelled => ("", None, None),
         };
         let result = Self::sanitize_child_result(
@@ -1593,8 +1603,13 @@ impl AgentCoordinator {
             ChildTerminal::Completed { summary } => (summary.as_str(), None, None),
             ChildTerminal::Failed {
                 code,
+                message,
                 partial_result,
-            } => ("", Some(code.as_str()), partial_result.as_deref()),
+            } => (
+                message.as_str(),
+                Some(code.as_str()),
+                partial_result.as_deref(),
+            ),
             ChildTerminal::Cancelled => ("", None, None),
         };
         Self::sanitize_child_result(
@@ -2462,6 +2477,7 @@ mod tests {
                 &child.context,
                 ChildTerminal::Failed {
                     code: "E_WORK".to_owned(),
+                    message: "work failed".to_owned(),
                     partial_result: Some("partial".to_owned()),
                 },
             )
@@ -2535,6 +2551,7 @@ mod tests {
             ChildTerminal::completed("first"),
             ChildTerminal::Failed {
                 code: "second".to_owned(),
+                message: "second failed".to_owned(),
                 partial_result: None,
             },
         ] {
@@ -3011,6 +3028,7 @@ mod tests {
             &parent.context,
             ChildTerminal::Failed {
                 code: "boom".into(),
+                message: "boom".into(),
                 partial_result: None,
             },
         )
@@ -3053,6 +3071,7 @@ mod tests {
             &parent.context,
             ChildTerminal::Failed {
                 code: "boom".into(),
+                message: "boom".into(),
                 partial_result: None,
             },
         )
@@ -3482,25 +3501,24 @@ impl AgentCoordinator {
                 }
             }
         }
-        // BFS the affected subtree from each non-terminal scope.
+        // BFS the affected subtree from each non-terminal scope. `seen` gates
+        // processing (each scope enters `affected` exactly once); descendants
+        // are queued unmarked so the pop-side check — not the push side —
+        // decides whether they are new. (Marking on push pre-deduplicated
+        // them out of `affected` entirely, silently skipping live scopes.)
         let mut affected: Vec<(SessionId, AgentId)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let mut i = 0;
-        while i < to_scan.len() {
-            let (sid, aid) = (&to_scan[i].0, &to_scan[i].1);
+        while let Some((sid, aid)) = to_scan.pop() {
             if seen.insert((sid.clone(), aid.clone())) {
                 affected.push((sid.clone(), aid.clone()));
-                if let Ok(desc) = self.store.descendants(sid, aid).await {
+                if let Ok(desc) = self.store.descendants(&sid, &aid).await {
                     for d in &desc {
-                        if !d.status.is_terminal()
-                            && seen.insert((d.session_id.clone(), d.agent_id.clone()))
-                        {
+                        if !d.status.is_terminal() {
                             to_scan.push((d.session_id.clone(), d.agent_id.clone()));
                         }
                     }
                 }
             }
-            i += 1;
         }
         // Deduplicate and persist Cancelled.
         affected.sort_by(|a, b| {
@@ -3527,6 +3545,110 @@ impl AgentCoordinator {
             cancelled_scopes: affected.len(),
             cancelled_subtrees,
         })
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn recover_non_terminal_scopes_cancels_live_subtrees() {
+        let coordinator = AgentCoordinator::new(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("work"))
+            .await
+            .unwrap();
+        let grandchild = coordinator
+            .reserve_child(&child.context, SpawnChildRequest::new("nested"))
+            .await
+            .unwrap();
+
+        // Root scope stays Running; child + grandchild are live scopes.
+        let report = coordinator.recover_non_terminal_scopes().await.unwrap();
+
+        // All non-terminal scopes (root + child + grandchild) are cancelled.
+        assert_eq!(report.cancelled_scopes, 3);
+        assert_eq!(
+            coordinator.status(&root).await.unwrap(),
+            AgentLifecycleStatus::Cancelled
+        );
+        assert_eq!(
+            coordinator.status(&child.context).await.unwrap(),
+            AgentLifecycleStatus::Cancelled
+        );
+        assert_eq!(
+            coordinator.status(&grandchild.context).await.unwrap(),
+            AgentLifecycleStatus::Cancelled
+        );
+        // Permits held by the live scopes are released.
+        assert_eq!(coordinator.available_permits(), 4);
+    }
+
+    #[tokio::test]
+    async fn recover_is_noop_when_all_scopes_are_terminal() {
+        let coordinator = AgentCoordinator::new(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("work"))
+            .await
+            .unwrap();
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("done"))
+            .await
+            .unwrap();
+
+        let report = coordinator.recover_non_terminal_scopes().await.unwrap();
+
+        // Only the still-running root scope is affected.
+        assert_eq!(report.cancelled_scopes, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_message_flows_into_delivery_summary() {
+        let coordinator = AgentCoordinator::new(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(
+                &root,
+                "turn-1",
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        let child = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group)
+            .await
+            .unwrap();
+
+        coordinator
+            .finish_child(
+                &child.context,
+                ChildTerminal::Failed {
+                    code: "subagent_error".to_owned(),
+                    message: "connection reset by peer".to_owned(),
+                    partial_result: Some("half-done analysis".to_owned()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let delivery = coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.results[0].status, ChildTerminalStatus::Failed);
+        assert_eq!(
+            delivery.results[0].error_code.as_deref(),
+            Some("subagent_error")
+        );
+        assert_eq!(delivery.results[0].summary, "connection reset by peer");
+        assert_eq!(
+            delivery.results[0].partial_result.as_deref(),
+            Some("half-done analysis")
+        );
     }
 }
 

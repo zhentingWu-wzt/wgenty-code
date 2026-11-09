@@ -18,16 +18,29 @@ import { observeDaemonRun } from "../agent/sessionRunner";
  * scheduler or the TUI's claim endpoint) we attach `observeDaemonRun` to the
  * named session. One handler on the shared wsChannel singleton — the channel
  * owns connect/backoff/reconnect, so this adds no transport connections.
+ *
+ * `background_result` gets the same treatment: when a background task (e.g. a
+ * monitored CI run) completes while its session is idle, the daemon scheduler
+ * claims the result and spawns a daemon-owned continuation turn server-side.
+ * Without attaching an observer here that turn — typically the assistant's
+ * report on the finished task — was invisible in web until a manual refresh,
+ * even though it was persisted.
  */
 export function useContinuationObserver(client: DaemonClient | null): void {
   useEffect(() => {
     if (!client) return;
 
     const unsubGlobal = wsChannel.subscribeGlobal((ev) => {
-      if (ev.kind === "task_group_result") {
-        const sessionId = String(ev.data["session_id"] ?? "");
-        if (sessionId) void observeDaemonRun(client, sessionId);
-      }
+      // `task_group_result` carries `session_id` at the payload top level;
+      // `background_result` nests it inside `data.result.session_id` (the
+      // serialized BackgroundResult, which may omit it for unowned tasks —
+      // those have no session to observe).
+      const result = ev.data["result"] as { session_id?: string } | undefined;
+      const sessionId =
+        ev.kind === "background_result"
+          ? String(result?.session_id ?? "")
+          : String(ev.data["session_id"] ?? "");
+      if (sessionId) void observeDaemonRun(client, sessionId);
     });
     wsChannel.connect();
 

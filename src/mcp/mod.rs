@@ -142,8 +142,7 @@ impl McpManager {
             .iter()
             .any(|config| config.name.eq_ignore_ascii_case("codegraph"))
         {
-            let mut config = McpConfig::codegraph();
-            config.cwd = Some(settings.storage.working_dir.clone());
+            let config = McpConfig::codegraph_for_project(&settings.storage.working_dir);
             configs.push(config);
         }
         for config in &mut configs {
@@ -267,8 +266,7 @@ impl McpManager {
             .iter()
             .any(|config| config.name.eq_ignore_ascii_case("codegraph"))
         {
-            let mut config = McpConfig::codegraph();
-            config.cwd = Some(settings.storage.working_dir.clone());
+            let config = McpConfig::codegraph_for_project(&settings.storage.working_dir);
             configs.push(config);
         }
         for config in &mut configs {

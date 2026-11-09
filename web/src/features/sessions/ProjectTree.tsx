@@ -183,8 +183,7 @@ export function ProjectTree({
           ps
             .filter((p) => p.is_git_repo)
             .map(
-              async (p) =>
-                [p.path, await client.listWorktrees(p.path).catch(() => [])] as const,
+              async (p) => [p.path, await client.listWorktrees(p.path).catch(() => [])] as const,
             ),
         );
         setWorktreesByProject(Object.fromEntries(results));
@@ -265,9 +264,7 @@ export function ProjectTree({
 
   // ── Project actions ────────────────────────────────────────────────────────
   const removeProject = async (p: ProjectInfo) => {
-    if (
-      !window.confirm(`Remove project ${p.path} from the list? Files on disk are not touched.`)
-    )
+    if (!window.confirm(`Remove project ${p.path} from the list? Files on disk are not touched.`))
       return;
     try {
       await client.removeProject(p.path);
@@ -326,7 +323,21 @@ export function ProjectTree({
                     <GitBranchPlus size={12} />
                   </button>
                 )}
-                {!p.is_main && (
+                {p.is_no_project && (
+                  <button
+                    type="button"
+                    className={TREE_ACTION_BTN}
+                    title="New session in No Project"
+                    onClick={() =>
+                      setNewSession({
+                        preset: { mode: "main", project: p.path, noProject: true },
+                      })
+                    }
+                  >
+                    <MessageSquarePlus size={12} />
+                  </button>
+                )}
+                {!p.is_main && !p.is_no_project && (
                   <button
                     type="button"
                     className={cn(TREE_ACTION_BTN, "hover:text-danger")}
@@ -339,67 +350,81 @@ export function ProjectTree({
               </>
             }
           >
-            {/* Main checkout = default workspace (unbound sessions). Non-git
-                projects have no branch, so show the path instead of git terms. */}
-            <TreeNode
-              icon={<span className="text-[13px] text-primary">⎇</span>}
-              title={p.is_git_repo ? (main?.branch ?? "main") : "main"}
-              subtitle={p.is_git_repo ? "main checkout" : p.path}
-              count={sessionsIn(p, null).length}
-              actions={
-                <button
-                  type="button"
-                  className={TREE_ACTION_BTN}
-                  title="New session"
-                  onClick={() => setNewSession({ preset: { mode: "main", project: p.path } })}
-                >
-                  <MessageSquarePlus size={12} />
-                </button>
-              }
-            >
-              {renderSessions(sessionsIn(p, null))}
-            </TreeNode>
-
-            {/* One task node per linked worktree. */}
-            {linked.map((w) => (
-              <TreeNode
-                key={w.path}
-                icon={<span className="text-[13px] text-primary">⎇</span>}
-                title={w.branch ?? "(detached)"}
-                count={sessionsIn(p, w).length}
-                actions={
-                  <>
+            {p.is_no_project ? (
+              // The synthetic scratch workspace: one flat session list, no
+              // branch/worktree layer.
+              <>
+                <div className="pl-5 pr-1 pb-1 text-[11px] text-muted-foreground">
+                  Detached scratch space for sessions without a project
+                </div>
+                {renderSessions(sessionsIn(p, null))}
+              </>
+            ) : (
+              <>
+                {/* Main checkout = default workspace (unbound sessions).
+                    Non-git projects have no branch, so show the path instead
+                    of git terms. */}
+                <TreeNode
+                  icon={<span className="text-[13px] text-primary">⎇</span>}
+                  title={p.is_git_repo ? (main?.branch ?? "main") : "main"}
+                  subtitle={p.is_git_repo ? "main checkout" : p.path}
+                  count={sessionsIn(p, null).length}
+                  actions={
                     <button
                       type="button"
                       className={TREE_ACTION_BTN}
-                      title={`New session in ${w.branch ?? w.path}`}
-                      onClick={() =>
-                        setNewSession({
-                          preset: {
-                            mode: "existing",
-                            project: p.path,
-                            path: w.path,
-                            branch: w.branch ?? "",
-                          },
-                        })
-                      }
+                      title="New session"
+                      onClick={() => setNewSession({ preset: { mode: "main", project: p.path } })}
                     >
                       <MessageSquarePlus size={12} />
                     </button>
-                    <button
-                      type="button"
-                      className={cn(TREE_ACTION_BTN, "hover:text-danger")}
-                      title={`Remove worktree ${w.branch ?? w.path}`}
-                      onClick={() => removeTask(p, w)}
-                    >
-                      <Trash2 size={11} />
-                    </button>
-                  </>
-                }
-              >
-                {renderSessions(sessionsIn(p, w))}
-              </TreeNode>
-            ))}
+                  }
+                >
+                  {renderSessions(sessionsIn(p, null))}
+                </TreeNode>
+
+                {/* One task node per linked worktree. */}
+                {linked.map((w) => (
+                  <TreeNode
+                    key={w.path}
+                    icon={<span className="text-[13px] text-primary">⎇</span>}
+                    title={w.branch ?? "(detached)"}
+                    count={sessionsIn(p, w).length}
+                    actions={
+                      <>
+                        <button
+                          type="button"
+                          className={TREE_ACTION_BTN}
+                          title={`New session in ${w.branch ?? w.path}`}
+                          onClick={() =>
+                            setNewSession({
+                              preset: {
+                                mode: "existing",
+                                project: p.path,
+                                path: w.path,
+                                branch: w.branch ?? "",
+                              },
+                            })
+                          }
+                        >
+                          <MessageSquarePlus size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(TREE_ACTION_BTN, "hover:text-danger")}
+                          title={`Remove worktree ${w.branch ?? w.path}`}
+                          onClick={() => removeTask(p, w)}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </>
+                    }
+                  >
+                    {renderSessions(sessionsIn(p, w))}
+                  </TreeNode>
+                ))}
+              </>
+            )}
           </TreeNode>
         );
       })}

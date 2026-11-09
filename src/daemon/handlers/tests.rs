@@ -334,6 +334,80 @@ async fn multi_project_session_routing() {
 }
 
 #[tokio::test]
+async fn no_project_session_routes_to_scratch_workspace() {
+    use crate::config::Settings;
+    use crate::daemon::models::CreateSessionRequest;
+    use crate::state::AppState;
+    use axum::extract::{Path, State};
+    use axum::Json;
+
+    let main = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.storage.working_dir = main.path().to_path_buf();
+    let mut state = DaemonState::new(AppState::new(settings)).await;
+    // Isolate the registry; enable No Project at a tempdir scratch root.
+    let reg_store = tempfile::tempdir().unwrap();
+    let registry = crate::daemon::projects::ProjectRegistry::load(
+        main.path().to_path_buf(),
+        reg_store.path().join("projects.json"),
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_canon = scratch.path().canonicalize().unwrap();
+    registry.enable_no_project_at(scratch.path().to_path_buf());
+    state.projects = registry;
+    let state = Arc::new(state);
+
+    // The scratch root resolves like any registered project.
+    assert_eq!(
+        state.projects.resolve(scratch_canon.to_str().unwrap()),
+        Some(scratch_canon.clone())
+    );
+
+    // Creating with project_path = the scratch root stores under it.
+    let Json(created) = create_session(
+        State(state.clone()),
+        Json(CreateSessionRequest {
+            name: Some("scratch".to_string()),
+            project_path: Some(scratch_canon.to_string_lossy().to_string()),
+        }),
+    )
+    .await
+    .expect("create_session into No Project");
+    let sid = created.id;
+
+    assert!(crate::utils::project_sessions_dir(&scratch_canon)
+        .join(format!("{sid}.json"))
+        .is_file());
+    assert!(!crate::utils::project_sessions_dir(main.path())
+        .join(format!("{sid}.json"))
+        .is_file());
+
+    // list_sessions aggregates it with the scratch root as project_path.
+    let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
+    let entry = listed.iter().find(|s| s.id == sid).expect("listed");
+    assert_eq!(
+        entry.project_path.as_deref(),
+        Some(scratch_canon.to_string_lossy().as_ref())
+    );
+
+    // The session's effective working root is the scratch root — its file
+    // tools are policy-locked there instead of the main project.
+    assert_eq!(state.effective_session_root(&sid).await, scratch_canon);
+
+    // The scratch workspace cannot be removed via the endpoint contract.
+    assert!(state
+        .projects
+        .remove(scratch_canon.to_str().unwrap())
+        .is_err());
+
+    // delete routes to the owning store.
+    let _ = delete_session(State(state.clone()), Path(sid.clone()))
+        .await
+        .expect("delete routes to No Project store");
+    assert!(state.resolve_session(&sid).await.is_none());
+}
+
+#[tokio::test]
 async fn update_session_upsert_preserves_path_id_across_saves() {
     use crate::config::Settings;
     use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
@@ -1540,12 +1614,23 @@ async fn apply_todos_update_broadcasts_full_snapshot() {
     assert_eq!(todos.items.len(), 1);
 }
 
+/// `set_permission_mode` persists to the user config dir, so this test (and
+/// any other that reaches the handler's persist step) scopes a fake home to
+/// never touch the developer's real `permission-modes.json` (serial).
 #[tokio::test]
+#[serial_test::serial]
 async fn set_permission_mode_broadcasts_mode_changed() {
     use axum::extract::State;
     use axum::Json;
 
-    let state = Arc::new(global_event_test_state().await);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_home = tempfile::tempdir().expect("fake home");
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    let prev_wgenty_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
     let mut rx = state.global_event_hub.subscribe();
     let Json(resp) = set_permission_mode(
         State(state.clone()),
@@ -1557,17 +1642,27 @@ async fn set_permission_mode_broadcasts_mode_changed() {
     )
     .await
     .expect("set_permission_mode with session_id");
-    assert_eq!(resp["success"], true);
 
     let ev = rx.recv().await.expect("mode event");
+    let assertions = (
+        resp["success"].clone(),
+        ev.data["session_id"].clone(),
+        ev.data["mode"].clone(),
+        // Derived from the root mode when effective_mode is omitted.
+        ev.data["effective_mode"].clone(),
+    );
+    match prev_wgenty_home {
+        Some(v) => std::env::set_var("WGENTY_HOME", v),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    assert_eq!(assertions.0, true);
     assert_eq!(
         ev.kind,
         crate::daemon::global_events::GlobalEventKind::ModeChanged
     );
-    assert_eq!(ev.data["session_id"], "s1");
-    assert_eq!(ev.data["mode"], "yolo");
-    // Derived from the root mode when effective_mode is omitted.
-    assert_eq!(ev.data["effective_mode"], "yolo");
+    assert_eq!(assertions.1, "s1");
+    assert_eq!(assertions.2, "yolo");
+    assert_eq!(assertions.3, "yolo");
 }
 
 /// `switch_model` persists to `~/.wgenty-code/settings.json`, so the test
@@ -2072,6 +2167,77 @@ async fn set_permission_mode_without_session_id_is_rejected() {
     };
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body, serde_json::json!({"error": "session_id required"}));
+}
+
+/// `set_permission_mode` persists to `~/.wgenty-code/permission-modes.json`
+/// (via `utils::config_dir`, which honours `WGENTY_HOME`), so a daemon restart
+/// reloads the same mode. Scopes a fake home (serial) to never touch the
+/// developer's real config — same isolation strategy as switch_model tests.
+#[tokio::test]
+#[serial_test::serial]
+async fn set_permission_mode_persists_across_daemon_restart() {
+    use axum::extract::State;
+    use axum::Json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+
+    let prev_wgenty_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+    let run = async {
+        // First daemon lifetime: switch the main project to AcceptEdits.
+        let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings.clone())).await);
+        let Json(resp) = set_permission_mode(
+            State(state),
+            Json(crate::daemon::models::SetPermissionModeRequest {
+                mode: crate::config::agent::RootPermissionMode::AcceptEdits,
+                effective_mode: None,
+                session_id: Some("s1".to_string()),
+            }),
+        )
+        .await
+        .expect("set_permission_mode succeeds");
+        assert_eq!(resp["success"], true);
+
+        // File landed under the fake home with the canonical main root key.
+        let persist_path = fake_home
+            .path()
+            .join(".wgenty-code")
+            .join("permission-modes.json");
+        let on_disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&persist_path).expect("persist file written"),
+        )
+        .expect("valid json");
+        assert_eq!(on_disk["version"], 1);
+        let main_root = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(on_disk["modes"][&main_root]["root_mode"], "accept_edits");
+
+        // Second daemon lifetime (fresh DaemonState): GET returns the same mode.
+        let state2 = DaemonState::new(crate::state::AppState::new(settings.clone())).await;
+        let Json(pm) = get_permission_mode(
+            State(Arc::new(state2)),
+            Query(crate::daemon::models::PermissionModeQuery {
+                session_id: Some("s1".to_string()),
+            }),
+        )
+        .await
+        .expect("get_permission_mode succeeds");
+        assert_eq!(pm["mode"], "accept_edits");
+        assert_eq!(pm["effective_mode"], "accept_edits");
+    }
+    .await;
+    match prev_wgenty_home {
+        Some(v) => std::env::set_var("WGENTY_HOME", v),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    run
 }
 
 #[tokio::test]
