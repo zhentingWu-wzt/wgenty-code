@@ -410,7 +410,7 @@ jobs:
           if npm view "${pkg}@${ver}" >/dev/null 2>&1; then
             echo "skip: ${pkg}@${ver} already published"
           else
-            (cd "npm-dist/${{ matrix.sub }}" && npm publish --access public --provenance)
+            (cd "npm-dist/${{ matrix.sub }}" && npm publish --access public --loglevel silly)
           fi
 
   publish-main:
@@ -467,5 +467,5 @@ jobs:
           if npm view "${pkg}@${ver}" >/dev/null 2>&1; then
             echo "skip: ${pkg}@${ver} already published"
           else
-            (cd "npm-dist/$pkg" && npm publish --access public --provenance)
+            (cd "npm-dist/$pkg" && npm publish --access public --loglevel silly)
           fi
