@@ -447,6 +447,19 @@ enum AskDecision {
     Escalate,
 }
 
+/// Run `f` inside `tokio::task::block_in_place` when a multi-threaded runtime
+/// is driving this future; call it directly otherwise. `block_in_place`
+/// panics on `current_thread` runtimes (e.g. plain `#[tokio::test]`), and a
+/// plain call is safe there because the blocking work is short-lived disk I/O.
+fn block_if_multi_threaded<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
 /// Pure Ask-branch decision (mirrors the `/tools/execute` handler ordering).
 fn decide_ask(rule_approved: bool, mode_auto: bool) -> AskDecision {
     if rule_approved || mode_auto {
@@ -1393,7 +1406,7 @@ pub(crate) async fn post_run(
     // raw text. Unknown/built-in slash input passes through untouched (the
     // model sees the literal message, same as before).
     let message = if body.message.trim_start().starts_with('/') {
-        let router = tokio::task::block_in_place(|| state.workflow_router());
+        let router = block_if_multi_threaded(|| state.workflow_router());
         match router.route(body.message.trim_start()) {
             crate::runtime::command::RouteResult::Workflow {
                 name,
@@ -2012,7 +2025,7 @@ async fn run_session_turn(
     // default). The daemon's shared handle refreshes on TTL, so each new
     // turn sees newly installed skills without a daemon restart.
     {
-        let skill_loader = tokio::task::block_in_place(|| state.skill_loader.current());
+        let skill_loader = block_if_multi_threaded(|| state.skill_loader.current());
         let mut inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
         for name in skill_loader.skill_names() {
             if !crate::knowledge::should_expose_skill_by_default(&name) {
