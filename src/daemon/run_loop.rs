@@ -453,7 +453,12 @@ enum AskDecision {
 /// plain call is safe there because the blocking work is short-lived disk I/O.
 fn block_if_multi_threaded<T>(f: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) => {
+        Ok(handle)
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
+        {
             tokio::task::block_in_place(f)
         }
         _ => f(),

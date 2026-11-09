@@ -674,12 +674,12 @@ impl Tool for TaskTool {
 
         // ── Guard: concurrency limit — queue until slot opens ───────────
         let _ = self.settings().agent.subagent.max_concurrent; // retained for acknowledgement metadata
-                                                             // ── Unified asynchronous path ───────────────────────────────────
-                                                             // `task` always spawns a coordinator-owned child and returns a
-                                                             // structured acknowledgement immediately. The legacy sync/background
-                                                             // split is retired: a parent observes child results through the
-                                                             // coordinator (non-root parents get a synthesis round; the persistent
-                                                             // root consumes ready groups via the daemon delivery API).
+                                                               // ── Unified asynchronous path ───────────────────────────────────
+                                                               // `task` always spawns a coordinator-owned child and returns a
+                                                               // structured acknowledgement immediately. The legacy sync/background
+                                                               // split is retired: a parent observes child results through the
+                                                               // coordinator (non-root parents get a synthesis round; the persistent
+                                                               // root consumes ready groups via the daemon delivery API).
         let is_root_call = context.agent.parent_id.is_none();
         let group_id = if is_root_call {
             let turn_id = context.origin_turn_id.ok_or_else(|| ToolError {

@@ -1213,16 +1213,13 @@ impl DaemonState {
         // clients refresh their displayed model/limits. Construction is
         // best-effort: failure to start the watcher never blocks daemon
         // startup (subagent routing still works, just without hot reload).
-        crate::config::watcher::start_watching(
-            settings_handle.clone(),
-            move |new_settings| {
-                tracing::info!(
-                    active_profile = ?new_settings.models.active_profile,
-                    main_model = %new_settings.models.main.name,
-                    "settings.json reloaded via file watcher"
-                );
-            },
-        );
+        crate::config::watcher::start_watching(settings_handle.clone(), move |new_settings| {
+            tracing::info!(
+                active_profile = ?new_settings.models.active_profile,
+                main_model = %new_settings.models.main.name,
+                "settings.json reloaded via file watcher"
+            );
+        });
 
         Self {
             app_state,
