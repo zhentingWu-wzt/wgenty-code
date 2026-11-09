@@ -327,6 +327,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write # npm trusted publishing (OIDC) + provenance
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -404,16 +407,17 @@ jobs:
           if npm view "${pkg}@${ver}" >/dev/null 2>&1; then
             echo "skip: ${pkg}@${ver} already published"
           else
-            (cd "npm-dist/${{ matrix.sub }}" && npm publish --access public)
+            (cd "npm-dist/${{ matrix.sub }}" && npm publish --access public --provenance)
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-main:
     name: Publish main package
     needs: publish-platform
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write # npm trusted publishing (OIDC) + provenance
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -458,7 +462,5 @@ jobs:
           if npm view "${pkg}@${ver}" >/dev/null 2>&1; then
             echo "skip: ${pkg}@${ver} already published"
           else
-            (cd "npm-dist/$pkg" && npm publish --access public)
+            (cd "npm-dist/$pkg" && npm publish --access public --provenance)
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
