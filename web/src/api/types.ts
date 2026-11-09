@@ -523,6 +523,12 @@ export interface SkillInfoDto {
   source_path: string;
 }
 
+export interface ReloadSkillsResponse {
+  reloaded: boolean;
+  count: number;
+  skills: SkillInfoDto[];
+}
+
 export interface CheckpointInfo {
   turn_id: string;
   created_at: number;

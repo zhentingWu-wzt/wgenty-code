@@ -456,6 +456,29 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// `POST /api/v1/skills/reload` — force the daemon to rescan its skill
+    /// directories. Returns the daemon-side skill count after the rescan.
+    /// Backs the TUI `/skills` command.
+    pub async fn reload_skills(&self) -> anyhow::Result<usize> {
+        let url = format!("{}/api/v1/skills/reload", self.base_url);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .context("reload skills")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("reload_skills ({})", resp.status());
+        }
+        #[derive(serde::Deserialize)]
+        struct ReloadSkillsResponse {
+            count: usize,
+        }
+        let parsed: ReloadSkillsResponse = resp.json().await.context("decode skills reload")?;
+        Ok(parsed.count)
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }

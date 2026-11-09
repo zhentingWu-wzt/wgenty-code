@@ -41,6 +41,7 @@ import type {
   SessionInfo,
   SessionResponse,
   SkillInfoDto,
+  ReloadSkillsResponse,
   SwitchModelRequest,
   SwitchModelResponse,
   TaskProgressResponse,
@@ -752,6 +753,13 @@ export class DaemonClient {
 
   async listSkills(): Promise<SkillInfoDto[]> {
     return jsonOrThrow(await this.authedFetch(`${this.base}/skills`));
+  }
+
+  /** POST /skills/reload — force a daemon-side rescan of skill directories. */
+  async reloadSkills(): Promise<ReloadSkillsResponse> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/skills/reload`, { method: "POST" }),
+    );
   }
 
   // ── MCP servers ────────────────────────────────────────────────────────────

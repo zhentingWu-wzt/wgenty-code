@@ -2007,6 +2007,29 @@ async fn run_session_turn(
             &cwd, &settings,
         ));
 
+    // 5a-0. Skill inventory: same exposure filter as the TUI's startup
+    // discovery (SkillLoader + external registry, should_expose_skill_by_
+    // default). The daemon's shared handle refreshes on TTL, so each new
+    // turn sees newly installed skills without a daemon restart.
+    {
+        let skill_loader = tokio::task::block_in_place(|| state.skill_loader.current());
+        let mut inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
+        for name in skill_loader.skill_names() {
+            if !crate::knowledge::should_expose_skill_by_default(&name) {
+                continue;
+            }
+            if let Some(skill) = skill_loader.load_skill(&name) {
+                inventory.push(crate::prompts::SkillEntry {
+                    name,
+                    description: skill.description.clone(),
+                });
+            }
+        }
+        if !inventory.is_empty() {
+            prompt_ctx = prompt_ctx.with_skills(inventory);
+        }
+    }
+
     // 5a. Per-turn memory recall (mirrors TUI turn.rs:229). Daemon previously
     // skipped this — a functional gap. Now recalls cross-session memories and
     // injects them into the prompt context + retains metadata for inspector.

@@ -20,7 +20,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct RunScriptTool {
-    settings: Settings,
+    /// Shared hot-reloadable settings; read per script `task()` call so
+    /// `/model` switches and config-file reloads take effect without a restart.
+    settings_handle: crate::config::watcher::SettingsHandle,
     tool_registry: std::sync::Weak<ToolRegistry>,
     coordinator: Arc<AgentCoordinator>,
     transcript_store: Option<Arc<SubagentTranscriptStore>>,
@@ -28,13 +30,13 @@ pub struct RunScriptTool {
 
 impl RunScriptTool {
     pub fn new(
-        settings: Settings,
+        settings_handle: crate::config::watcher::SettingsHandle,
         tool_registry: std::sync::Weak<ToolRegistry>,
         coordinator: Arc<AgentCoordinator>,
         transcript_store: Option<Arc<SubagentTranscriptStore>>,
     ) -> Self {
         Self {
-            settings,
+            settings_handle,
             tool_registry,
             coordinator,
             transcript_store,
@@ -98,7 +100,11 @@ impl Tool for RunScriptTool {
         // register task(prompt) -> String
         {
             let reg = tool_registry.clone();
-            let settings = self.settings.clone();
+            let settings = self
+                .settings_handle
+                .read()
+                .expect("lock poisoned: settings")
+                .clone();
             let tools = allowed_tools.clone();
             let cnt = call_count.clone();
             let rt = tokio::runtime::Handle::current();
@@ -265,6 +271,7 @@ impl Tool for RunScriptTool {
                         Err(e) => (
                             crate::agent::ChildTerminal::Failed {
                                 code: "subagent_failed".to_string(),
+                                message: e.full_message().chars().take(500).collect(),
                                 partial_result: None,
                             },
                             format!("[ERROR] {}", e),

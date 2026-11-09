@@ -175,6 +175,7 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         )
         // Skills (web command center, read-only)
         .route("/api/v1/skills", get(skills_api::list_skills))
+        .route("/api/v1/skills/reload", post(skills_api::reload_skills))
         // Sessions
         .route(
             "/api/v1/sessions",

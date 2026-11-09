@@ -89,6 +89,14 @@ impl CompletionEngine {
                 category: "Built-in".to_string(),
             },
             CommandEntry {
+                name: "skills".to_string(),
+                description:
+                    "Rescan skill directories (newly installed skills appear without restart)"
+                        .to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
                 name: "help".to_string(),
                 description: "Show available commands".to_string(),
                 args_hint: None,

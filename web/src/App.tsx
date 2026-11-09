@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
 import { wsChannel } from "./api/wsChannel";
@@ -184,19 +184,17 @@ export function App() {
 
   // Skill slash-command hints: fetch once at bootstrap and register them in
   // the composer's `/` menu (e.g. `/comet`). Best-effort — a daemon hiccup
-  // just leaves the four built-in commands.
-  useEffect(() => {
-    let cancelled = false;
+  // just leaves the built-in commands. Re-run after `/reload-skills` or the
+  // Skills panel refresh so newly installed skills appear in the menu.
+  const refreshSkillCommands = useCallback(() => {
     client
       .listSkills()
-      .then((skills) => {
-        if (!cancelled) setSkillCommands(skills);
-      })
+      .then((skills) => setSkillCommands(skills))
       .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
   }, [client]);
+  useEffect(() => {
+    refreshSkillCommands();
+  }, [refreshSkillCommands]);
 
   // Warn before unloading the page while any session is mid-turn. The run
   // itself lives on the daemon (closing the tab will not kill it), but leaving
@@ -318,6 +316,15 @@ export function App() {
         break;
       case "/undo":
         ui.toggleRightPanel("checkpoints");
+        break;
+      case "/reload-skills":
+        client
+          .reloadSkills()
+          .then((res) => {
+            setSkillCommands(res.skills);
+            toast.success(`Skills reloaded (${res.count})`);
+          })
+          .catch((e) => toast.error(`Skills reload failed: ${String(e).slice(0, 120)}`));
         break;
     }
   };

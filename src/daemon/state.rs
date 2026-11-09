@@ -2,7 +2,7 @@
 
 use crate::config::RootPermissionMode;
 use crate::context::memory_session::SessionManager as MemorySessionManager;
-use crate::knowledge::loader::SkillLoader;
+use crate::knowledge::loader::SkillLoaderHandle;
 use crate::permissions::PermissionModeStore;
 use crate::permissions::ToolPermissionPolicy;
 use crate::runtime::hooks::HookManager;
@@ -547,7 +547,7 @@ pub struct DaemonState {
     pub todo_state: Arc<RwLock<TodoState>>,
     pub task_router: Arc<crate::tasks::TaskRouter>,
     pub todo_router: Arc<crate::tasks::TodoRouter>,
-    pub skill_loader: Arc<SkillLoader>,
+    pub skill_loader: Arc<SkillLoaderHandle>,
     pub background_manager: Arc<BackgroundManager>,
     /// Session-scoped, task-ID-deduplicated background result inbox. Fed by
     /// the tool-layer manager hook and retained before any SSE notification.
@@ -749,6 +749,14 @@ impl DaemonState {
             .clone()
     }
 
+    /// Rescan the skill directories now and swap the shared snapshot.
+    /// Called by `POST /api/v1/skills/reload` (TUI `/skills`, web refresh
+    /// button). Synchronous disk I/O — wrap in `block_in_place` from async
+    /// handlers. Returns the fresh snapshot and its skill count.
+    pub fn reload_skills(&self) -> (std::sync::Arc<crate::knowledge::loader::SkillLoader>, usize) {
+        self.skill_loader.reload()
+    }
+
     pub async fn new(app_state: AppState) -> Self {
         let task_manager = Arc::new(TaskManagementTool::new());
         let todo_state = Arc::new(RwLock::new(TodoState::default()));
@@ -805,19 +813,25 @@ impl DaemonState {
         // Initialize skill loader (needed before registry so TaskTool can use it).
         let skill_loader = {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-            // load_from_dirs appends "skills" to each base dir; the resolver
-            // convention is <base>/.wgenty-code/skills (user) and
-            // <project>/.wgenty-code/skills (project).
-            let base_dirs = vec![
-                home.join(".wgenty-code"),
-                app_state
-                    .settings
-                    .storage
-                    .working_dir
-                    .join(".wgenty-code"),
-            ];
-            let loader = SkillLoader::load_from_dirs(&base_dirs);
-            Arc::new(loader)
+            // Same canonical roots as SkillRootResolver (project-wgenty >>
+            // project-claude >> user-wgenty >> user-claude, read-only compat).
+            // load_from_dirs appends "skills" to each base dir, so pass the
+            // parent of each skills_root. Unlike the old startup-only scan,
+            // the handle can rescan on demand (TTL + explicit reload) so
+            // newly installed skills appear without a daemon restart.
+            let base_dirs = crate::knowledge::SkillRootResolver::roots_with(
+                &home,
+                &app_state.settings.storage.working_dir,
+            )
+            .iter()
+            .map(|r| {
+                r.skills_root
+                    .parent()
+                    .unwrap_or(&r.skills_root)
+                    .to_path_buf()
+            })
+            .collect::<Vec<_>>();
+            Arc::new(SkillLoaderHandle::load_from_dirs(&base_dirs))
         };
         crate::utils::startup_timing::mark("daemon state: skill loader ready");
 
@@ -841,6 +855,26 @@ impl DaemonState {
             )
             .with_node_registry(registry),
         );
+
+        // Restart recovery: non-terminal scopes from a previous daemon run
+        // cannot be resumed (their task handles and cancellation tokens died
+        // with the old process), so sweep them to `Cancelled` before any
+        // route can observe them. The store is per-boot in-memory today, so
+        // this normally reports zero; it is kept as the wired safety net the
+        // strict-isolation design (Task 15/16) specified for "constructor
+        // done, routes not yet accepting requests".
+        match coordinator.recover_non_terminal_scopes().await {
+            Ok(report) if report.cancelled_scopes > 0 => tracing::info!(
+                cancelled_scopes = report.cancelled_scopes,
+                "recovered non-terminal agent scopes after daemon restart"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                error = %error,
+                "failed to recover non-terminal agent scopes after daemon restart"
+            ),
+        }
+
         // Viewer-bound capability service + viewer-token secret. The secret is
         // random per daemon start; viewer tokens do not survive restart.
         let daemon_viewer_secret = {
@@ -881,6 +915,15 @@ impl DaemonState {
             store.load_persisted();
             store
         };
+
+        // Live settings handle seeded from the startup snapshot. Created early
+        // so TaskTool / RlmDelegateTool / RunScriptTool below can share it:
+        // per-request handlers and subagent spawns read a fresh clone from here
+        // so `/model` switches and config-file watcher reloads take effect on
+        // the next turn without a daemon restart.
+        let settings_handle: crate::config::watcher::SettingsHandle =
+            Arc::new(std::sync::RwLock::new(app_state.settings.clone()));
+
         // ── Shared MemoryManager (D1): backs memory_add tool + AutoDream ──
         let memory_manager = Arc::new(crate::context::MemoryManager::with_settings(
             &app_state.settings,
@@ -953,12 +996,12 @@ impl DaemonState {
                 memory_router.clone(),
             )));
 
-            // Register load_skill tool if skills exist
-            if !skill_loader.is_empty() {
-                registry.register(Box::new(
-                    crate::tools::meta::load_skill::LoadSkillTool::new(skill_loader.clone()),
-                ));
-            }
+            // Always register load_skill: the handle rescans on demand, so
+            // even a daemon started with an empty skills dir serves skills
+            // installed later (empty-name listing degrades gracefully).
+            registry.register(Box::new(
+                crate::tools::meta::load_skill::LoadSkillTool::new(skill_loader.clone()),
+            ));
 
             // TaskTool gets a Weak<ToolRegistry> that is valid for the lifetime
             // of this Arc (created by Arc::new_cyclic).
@@ -975,7 +1018,7 @@ impl DaemonState {
                 }
             };
             let task_tool = crate::tools::meta::task::TaskTool::new(
-                app_state.settings.clone(),
+                settings_handle.clone(),
                 weak_reg.clone(),
                 coordinator.clone(),
                 progress_store.clone(),
@@ -998,7 +1041,7 @@ impl DaemonState {
 
             if app_state.settings.agent.rlm.enabled && app_state.settings.agent.rlm.delegate_tool {
                 let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(
-                    app_state.settings.clone(),
+                    settings_handle.clone(),
                     weak_reg.clone(),
                     coordinator.clone(),
                     progress_store.clone(),
@@ -1010,7 +1053,7 @@ impl DaemonState {
             #[cfg(feature = "scripting")]
             {
                 let run_script_tool = crate::tools::meta::run_script::RunScriptTool::new(
-                    app_state.settings.clone(),
+                    settings_handle.clone(),
                     weak_reg.clone(),
                     coordinator.clone(),
                     transcript_store.clone(),
@@ -1165,11 +1208,21 @@ impl DaemonState {
             memory_router.set_review_llm(Some(review)).await;
         }
 
-        // Live settings handle seeded from the startup snapshot. Runtime
-        // handlers clone from here per request so `/model` switches take
-        // effect on the next turn without a restart.
-        let settings_handle: crate::config::watcher::SettingsHandle =
-            Arc::new(std::sync::RwLock::new(app_state.settings.clone()));
+        // Start the settings.json file watcher. On change the shared handle
+        // is reloaded and a ConfigChanged event is broadcast so web/TUI
+        // clients refresh their displayed model/limits. Construction is
+        // best-effort: failure to start the watcher never blocks daemon
+        // startup (subagent routing still works, just without hot reload).
+        crate::config::watcher::start_watching(
+            settings_handle.clone(),
+            move |new_settings| {
+                tracing::info!(
+                    active_profile = ?new_settings.models.active_profile,
+                    main_model = %new_settings.models.main.name,
+                    "settings.json reloaded via file watcher"
+                );
+            },
+        );
 
         Self {
             app_state,
