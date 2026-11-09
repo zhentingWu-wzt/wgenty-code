@@ -365,6 +365,11 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Upgrade npm for trusted publishing
+        # npm ≥ 11.5.1 is required for OIDC trusted publishing; Node 20's
+        # bundled npm 10.x does not exchange the GitHub id-token.
+        run: npm install -g npm@latest
+
       - name: Compute version
         id: ver
         shell: python
@@ -423,6 +428,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
 
       - name: Compute version
         id: ver
