@@ -94,6 +94,8 @@ Expected: 2 passed
 
 ### Task 2: profiles→providers 迁移（幂等 + .bak 备份 + active 映射）
 
+- [x] Task 2: profiles→providers 迁移（幂等 + .bak 备份 + active 映射）
+
 **Files:**
 - Modify: `src/config/models.rs`（`migrate_legacy` 或新 `migrate_providers`，load 路径调用）
 - Modify: `src/config/mod.rs`（`Settings::load_from_disk` 写回前生成 `.bak`）
@@ -103,7 +105,7 @@ Expected: 2 passed
 - Consumes: Task 1 的 struct
 - Produces: `impl ModelsConfig { pub fn migrate_providers(&mut self) }`；`pub fn vendor_for_host(host: &str) -> Option<&'static str>`（内置映射：api.kimi.com/moonshot→kimi、api.z.ai/bigmodel→zhipu、deepseek→deepseek、openai.com→openai、anthropic.com→anthropic）
 
-- [ ] **Step 1: 写失败测试**（fixture 直接内联 JSON，形态取自真实 settings：kimi 与 glm 同 host 两 profile）
+- [x] **Step 1: 写失败测试**（fixture 直接内联 JSON，形态取自真实 settings：kimi 与 glm 同 host 两 profile）
 
 ```rust
 fn legacy_profiles_json() -> String {
@@ -151,13 +153,13 @@ fn migrate_unknown_host_uses_host_as_group_name() {
 }
 ```
 
-- [ ] **Step 2: 验证失败** — Run: `cargo test migrate_ --lib 2>&1 | tail -3`，Expected: FAIL
+- [x] **Step 2: 验证失败** — Run: `cargo test migrate_ --lib 2>&1 | tail -3`，Expected: FAIL
 
-- [ ] **Step 3: 实现 `migrate_providers`** — 逻辑：`profiles` 空→no-op；非空且 `providers` 已存在→把 profile 按同规则合入现有组（同名 (group,model) 跳过）；否则新建组。分组：url parse host（失败用 "custom"），host 经 `vendor_for_host` 映射，未知用 host。每 profile → `ProviderModel{name, tier, api_key, base_url, context_window, temperature}`（仅当与组 base_url/key 不同的才下沉为 override：同值置 None）。组 `api_key` 取组内第一个 profile 的 key。`active_profile` 有值→查其在哪个组哪个模型→写 `active_model`，并同步 `models.main`（用现有字段拼 `ModelEndpoint`）。完成后 `profiles.clear()`、`small`/`planner` 已由现有 `migrate_legacy` 处理（保持其顺序：先 legacy 后 providers）。`Settings::load_from_disk`：检测到迁移发生（`profiles` 非空→空变化）且目标文件存在时，`std::fs::copy(settings_path, settings_path.with_extension(format!("json.bak-{}", date)))`（已存在同日 bak 不覆盖），再 `save()`。
+- [x] **Step 3: 实现 `migrate_providers`** — 逻辑：`profiles` 空→no-op；非空且 `providers` 已存在→把 profile 按同规则合入现有组（同名 (group,model) 跳过）；否则新建组。分组：url parse host（失败用 "custom"），host 经 `vendor_for_host` 映射，未知用 host。每 profile → `ProviderModel{name, tier, api_key, base_url, context_window, temperature}`（仅当与组 base_url/key 不同的才下沉为 override：同值置 None）。组 `api_key` 取组内第一个 profile 的 key。`active_profile` 有值→查其在哪个组哪个模型→写 `active_model`，并同步 `models.main`（用现有字段拼 `ModelEndpoint`）。完成后 `profiles.clear()`、`small`/`planner` 已由现有 `migrate_legacy` 处理（保持其顺序：先 legacy 后 providers）。`Settings::load_from_disk`：检测到迁移发生（`profiles` 非空→空变化）且目标文件存在时，`std::fs::copy(settings_path, settings_path.with_extension(format!("json.bak-{}", date)))`（已存在同日 bak 不覆盖），再 `save()`。
 
-- [ ] **Step 4: 验证通过** — Run: `cargo test migrate_ --lib 2>&1 | tail -3`，Expected: 3 passed
+- [x] **Step 4: 验证通过** — Run: `cargo test migrate_ --lib 2>&1 | tail -3`，Expected: 3 passed
 
-- [ ] **Step 5: Commit** — `test+feat(config): profiles→providers migration with idempotence and .bak backup`
+- [x] **Step 5: Commit** — `test+feat(config): profiles→providers migration with idempotence and .bak backup`
 
 ---
 

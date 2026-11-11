@@ -19,3 +19,5 @@ verified_at: null
 archived: false
 handoff_context: openspec/changes/multi-provider-models/.comet/handoff/design-context.json
 handoff_hash: fb4fa2469d9cf36551eecc2d1af115b1e71f0ab08f29e07c48a2e926db4df57c
+bound_branch: feature/20261111/multi-provider-models
+review_mode: standard
