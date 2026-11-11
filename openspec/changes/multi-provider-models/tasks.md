@@ -2,7 +2,7 @@
 
 ## 1. 配置 schema 与迁移
 
-- [ ] 1.1 `ProviderGroup`/`ProviderModel` 结构与 serde（`models.providers`、`active_model`；`#[serde(default)]` 兼容旧文件）
+- [x] 1.1 `ProviderGroup`/`ProviderModel` 结构与 serde（`models.providers`、`active_model`；`#[serde(default)]` 兼容旧文件）
 - [ ] 1.2 profiles→providers 迁移：按归一化 base_url host 聚合、内置 host→厂商名映射、endpoint 覆盖下放到模型条目、`active_profile`→`active_model` 映射；幂等
 - [ ] 1.3 迁移写回：生成 `settings.json.bak-<date>` 一次性备份后删除旧 `profiles` 字段
 - [ ] 1.4 `endpoint_for_tier` 改为跨厂商遍历 `providers` 模型 tier，`(provider, model)` 序确定性取首；`small` 遗留槽兼容并入

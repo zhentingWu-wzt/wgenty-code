@@ -28,6 +28,8 @@ base-ref: e3c59ae51e32c5898715d387cb559113647e44d7
 
 ### Task 1: ProviderGroup/ProviderModel schema + 反序列化
 
+- [x] Task 1: ProviderGroup/ProviderModel schema + 反序列化
+
 **Files:**
 - Modify: `src/config/models.rs`
 - Test: `src/config/tests.rs`
@@ -37,7 +39,7 @@ base-ref: e3c59ae51e32c5898715d387cb559113647e44d7
 - Produces: `pub struct ProviderModel { pub name: String, pub tier: Option<ModelTier>, pub api_key: Option<String>, pub base_url: Option<String>, pub context_window: Option<usize>, pub temperature: Option<f32> }`
 - Produces: `ModelsConfig` 新字段 `#[serde(default)] pub providers: HashMap<String, ProviderGroup>`、`#[serde(default)] pub active_model: Option<ActiveModelRef>`，`pub struct ActiveModelRef { pub provider: String, pub model: String }`（均 Clone + Serialize + Deserialize + Debug）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```rust
 #[test]
@@ -74,19 +76,19 @@ fn providers_absent_keeps_old_config_parsing() {
 }
 ```
 
-- [ ] **Step 2: 运行验证失败**
+- [x] **Step 2: 运行验证失败**
 
 Run: `cargo test -p wgenty-code providers_ --lib 2>&1 | tail -5`
 Expected: FAIL（`providers` 字段不存在/编译错误）
 
-- [ ] **Step 3: 最小实现** — 在 `ModelsConfig` 上方新增两个 struct（字段全 `#[serde(default)]`，`base_url` 用 `#[serde(default)]` String；`ProviderModel.tier` 复用现有 `ModelTier` serde）；`ModelsConfig` 增两字段（位置：`profiles` 之后）。
+- [x] **Step 3: 最小实现** — 在 `ModelsConfig` 上方新增两个 struct（字段全 `#[serde(default)]`，`base_url` 用 `#[serde(default)]` String；`ProviderModel.tier` 复用现有 `ModelTier` serde）；`ModelsConfig` 增两字段（位置：`profiles` 之后）。
 
-- [ ] **Step 4: 运行验证通过**
+- [x] **Step 4: 运行验证通过**
 
 Run: `cargo test -p wgenty-code providers_ --lib 2>&1 | tail -5`
 Expected: 2 passed
 
-- [ ] **Step 5: Commit** — `git add src/config/models.rs src/config/tests.rs && git commit -m "feat(config): ProviderGroup/ProviderModel schema for vendor-grouped models"`
+- [x] **Step 5: Commit** — `git add src/config/models.rs src/config/tests.rs && git commit -m "feat(config): ProviderGroup/ProviderModel schema for vendor-grouped models"`
 
 ---
 
