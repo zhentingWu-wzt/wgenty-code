@@ -160,6 +160,7 @@ Settings live in `~/.wgenty-code/settings.json` (auto-generated on first run). K
 | `models.small.name` | *(none)* | Smaller/cheaper model for delegated sub-tasks |
 | `models.planner.name` | *(none)* | Dedicated model for plan generation |
 | `models.transport.max_tokens` | `4096` | Max tokens per request |
+| `models.transport.max_concurrent_llm_requests` | `8` | Process-wide cap on concurrent LLM requests (main loop + subagents); `0` = unlimited. Queued requests smooth out subagent bursts before they hit provider rate limits |
 | `agent.plan_mode` | `false` | Enable plan-before-execute mode |
 | `agent.subagent.max_depth` | `1` | Max recursion depth for nested sub-agents (1 = subagents cannot spawn further subagents; raise to allow recursion) |
 | `agent.subagent.max_concurrent` | `5` | Max parallel sub-agents |

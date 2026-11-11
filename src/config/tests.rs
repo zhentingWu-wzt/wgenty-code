@@ -99,6 +99,38 @@ fn load_from_disk_migrates_legacy_model_fields() {
 }
 
 #[test]
+fn transport_max_concurrent_llm_requests_defaults_to_eight_and_parses_zero() {
+    let s = Settings::default();
+    assert_eq!(s.models.transport.max_concurrent_llm_requests, 8);
+
+    let raw = r#"
+        {
+          "max_tokens": 4096,
+          "timeout": 120,
+          "streaming": true,
+          "beta_headers": [],
+          "max_concurrent_llm_requests": 0
+        }
+    "#;
+    let transport: crate::config::models::TransportConfig =
+        serde_json::from_str(raw).expect("parse transport config");
+    assert_eq!(transport.max_concurrent_llm_requests, 0);
+
+    // Legacy configs without the key keep working via serde default.
+    let legacy = r#"
+        {
+          "max_tokens": 4096,
+          "timeout": 120,
+          "streaming": true,
+          "beta_headers": []
+        }
+    "#;
+    let transport: crate::config::models::TransportConfig =
+        serde_json::from_str(legacy).expect("parse legacy transport config");
+    assert_eq!(transport.max_concurrent_llm_requests, 8);
+}
+
+#[test]
 #[serial_test::serial]
 fn set_models_main_name_remaps_onto_active_profile_without_clobber() {
     let prev = std::env::var_os("WGENTY_HOME");

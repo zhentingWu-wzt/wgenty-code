@@ -238,6 +238,13 @@ pub struct TransportConfig {
     /// `Some(true)` forces stripping.
     #[serde(default)]
     pub strip_reasoning_content: Option<bool>,
+    /// Maximum number of concurrent in-flight LLM requests (chat + streaming)
+    /// across the whole process: main agent loop, subagents, RLM, planner,
+    /// daemon. Requests beyond the cap queue at the API client layer, smoothing
+    /// the simultaneous burst from a wave of subagent spawns that would
+    /// otherwise trip provider rate limits. `0` disables the cap.
+    #[serde(default = "default_max_concurrent_llm_requests")]
+    pub max_concurrent_llm_requests: usize,
 }
 
 impl Default for TransportConfig {
@@ -248,8 +255,13 @@ impl Default for TransportConfig {
             streaming: true,
             beta_headers: vec![],
             strip_reasoning_content: None,
+            max_concurrent_llm_requests: default_max_concurrent_llm_requests(),
         }
     }
+}
+
+pub(crate) fn default_max_concurrent_llm_requests() -> usize {
+    8
 }
 
 fn default_context_window() -> usize {

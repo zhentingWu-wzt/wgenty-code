@@ -19,6 +19,7 @@ pub use types::*;
 use crate::config::Settings;
 use reqwest::Client;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anthropic::{
@@ -34,6 +35,72 @@ use provider::Provider;
 /// Anthropic requires an explicit `max_tokens`; when `transport.max_tokens = 0`
 /// ("omit the field" on OpenAI-compatible APIs), send this fallback instead.
 const ANTHROPIC_MAX_TOKENS_FALLBACK: usize = 8192;
+
+/// How long to wait before re-sending a rate-limited (429) request when the
+/// server did not send a parseable `Retry-After` header.
+const RATE_LIMIT_BACKOFF_BASE_SECS: u64 = 2;
+/// Hard ceiling per 429 wait, so a server-supplied `Retry-After: 3600` does
+/// not hang a subagent report phase for an hour.
+const RATE_LIMIT_BACKOFF_MAX_SECS: u64 = 30;
+
+/// Decide whether an HTTP response should be re-sent after waiting
+/// `Duration::ZERO` (immediately, no backoff), some backoff duration, or not
+/// at all (`None`). Extracted as a pure function so the retry policy is
+/// unit-testable without a live endpoint.
+fn rate_limit_retry_wait(
+    status: reqwest::StatusCode,
+    response: &reqwest::Response,
+) -> Option<Duration> {
+    if status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    match response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            let value = value.trim();
+            // Delay-seconds form.
+            if let Ok(secs) = value.parse::<u64>() {
+                return Some(Duration::from_secs(secs));
+            }
+            // HTTP-date form (e.g. "Wed, 21 Oct 2026 07:28:00 GMT").
+            httpdate::parse_http_date(value).ok().map(|when| {
+                match when.duration_since(std::time::SystemTime::now()) {
+                    Ok(delta) => delta,
+                    // Date already in the past: retry permitted immediately.
+                    Err(_) => Duration::ZERO,
+                }
+            })
+        }) {
+        Some(wait) => Some(wait.min(Duration::from_secs(RATE_LIMIT_BACKOFF_MAX_SECS))),
+        None => Some(Duration::from_secs(RATE_LIMIT_BACKOFF_BASE_SECS)),
+    }
+}
+
+/// Configured process-wide cap on concurrent in-flight LLM requests, read
+/// from `models.transport.max_concurrent_llm_requests` exactly once (the
+/// first LLM request) and cached: the semaphore cannot be resized after
+/// creation, so later settings hot-reloads intentionally do not change the
+/// cap within the current process. A settings load failure falls back to the
+/// serde default.
+fn configured_max_concurrent_llm_requests() -> usize {
+    static CACHE: OnceLock<usize> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        Settings::load()
+            .map(|s| s.models.transport.max_concurrent_llm_requests)
+            .unwrap_or_else(|_| crate::config::models::default_max_concurrent_llm_requests())
+    })
+}
+
+/// Process-wide permit pool bounding concurrent in-flight LLM requests
+/// (chat + streaming): main loop, subagents, RLM, planner, daemon requests.
+///
+/// Deliberately process-level instead of per-`ApiClient` state: the daemon
+/// builds one `ApiClient` per request, so a per-instance semaphore would never
+/// actually throttle anything. `max_concurrent_llm_requests = 0` disables the
+/// cap entirely (see [`ApiClient::acquire_llm_inflight_permit`]).
+static LLM_INFLIGHT_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
 /// Sanitize tool-call arguments before replaying a conversation to the API.
 ///
@@ -201,6 +268,29 @@ impl ApiClient {
         }
     }
 
+    /// Wait for a slot in the process-wide LLM request cap. Called on every
+    /// send so bursts from a wave of subagent spawns queue here instead of
+    /// tripping provider rate limits (429). Holds the permit for the duration
+    /// of the request, including 429 backoff waits, so a single client cannot
+    /// re-enter and defeat the cap.
+    async fn acquire_llm_inflight_permit() -> tokio::sync::OwnedSemaphorePermit {
+        let configured = configured_max_concurrent_llm_requests();
+        if configured == 0 {
+            // Cap disabled: acquire from a permit pool that never runs out.
+            static UNBOUNDED: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+            let semaphore =
+                UNBOUNDED.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(usize::MAX)));
+            return tokio::sync::Semaphore::acquire_owned(Arc::clone(semaphore))
+                .await
+                .expect("unbounded semaphore has infinite permits");
+        }
+        let semaphore = LLM_INFLIGHT_SEMAPHORE
+            .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(configured)));
+        tokio::sync::Semaphore::acquire_owned(Arc::clone(semaphore))
+            .await
+            .expect("LLM inflight semaphore is never closed")
+    }
+
     /// The provider used by this client
     pub fn provider(&self) -> &dyn Provider {
         self.provider.as_ref()
@@ -285,6 +375,7 @@ impl ApiClient {
     ) -> anyhow::Result<reqwest::Response> {
         const API_MAX_RETRIES: u32 = 4; // 5 total attempts
         let mut delay = 2u64;
+        let _permit = Self::acquire_llm_inflight_permit().await;
         for attempt in 0..=API_MAX_RETRIES {
             let mut req = client.post(url);
             for (k, v) in headers {
@@ -292,7 +383,26 @@ impl ApiClient {
             }
             req = req.header("Content-Type", "application/json").json(body);
             match req.send().await {
-                Ok(resp) => return Ok(resp),
+                Ok(resp) => {
+                    let status = resp.status();
+                    if let Some(wait) = rate_limit_retry_wait(status, &resp) {
+                        if attempt < API_MAX_RETRIES {
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_attempts = API_MAX_RETRIES + 1,
+                                endpoint = %endpoint,
+                                retry_after_secs = wait.as_secs(),
+                                "rate limited (429) by {} API, backing off and re-sending",
+                                self.provider.name()
+                            );
+                            if !wait.is_zero() {
+                                tokio::time::sleep(wait).await;
+                            }
+                            continue;
+                        }
+                    }
+                    return Ok(resp);
+                }
                 Err(e) => {
                     let msg = e.to_string().to_lowercase();
                     let transient = e.is_connect()
@@ -766,6 +876,81 @@ mod tests {
             Some(r#"{"not":"json but user role"}"#)
         );
         assert_eq!(msgs[2].content.as_deref(), Some(r#"{"success":true}"#));
+    }
+
+    fn response_with_retry_after(value: Option<&str>) -> reqwest::Response {
+        let mut builder = http::Response::builder().status(429);
+        if let Some(value) = value {
+            builder = builder.header("Retry-After", value);
+        }
+        reqwest::Response::from(builder.body("rate limited").expect("static body"))
+    }
+
+    #[test]
+    fn rate_limit_wait_none_for_success_or_other_errors() {
+        let ok = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body("")
+                .expect("static body"),
+        );
+        assert_eq!(rate_limit_retry_wait(ok.status(), &ok), None);
+
+        let server_error = reqwest::Response::from(
+            http::Response::builder()
+                .status(503)
+                .body("")
+                .expect("static body"),
+        );
+        assert_eq!(
+            rate_limit_retry_wait(server_error.status(), &server_error),
+            None
+        );
+    }
+
+    #[test]
+    fn rate_limit_wait_uses_default_backoff_without_header() {
+        let response = response_with_retry_after(None);
+        assert_eq!(
+            rate_limit_retry_wait(response.status(), &response),
+            Some(Duration::from_secs(RATE_LIMIT_BACKOFF_BASE_SECS))
+        );
+    }
+
+    #[test]
+    fn rate_limit_wait_honors_delay_seconds_header() {
+        let response = response_with_retry_after(Some("7"));
+        assert_eq!(
+            rate_limit_retry_wait(response.status(), &response),
+            Some(Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn rate_limit_wait_caps_server_supplied_delay() {
+        let response = response_with_retry_after(Some("3600"));
+        let wait =
+            rate_limit_retry_wait(response.status(), &response).expect("429 must be retryable");
+        assert!(wait <= Duration::from_secs(RATE_LIMIT_BACKOFF_MAX_SECS));
+    }
+
+    #[test]
+    fn rate_limit_wait_retries_immediately_on_past_http_date() {
+        // A date in the past means "the window already reset" -> wait zero.
+        let response = response_with_retry_after(Some("Wed, 01 Jan 2020 00:00:00 GMT"));
+        assert_eq!(
+            rate_limit_retry_wait(response.status(), &response),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn rate_limit_wait_falls_back_when_header_unparseable() {
+        let response = response_with_retry_after(Some("not-a-date-or-seconds"));
+        assert_eq!(
+            rate_limit_retry_wait(response.status(), &response),
+            Some(Duration::from_secs(RATE_LIMIT_BACKOFF_BASE_SECS))
+        );
     }
 
     fn asst_with_reasoning(reasoning: &str) -> ChatMessage {
