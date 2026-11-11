@@ -8,6 +8,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../../components/ui/button";
 import { RunningToolCard, ToolCallCard } from "./ToolCallCard";
 import { CodeBlock } from "./CodeBlock";
+import { MermaidBlock } from "./MermaidBlock";
 
 /**
  * Render assistant content as GFM Markdown. Re-parses on every render — for
@@ -31,6 +32,8 @@ function MarkdownCode(props: ComponentPropsWithoutRef<"code">) {
   if (!match) return <code className={className}>{children}</code>;
 
   const text = String(children).replace(/\n$/, "");
+  // Diagram languages render as figures, not highlighted code.
+  if (match[1] === "mermaid") return <MermaidBlock value={text} />;
   return <CodeBlock language={match[1]} value={text} />;
 }
 
