@@ -108,6 +108,12 @@ fn load_from_disk_migrates_legacy_model_fields() {
     assert_eq!(re.models.active_profile.as_deref(), Some("main"));
     assert_eq!(re.models.active_model, active_model);
     assert!(re.models.profiles.is_empty());
+    assert_eq!(re.models.main.name, "glm-5.3");
+    assert_eq!(
+        re.models.main.base_url.as_deref(),
+        Some("https://relay.example")
+    );
+    assert_eq!(re.models.main.api_key.as_deref(), Some("k-main"));
     assert_eq!(
         serde_json::to_value(&re.models.providers).expect("serialize reloaded providers"),
         providers
@@ -170,6 +176,134 @@ fn set_models_main_name_remaps_onto_active_profile_without_clobber() {
         "sibling fields survive the legacy-path set"
     );
     assert_eq!(s.models.active_profile.as_deref(), Some("main"));
+    assert_eq!(
+        s.models.active_model,
+        Some(ActiveModelRef {
+            provider: "relay.example".into(),
+            model: "glm-5.2".into(),
+        })
+    );
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn set_provider_model_rejects_unknown_fields() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+
+    let err = Settings::set("models.main.nam", "\"glm-5.2\"").unwrap_err();
+    assert!(
+        format!("{err}").contains("unknown setting key"),
+        "got: {err:#}"
+    );
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn set_models_main_whole_object_updates_active_provider_model() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+
+    Settings::set(
+        "models.main",
+        r#"{
+            "name": "glm-whole",
+            "profile_key": "main",
+            "tier": null,
+            "api_key": "k-whole",
+            "base_url": "https://relay.example/whole",
+            "context_window": null,
+            "temperature": null
+        }"#,
+    )
+    .expect("set whole active provider model");
+
+    let s = Settings::load_from_disk().expect("reload");
+    let main_model = s.models.providers["relay.example"]
+        .models
+        .iter()
+        .find(|m| m.profile_key.as_deref() == Some("main"))
+        .expect("main provider model exists");
+    assert_eq!(main_model.name, "glm-whole");
+    assert_eq!(main_model.api_key.as_deref(), Some("k-whole"));
+    assert_eq!(
+        s.models.active_model,
+        Some(ActiveModelRef {
+            provider: "relay.example".into(),
+            model: "glm-whole".into(),
+        })
+    );
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn set_provider_group_field_preserves_generic_validation() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    std::fs::write(
+        cfg_dir.join("settings.json"),
+        r#"{
+            "models": {
+                "providers": {
+                    "zhipu": {
+                        "base_url": "https://api.z.ai/api/coding/paas/v4",
+                        "models": [{"name": "glm-5.3"}]
+                    }
+                },
+                "active_model": {"provider": "zhipu", "model": "glm-5.3"}
+            }
+        }"#,
+    )
+    .expect("seed settings");
+    std::env::set_var("WGENTY_HOME", dir.path());
+
+    Settings::set("models.providers.zhipu.display_name", "\"Zhipu AI\"")
+        .expect("set provider group field");
+    let err = Settings::set("models.providers.zhipu.display_nam", "\"typo\"").unwrap_err();
+    assert!(
+        format!("{err}").contains("unknown setting key"),
+        "got: {err:#}"
+    );
+    let s = Settings::load_from_disk().expect("reload");
+    assert_eq!(
+        s.models.providers["zhipu"].display_name.as_deref(),
+        Some("Zhipu AI")
+    );
+    restore_wgenty_home(prev);
+}
+
+#[test]
+#[serial_test::serial]
+fn legacy_main_set_after_switch_by_model_name_targets_active_model() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+    let mut s = Settings::load_from_disk().expect("load");
+    s.switch_to_profile("haiku").expect("switch by model name");
+    s.save().expect("save switched settings");
+
+    Settings::set("models.main.context_window", "12345").expect("set active model");
+
+    let s = Settings::load_from_disk().expect("reload");
+    assert!(s.models.profiles.is_empty());
+    assert_eq!(
+        s.models.active_model,
+        Some(ActiveModelRef {
+            provider: "relay.example".into(),
+            model: "haiku".into(),
+        })
+    );
+    let active = s.models.providers["relay.example"]
+        .models
+        .iter()
+        .find(|m| m.name == "haiku")
+        .expect("active provider model exists");
+    assert_eq!(active.context_window, Some(12345));
+    assert_eq!(s.models.main.name, "haiku");
     restore_wgenty_home(prev);
 }
 
@@ -875,6 +1009,14 @@ fn vendor_for_host_maps_builtin_vendors() {
 }
 
 #[test]
+fn vendor_for_host_requires_domain_boundaries() {
+    assert_eq!(vendor_for_host("notkimi.com"), None);
+    assert_eq!(vendor_for_host("api.openai.com.evil.test"), None);
+    assert_eq!(vendor_for_host("notz.ai"), None);
+    assert_eq!(vendor_for_host("notanthropic.com"), None);
+}
+
+#[test]
 #[serial_test::serial]
 fn load_from_disk_migrates_profiles_to_providers_and_writes_bak() {
     let prev = std::env::var_os("WGENTY_HOME");
@@ -910,10 +1052,7 @@ fn load_from_disk_migrates_profiles_to_providers_and_writes_bak() {
     let rewritten: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read settings"))
             .expect("parse rewritten");
-    assert!(rewritten["models"]["profiles"]
-        .as_object()
-        .unwrap()
-        .is_empty());
+    assert!(rewritten["models"].get("profiles").is_none());
     assert!(rewritten["models"]["providers"].is_object());
 }
 

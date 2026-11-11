@@ -420,7 +420,11 @@ pub struct ModelsConfig {
     /// automatically. Empty by default — old configs with only `main` keep
     /// working unchanged. Null values are tolerated on load (dropped with a
     /// warning; see [`deserialize_profiles_skip_nulls`]).
-    #[serde(default, deserialize_with = "deserialize_profiles_skip_nulls")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_profiles_skip_nulls",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
     pub profiles: HashMap<String, ModelEndpoint>,
     /// Vendor-grouped providers (`models.providers`). New-format config for
     /// the multi-provider `/model` picker; empty (and thus inert) for legacy
@@ -740,7 +744,7 @@ impl ModelsConfig {
 
     /// Migrate legacy `models.profiles` into the vendor-grouped
     /// `models.providers` + `models.active_model` format. Idempotent:
-    /// - `profiles` empty → no-op;
+    /// - `profiles` empty → only resync the runtime `main` from `active_model`;
     /// - `providers` already populated → profiles are merged into the
     ///   existing groups under the same rules (same `(group, model)` pairs
     ///   are skipped);
@@ -756,6 +760,29 @@ impl ModelsConfig {
     /// is synced from the active profile.
     pub fn migrate_providers(&mut self) {
         if self.profiles.is_empty() {
+            if let Some(active) = self.active_model.clone() {
+                if let Some(group) = self.providers.get(&active.provider) {
+                    if let Some(model) = group.models.iter().find(|m| m.name == active.model) {
+                        self.main = ModelEndpoint {
+                            name: model.name.clone(),
+                            base_url: Some(
+                                model
+                                    .base_url
+                                    .clone()
+                                    .unwrap_or_else(|| group.base_url.clone()),
+                            ),
+                            api_key: model.api_key.clone().or_else(|| group.api_key.clone()),
+                            appkey: None,
+                            provider: group.protocol.clone(),
+                            context_window: model.context_window,
+                            temperature: model.temperature,
+                            display_name: None,
+                            tier: model.tier,
+                            pricing: None,
+                        };
+                    }
+                }
+            }
             return;
         }
         // Deterministic processing order: sorted by profile key so group
@@ -841,15 +868,21 @@ fn extract_host(base_url: &str) -> String {
 /// return `None` — the caller uses the host itself as the group name.
 pub fn vendor_for_host(host: &str) -> Option<&'static str> {
     let host = host.to_ascii_lowercase();
-    if host.contains("kimi.com") || host.contains("moonshot") {
+    let is_domain = |domain: &str| {
+        host == domain
+            || host
+                .strip_suffix(domain)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    };
+    if is_domain("kimi.com") || host.contains("moonshot") {
         Some("kimi")
-    } else if host.contains("z.ai") || host.contains("bigmodel") {
+    } else if is_domain("z.ai") || host.contains("bigmodel") {
         Some("zhipu")
     } else if host.contains("deepseek") {
         Some("deepseek")
-    } else if host.contains("openai.com") {
+    } else if is_domain("openai.com") {
         Some("openai")
-    } else if host.contains("anthropic.com") {
+    } else if is_domain("anthropic.com") {
         Some("anthropic")
     } else {
         None

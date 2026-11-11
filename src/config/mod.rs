@@ -143,7 +143,8 @@ impl Settings {
             // present, preserve the pre-migration file once as
             // `settings.json.bak-<date>` (same-day backups are not
             // overwritten) before writing back the migrated form.
-            if !settings.models.profiles.is_empty() {
+            let profiles_present = !settings.models.profiles.is_empty();
+            if profiles_present {
                 let date = chrono::Local::now().format("%Y-%m-%d");
                 let bak = path.with_extension(format!("json.bak-{date}"));
                 if !bak.exists() {
@@ -152,7 +153,9 @@ impl Settings {
                         bak.display()
                     ))?;
                 }
-                settings.models.migrate_providers();
+            }
+            settings.models.migrate_providers();
+            if profiles_present {
                 settings.save()?;
             }
             Ok(settings)
@@ -406,12 +409,17 @@ impl Settings {
         // Load disk form so runtime-resolved absolute working_dir is not written back.
         let mut settings = Self::load_from_disk()?;
         let remapped = Self::remap_legacy_models_key(&settings.models, key);
+        let provider_model_path = remapped.starts_with("models.providers.")
+            && (remapped != key || remapped.contains(".models."));
         let key = remapped.as_str();
 
         // Provider-model paths contain dots in the group name and an array
         // index — handle them structurally instead of via the JSON pointer
         // path below (which splits on '.' and cannot address Vec elements).
-        if let Some(rest) = key.strip_prefix("models.providers.") {
+        if provider_model_path {
+            let rest = key
+                .strip_prefix("models.providers.")
+                .ok_or_else(|| anyhow::anyhow!("invalid provider-model path '{}'", key))?;
             let parsed: Value =
                 serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
             Self::set_provider_model_field(&mut settings, rest, parsed)?;
@@ -542,6 +550,20 @@ impl Settings {
                         let _ = model;
                         return format!("models.providers.{group}.models.{idx}{rest}");
                     }
+                    if prefix == "models.main" {
+                        if let Some(active) = &models.active_model {
+                            if let Some(group) = models.providers.get(&active.provider) {
+                                if let Some(idx) =
+                                    group.models.iter().position(|m| m.name == active.model)
+                                {
+                                    return format!(
+                                        "models.providers.{}.models.{idx}{rest}",
+                                        active.provider
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 return format!("models.profiles.{target}{rest}");
             }
@@ -549,27 +571,24 @@ impl Settings {
         key.to_string()
     }
 
-    /// Apply a `set` value to a `models.providers.<group>.models.<idx>.<field>`
-    /// path. The group name may itself contain dots, so the path is parsed
-    /// from the right: `<field>` and `<idx>` are the last two segments and
-    /// everything before them is the group key.
+    /// Apply a `set` value to a provider model field or whole object. The
+    /// group name may itself contain dots; everything before the final
+    /// `.models.<idx>[.<field>]` suffix is the group key.
     fn set_provider_model_field(
         settings: &mut Settings,
         rest: &str,
         value: serde_json::Value,
     ) -> anyhow::Result<()> {
-        // rest = "<group>.models.<idx>.<field>"; the group name may contain
-        // dots, so parse from the right: strip field, then the ".models.<idx>"
-        // suffix.
-        let (group_and_idx, field) = rest
-            .rsplit_once('.')
-            .ok_or_else(|| anyhow::anyhow!("invalid provider-model path '{}'", rest))?;
-        let (group, idx_str) = group_and_idx
+        let (group, model_path) = rest
             .rsplit_once(".models.")
             .ok_or_else(|| anyhow::anyhow!("invalid provider-model path '{}'", rest))?;
+        let (idx_str, field) = model_path
+            .split_once('.')
+            .map_or((model_path, None), |(idx, field)| (idx, Some(field)));
         let idx: usize = idx_str
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid model index in path '{}'", rest))?;
+        let active = settings.models.active_model.clone();
         let group_cfg = settings
             .models
             .providers
@@ -579,15 +598,53 @@ impl Settings {
             .models
             .get_mut(idx)
             .ok_or_else(|| anyhow::anyhow!("no model at index {} in group '{}'", idx, group))?;
-        // Serialize the single field through JSON so type validation matches
-        // the struct definition.
-        let mut model_json = serde_json::to_value(&*model)?;
-        model_json
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("provider model is not an object"))?
-            .insert(field.to_string(), value);
-        *model = serde_json::from_value(model_json)
-            .map_err(|e| anyhow::anyhow!("invalid value for '{}': {}", field, e))?;
+        let updates_active = active
+            .as_ref()
+            .is_some_and(|active| active.provider == group && active.model == model.name);
+
+        let replacement = if let Some(field) = field {
+            let mut model_json = serde_json::to_value(&*model)?;
+            model_json
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("provider model is not an object"))?
+                .insert(field.to_string(), value.clone());
+            let replacement: crate::config::models::ProviderModel =
+                serde_json::from_value(model_json)
+                    .map_err(|e| anyhow::anyhow!("invalid value for '{}': {}", field, e))?;
+            let round_trip = serde_json::to_value(&replacement)?;
+            let Some(actual) = round_trip.get(field) else {
+                return Err(anyhow::anyhow!(
+                    "unknown setting key 'models.providers.{}'",
+                    rest
+                ));
+            };
+            if actual != &value {
+                return Err(anyhow::anyhow!(
+                    "setting 'models.providers.{}' did not round-trip; check the value type",
+                    rest
+                ));
+            }
+            replacement
+        } else {
+            let replacement: crate::config::models::ProviderModel =
+                serde_json::from_value(value.clone())
+                    .map_err(|e| anyhow::anyhow!("invalid provider model: {}", e))?;
+            if serde_json::to_value(&replacement)? != value {
+                return Err(anyhow::anyhow!(
+                    "setting 'models.providers.{}' did not round-trip; check the value type",
+                    rest
+                ));
+            }
+            replacement
+        };
+        let new_name = replacement.name.clone();
+        *model = replacement;
+        if updates_active {
+            settings.models.active_model = Some(crate::config::models::ActiveModelRef {
+                provider: group.to_string(),
+                model: new_name,
+            });
+        }
         Ok(())
     }
 
