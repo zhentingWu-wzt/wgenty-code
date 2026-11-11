@@ -18,6 +18,7 @@ pub mod interaction_bridge;
 pub mod memory_router;
 pub mod models;
 pub mod projects;
+pub(crate) mod restore;
 pub mod routes;
 pub mod run_loop;
 pub(crate) mod session_admin;

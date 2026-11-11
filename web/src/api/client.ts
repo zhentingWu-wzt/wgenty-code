@@ -623,6 +623,28 @@ export class DaemonClient {
     }
   }
 
+  /** `POST /sessions/:id/subagents/:nodeId/retry` — re-dispatch a failed
+   *  subagent. The daemon injects a retry turn into the session; the parent
+   *  agent re-invokes the task tool itself. 202 either starts the turn now
+   *  (`queued: false`) or parks it behind the active run (`queued: true`). */
+  async retrySubagent(
+    sessionId: string,
+    nodeId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    run_id: string;
+    queued: boolean;
+    queue_position?: number;
+    resumed?: boolean;
+  }> {
+    return jsonOrThrow(
+      await this.authedFetch(
+        `${this.base}/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(nodeId)}/retry`,
+        { method: "POST", signal },
+      ),
+    );
+  }
+
   // ── Command center: projects / worktrees / skills / checkpoints ────────────
 
   async listProjects(): Promise<ProjectInfo[]> {

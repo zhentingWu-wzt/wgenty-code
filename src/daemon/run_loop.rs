@@ -1385,6 +1385,272 @@ pub struct RunResponse {
     /// 1-based queue position, present only when queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<usize>,
+    /// Present only on subagent-retry responses: `true` when the retry
+    /// carried the failed attempt's conversation context (progress summary),
+    /// `false` when it degraded to a clean re-dispatch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed: Option<bool>,
+}
+
+/// Builds the user-turn message injected into the session when the user hits
+/// "retry" on a failed subagent in the UI. The parent agent owns all child
+/// spawning (coordinator contract), so retry is mediated: the message carries
+/// the original task prompt verbatim and asks the parent to re-dispatch it via
+/// the `task` tool. Extracted as a pure function for unit testing.
+fn build_subagent_retry_message(
+    transcript: &crate::transcript::SubagentTranscript,
+    progress_summary: Option<&str>,
+) -> String {
+    let label = transcript.label.trim();
+    let prompt = transcript.user_prompt.trim();
+    let has_summary = progress_summary
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let context_block = if has_summary {
+        format!(
+            "\n\n<previous-attempt>\nThe failed attempt's conversation history was \
+             compressed into the progress summary below. Pass this summary to the \
+             new subagent as part of its task prompt so it resumes from this \
+             progress instead of starting over:\n\n{}\n</previous-attempt>",
+            progress_summary.unwrap_or_default().trim()
+        )
+    } else {
+        String::new()
+    };
+    let resume_directive = if has_summary {
+        "Re-dispatch the same task now via the task tool, using the same subagent \
+         type and parameters as the original dispatch, and include the \
+         <previous-attempt> summary in the new subagent's prompt so it continues \
+         from where the failed attempt left off instead of redoing completed work."
+    } else {
+        "Re-dispatch the same task now via the task tool, using the same \
+         subagent type and parameters as the original dispatch."
+    };
+    format!(
+        "The user pressed \"Retry\" in the subagent panel for a delegated subagent \
+         (\"{label}\") that failed. {resume_directive} \
+         Original task prompt, verbatim:\n\n<prompt>\n{prompt}\n</prompt>{context_block}\n\n\
+         If the task is no longer applicable, reply briefly instead of re-dispatching."
+    )
+}
+
+/// Compresses a failed subagent's full conversation history into a structured
+/// progress summary for context-carrying retry. Pure function over
+/// `ChatMessage`s so the compression policy is unit-testable without a live
+/// subagent.
+///
+/// Design: the summary preserves what the next attempt actually needs to avoid
+/// redoing work — the sequence of tool calls (with key params), the
+/// subagent's own reasoning/conclusion text, and tool outcome verdicts —
+/// while dropping bulky verbatim tool-result bodies (file contents etc.),
+/// which the new subagent can re-fetch from disk if still needed. Per-item
+/// budgets keep the summary bounded for long histories.
+fn summarize_subagent_messages(
+    messages: &[crate::api::types::ChatMessage],
+    max_items: usize,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut tool_index = 0usize;
+    for msg in messages {
+        match msg.role.as_str() {
+            "assistant" => {
+                // Assistant reasoning text (the subagent's own conclusions).
+                if let Some(content) = msg.content.as_deref().map(str::trim) {
+                    if !content.is_empty() {
+                        lines.push(format!("- thought: {}", truncate_chars(content, 400)));
+                    }
+                }
+                // Tool calls the subagent issued.
+                if let Some(calls) = msg.tool_calls.as_ref() {
+                    for call in calls {
+                        tool_index += 1;
+                        let args_summary =
+                            summarize_tool_args(&call.function.name, &call.function.arguments);
+                        lines.push(format!(
+                            "- tool #{}: {}({})",
+                            tool_index, call.function.name, args_summary
+                        ));
+                    }
+                }
+            }
+            "tool" => {
+                // Tool outcome: keep a short excerpt, drop the bulky body.
+                let body = msg.content.as_deref().unwrap_or("").trim();
+                if !body.is_empty() {
+                    lines.push(format!("  result: {}", truncate_chars(body, 200)));
+                }
+            }
+            _ => {}
+        }
+        if lines.len() >= max_items {
+            lines.truncate(max_items);
+            lines.push("… (history truncated)".to_string());
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return "(no recorded progress)".to_string();
+    }
+    lines.join("\n")
+}
+
+/// One-line argument digest for a tool call in the summary (e.g. key paths or
+/// command names), keeping the line scannable.
+fn summarize_tool_args(tool_name: &str, arguments_json: &str) -> String {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(arguments_json).ok();
+    let Some(v) = parsed else {
+        return truncate_chars(arguments_json.trim(), 120);
+    };
+    let keys: &[&str] = match tool_name {
+        "file_read" | "file_write" | "file_edit" | "apply_patch" => &["path", "workdir"],
+        "grep" | "search" => &["pattern", "path"],
+        "execute_command" | "exec_command" | "background" => &["command"],
+        "codegraph_explore" | "codegraph_node" => &["query", "symbol"],
+        "task" => &["description"],
+        _ => &["path", "pattern", "command", "query", "symbol", "description"],
+    };
+    let parts: Vec<String> = keys
+        .iter()
+        .filter_map(|k| v.get(*k).and_then(|val| val.as_str()))
+        .map(|s| truncate_chars(s, 100))
+        .collect();
+    if parts.is_empty() {
+        return "(no key args)".to_string();
+    }
+    parts.join(", ")
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(max).collect();
+    format!("{}…", truncated.trim_end())
+}
+
+/// POST /api/v1/sessions/:id/subagents/:node_id/retry — re-dispatch a failed
+/// subagent. Parent-mediated: the endpoint validates the transcript is a
+/// retryable failure, then injects a retry instruction as a session turn using
+/// the same claim-or-queue machinery as `POST /sessions/:id/run`. The parent
+/// agent re-invokes the `task` tool itself; the daemon never spawns children
+/// behind its back. 404 unknown session/transcript, 409 non-failed status,
+/// 202 with `RunResponse` on success (`queued: true` when a run is active).
+pub(crate) async fn post_subagent_retry(
+    State(state): State<Arc<DaemonState>>,
+    Path((id, node_id)): Path<(String, String)>,
+) -> Result<(StatusCode, Json<RunResponse>), (StatusCode, String)> {
+    if state.resolve_session(&id).await.is_none() {
+        return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
+    }
+    let Some(store) = state.transcript_store.as_ref() else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "subagent transcripts are not available".to_string(),
+        ));
+    };
+    let transcript = store.get_by_id(&node_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("transcript store error: {e}"),
+        )
+    })?;
+    let Some(transcript) = transcript else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no subagent transcript for node {node_id}"),
+        ));
+    };
+    if transcript.status != crate::transcript::TranscriptStatus::Failed {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "subagent {node_id} is {} — only failed subagents can be retried",
+                transcript.status
+            ),
+        ));
+    }
+
+    // Context-carrying retry: pull the failed subagent's full conversation
+    // from the in-memory progress store (the observer captured it up to the
+    // failing round) and compress it into a progress summary. When the store
+    // has no messages (daemon restarted, or the failure was so early nothing
+    // was emitted), the summary is absent and retry degrades to a clean
+    // re-dispatch with just the original prompt.
+    let progress_summary = {
+        let store = state.subagent_progress.read().await;
+        store
+            .get(id.as_str())
+            .and_then(|nodes| nodes.get(node_id.as_str()))
+            .filter(|p| !p.messages.is_empty())
+            .map(|p| summarize_subagent_messages(&p.messages, 120))
+    };
+    let resumed = progress_summary.is_some();
+    tracing::info!(
+        session_id = %id,
+        node_id = %node_id,
+        resumed,
+        summary_chars = progress_summary.as_ref().map(|s| s.len()).unwrap_or(0),
+        "subagent retry: context-carrying resume"
+    );
+
+    let message = build_subagent_retry_message(&transcript, progress_summary.as_deref());
+    let run_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    let run = SessionRun {
+        run_id: run_id.clone(),
+        cancel: cancel.clone(),
+        started_at: Instant::now(),
+    };
+    if state.session_runs.claim(&id, run).is_err() {
+        let queued = state
+            .enqueue_message(&id, message, false)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!("session {id} message queue full (max {MESSAGE_QUEUE_MAX_DEPTH})"),
+                )
+            })?;
+        let depth = state.message_queue_depth(&id).await;
+        tracing::debug!(
+            session_id = %id,
+            node_id = %node_id,
+            message_id = %queued.message_id,
+            run_id = %queued.run_id,
+            depth,
+            "subagent retry queued behind active run"
+        );
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(RunResponse {
+                run_id: queued.run_id,
+                session_id: id,
+                queued: true,
+                queue_position: Some(depth),
+                resumed: Some(resumed),
+            }),
+        ));
+    }
+
+    spawn_claimed_session_turn(
+        Arc::clone(&state),
+        id.clone(),
+        run_id.clone(),
+        message,
+        false,
+        cancel,
+    );
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(RunResponse {
+            run_id,
+            session_id: id,
+            queued: false,
+            queue_position: None,
+            resumed: Some(resumed),
+        }),
+    ))
 }
 
 /// POST /api/v1/sessions/:id/run — spawn a server-side agent turn.
@@ -1476,6 +1742,7 @@ pub(crate) async fn post_run(
                 session_id: id,
                 queued: true,
                 queue_position: Some(depth),
+                resumed: None,
             }),
         ));
     }
@@ -1496,6 +1763,7 @@ pub(crate) async fn post_run(
             session_id: id,
             queued: false,
             queue_position: None,
+            resumed: None,
         }),
     ))
 }
@@ -3898,5 +4166,282 @@ mod tests {
         let persisted = sessions.get(&session.id).await.expect("session persists");
         assert_eq!(persisted.messages.len(), 1);
         assert_eq!(persisted.messages[0].content, "new");
+    }
+
+    // ── Subagent retry endpoint ──────────────────────────────────────────
+
+    fn retry_test_transcript(
+        id: &str,
+        session_id: &str,
+        status: crate::transcript::TranscriptStatus,
+    ) -> crate::transcript::SubagentTranscript {
+        crate::transcript::SubagentTranscript {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            parent_id: None,
+            label: "task: analyze the auth flow".to_string(),
+            status,
+            system_prompt: Some("You are an explorer.".to_string()),
+            user_prompt: "Find all uses of refresh_token".to_string(),
+            started_at: 1_000,
+            finished_at: Some(2_000),
+            total_tokens: 500,
+            max_rounds: None,
+            actual_rounds: 2,
+            token_budget_k: None,
+            error_message: Some("rate limited".to_string()),
+            summary: None,
+            failure_diagnostics: None,
+            project_path: None,
+            node_type: None,
+            events: vec![],
+        }
+    }
+
+    #[test]
+    fn retry_message_carries_original_prompt_verbatim() {
+        let transcript = retry_test_transcript(
+            "n1",
+            "session-a",
+            crate::transcript::TranscriptStatus::Failed,
+        );
+        let message = build_subagent_retry_message(&transcript, None);
+        assert!(
+            message.contains("Find all uses of refresh_token"),
+            "original prompt must be embedded verbatim"
+        );
+        assert!(
+            message.contains("task tool"),
+            "retry must be parent-mediated via the task tool"
+        );
+        // Trimmed labels never leak surrounding whitespace into the message.
+        assert!(!message.contains("  "));
+    }
+
+    #[test]
+    fn retry_message_with_summary_directs_context_carrying_resume() {
+        let transcript = retry_test_transcript(
+            "n2",
+            "session-a",
+            crate::transcript::TranscriptStatus::Failed,
+        );
+        let message = build_subagent_retry_message(
+            &transcript,
+            Some("- thought: located auth module\n- tool #1: grep(refresh_token, src/auth)"),
+        );
+        assert!(
+            message.contains("<previous-attempt>"),
+            "summary must be embedded in a previous-attempt block"
+        );
+        assert!(
+            message.contains("located auth module"),
+            "summary content must survive verbatim"
+        );
+        assert!(
+            message.contains("instead of redoing completed work"),
+            "the resume directive must tell the parent to carry the context"
+        );
+    }
+
+    #[test]
+    fn summarize_messages_keeps_thoughts_tools_and_verdicts() {
+        use crate::api::types::{ChatMessage, ToolCall, ToolCallFunction};
+        let messages = vec![
+            ChatMessage::user("do the task"),
+            ChatMessage {
+                role: "assistant".into(),
+                content: Some("Found the auth module.".into()),
+                reasoning_content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "c1".into(),
+                    r#type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "grep".into(),
+                        arguments: r#"{"pattern":"refresh_token","path":"src/auth"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+            ChatMessage::tool("c1", r#"{"matches": 12, "files": ["src/auth/mod.rs"]}"#),
+            ChatMessage {
+                role: "assistant".into(),
+                content: Some("The refresh token is rotated in src/auth/mod.rs.".into()),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        let summary = summarize_subagent_messages(&messages, 120);
+        assert!(summary.contains("thought: Found the auth module."));
+        assert!(summary.contains("tool #1: grep(refresh_token, src/auth)"));
+        assert!(summary.contains("result:"));
+        assert!(summary.contains("refresh token is rotated"));
+    }
+
+    #[test]
+    fn summarize_messages_truncates_long_histories_and_bodies() {
+        use crate::api::types::ChatMessage;
+        // Long body in a tool result gets truncated to a bounded excerpt.
+        let long_body = "x".repeat(5_000);
+        let messages = vec![ChatMessage::tool("c1", &long_body)];
+        let summary = summarize_subagent_messages(&messages, 120);
+        assert!(summary.len() < 1_000, "bulky bodies must be dropped");
+
+        // Histories beyond max_items collapse to a truncation marker.
+        let many: Vec<ChatMessage> = (0..200)
+            .map(|i| ChatMessage::assistant(format!("note {i}")))
+            .collect();
+        let summary = summarize_subagent_messages(&many, 50);
+        assert!(summary.contains("(history truncated)"));
+    }
+
+    #[test]
+    fn summarize_messages_empty_history_reports_no_progress() {
+        let summary = summarize_subagent_messages(&[], 120);
+        assert_eq!(summary, "(no recorded progress)");
+    }
+
+    #[tokio::test]
+    async fn subagent_retry_rejects_unknown_session_and_node() {
+        let state = continuation_test_state().await;
+
+        let err = post_subagent_retry(
+            State(Arc::clone(&state)),
+            Path(("missing-session".to_string(), "node-1".to_string())),
+        )
+        .await
+        .expect_err("unknown session must 404");
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+
+        let err = post_subagent_retry(
+            State(Arc::clone(&state)),
+            Path(("session-a".to_string(), "node-1".to_string())),
+        )
+        .await
+        .expect_err("missing transcript must 404");
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn subagent_retry_rejects_non_failed_transcript_and_starts_turn_when_idle() {
+        let state = continuation_test_state().await;
+        let store = crate::transcript::SubagentTranscriptStore::open(std::path::Path::new(
+            &state.app_state.settings.storage.transcript.db_path,
+        ))
+        .expect("open transcript store");
+        store
+            .save(
+                &retry_test_transcript(
+                    "node-ok",
+                    "session-a",
+                    crate::transcript::TranscriptStatus::Completed,
+                ),
+                None,
+            )
+            .expect("save completed transcript");
+
+        let err = post_subagent_retry(
+            State(Arc::clone(&state)),
+            Path(("session-a".to_string(), "node-ok".to_string())),
+        )
+        .await
+        .expect_err("completed transcript must 409");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        store
+            .save(
+                &retry_test_transcript(
+                    "node-failed",
+                    "session-a",
+                    crate::transcript::TranscriptStatus::Failed,
+                ),
+                None,
+            )
+            .expect("save failed transcript");
+
+        let (status, Json(response)) = post_subagent_retry(
+            State(Arc::clone(&state)),
+            Path(("session-a".to_string(), "node-failed".to_string())),
+        )
+        .await
+        .expect("retry must be accepted");
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(response.session_id, "session-a");
+        assert!(!response.queued, "idle session starts the turn immediately");
+        assert!(state.session_runs.is_active("session-a"));
+        state.session_runs.finish("session-a", &response.run_id);
+    }
+
+    #[tokio::test]
+    async fn subagent_retry_uses_progress_store_messages_when_available() {
+        let state = continuation_test_state().await;
+        let store = crate::transcript::SubagentTranscriptStore::open(
+            std::path::Path::new(&state.app_state.settings.storage.transcript.db_path),
+        )
+        .expect("open transcript store");
+        store
+            .save(
+                &retry_test_transcript(
+                    "node-with-history",
+                    "session-a",
+                    crate::transcript::TranscriptStatus::Failed,
+                ),
+                None,
+            )
+            .expect("save failed transcript");
+
+        // Seed the in-memory progress store with the failed attempt's full
+        // conversation, as the observer would have captured it.
+        {
+            use crate::progress::{SubagentProgress, SubagentStatus};
+            let mut progress = state.subagent_progress.write().await;
+            progress
+                .entry("session-a".to_string())
+                .or_default()
+                .insert(
+                    "node-with-history".to_string(),
+                    SubagentProgress {
+                        node_id: "node-with-history".to_string(),
+                        parent_id: None,
+                        label: "task: analyze the auth flow".to_string(),
+                        status: SubagentStatus::Failed,
+                        round: Some(3),
+                        max_rounds: Some(100),
+                        current_tool: None,
+                        current_params: None,
+                        action_log: Vec::new(),
+                        text_snapshot: None,
+                        started_at: 1_000,
+                        elapsed_ms: 5_000,
+                        metadata: None,
+                        progress_delta: None,
+                        token_budget_k: None,
+                        cumulative_tokens: 1_200,
+                        error_details: None,
+                        events: Vec::new(),
+                        messages: vec![
+                            crate::api::types::ChatMessage::user("find refresh token uses"),
+                            crate::api::types::ChatMessage::assistant("Found src/auth/mod.rs."),
+                        ],
+                    },
+                );
+        }
+
+        let (status, Json(response)) = post_subagent_retry(
+            State(Arc::clone(&state)),
+            Path(("session-a".to_string(), "node-with-history".to_string())),
+        )
+        .await
+        .expect("retry must be accepted");
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(!response.queued);
+
+        // The injected retry turn (queued message or spawned run input)
+        // carries the previous-attempt summary. The turn was spawned, so the
+        // observable contract is: the run started and the store was consulted
+        // (the summary path is covered by the pure-function tests; here we
+        // verify the endpoint accepts a store-backed retry without error).
+        assert!(state.session_runs.is_active("session-a"));
+        state.session_runs.finish("session-a", &response.run_id);
     }
 }

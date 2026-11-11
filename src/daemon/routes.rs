@@ -223,6 +223,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/sessions/:id/run",
             post(run_loop::post_run).get(run_loop::get_run_status),
         )
+        .route(
+            "/api/v1/sessions/:id/subagents/:node_id/retry",
+            post(run_loop::post_subagent_retry),
+        )
         .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))
         // Queued user messages (submitted while the run slot was busy)
         .route(

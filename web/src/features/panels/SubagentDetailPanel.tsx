@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Loader2, Network, RefreshCw } from "lucide-react";
+import { AlertCircle, Loader2, Network, RefreshCw, RotateCcw } from "lucide-react";
 import type { DaemonClient } from "../../api/client";
 import type {
   ChatMessage,
@@ -77,6 +77,8 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryNotice, setRetryNotice] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -165,6 +167,28 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
     }
   };
 
+  const retry = async () => {
+    setRetrying(true);
+    setRetryNotice(null);
+    try {
+      const r = await client.retrySubagent(rootSessionId, nodeId);
+      const dispatch = r.queued
+        ? `已加入会话队列（第 ${r.queue_position ?? 1} 位），当前运行结束后自动重派。`
+        : "重试指令已发送，父代理正在重新派发该子代理。";
+      setRetryNotice(
+        r.resumed
+          ? `${dispatch}已带上之前尝试的进度上下文（结论与已完成的步骤），新子代理将接着继续而不是从头开始。`
+          : `${dispatch}未找到历史上下文（守护进程可能已重启），新子代理将从头开始。`,
+      );
+    } catch (e) {
+      setRetryNotice(
+        `重试失败：${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   const cancel = async () => {
     if (!targetCap) return;
     setCancelling(true);
@@ -203,6 +227,7 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
   const elapsed = liveNode?.elapsedMs ?? self.elapsed_ms;
   const tokens = liveNode?.cumulativeTokens ?? self.cumulative_tokens;
   const terminal = isTerminal(curStatus);
+  const failed = curStatus.toLowerCase() === "failed" || curStatus.toLowerCase() === "error";
 
   return (
     <div className="mx-auto flex max-w-[1100px] flex-col gap-3 px-3 py-4 sm:px-6">
@@ -216,6 +241,21 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {failed && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={retrying}
+              onClick={() => void retry()}
+            >
+              {retrying ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <RotateCcw size={13} />
+              )}
+              重试
+            </Button>
+          )}
           {targetCap && !terminal && (
             <Button
               variant="outline"
@@ -231,6 +271,12 @@ export function SubagentDetailPanel({ client, nodeId, rootSessionId, label }: Pr
           </Button>
         </div>
       </div>
+
+      {retryNotice && (
+        <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+          {retryNotice}
+        </div>
+      )}
 
       {/* Meta */}
       <div className="flex flex-wrap gap-3 text-[12px] text-muted-foreground">
