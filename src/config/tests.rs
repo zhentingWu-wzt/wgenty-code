@@ -265,6 +265,39 @@ fn test_models_small_inherits_when_url_absent() {
 }
 
 #[test]
+fn providers_deserialize_from_grouped_json() {
+    let json = r#"{
+        "providers": {
+            "zhipu": {
+                "display_name": "智谱",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "api_key": "sk-z",
+                "models": [
+                    {"name": "glm-5.3"},
+                    {"name": "glm-5.3-flash", "tier": "light"}
+                ]
+            }
+        },
+        "active_model": {"provider": "zhipu", "model": "glm-5.3"}
+    }"#;
+    let cfg: ModelsConfig = serde_json::from_str(json).expect("parse");
+    let zg = cfg.providers.get("zhipu").expect("group");
+    assert_eq!(zg.base_url, "https://api.z.ai/api/coding/paas/v4");
+    assert_eq!(zg.models.len(), 2);
+    assert_eq!(zg.models[1].tier, Some(ModelTier::Light));
+    assert_eq!(cfg.active_model.as_ref().unwrap().model, "glm-5.3");
+}
+
+#[test]
+fn providers_absent_keeps_old_config_parsing() {
+    // 旧配置（无 providers 字段）反序列化不报错，providers 为空。
+    let json = r#"{"main": {"name": "glm-5.3"}}"#;
+    let cfg: ModelsConfig = serde_json::from_str(json).expect("legacy ok");
+    assert!(cfg.providers.is_empty());
+    assert!(cfg.active_model.is_none());
+}
+
+#[test]
 fn test_small_model_settings_uses_small_overrides() {
     let mut s = Settings::default();
     s.models.main.base_url = Some("https://api.main.example".to_string());

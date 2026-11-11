@@ -328,6 +328,63 @@ pub struct ModelRoles {
     pub planner: Option<String>,
 }
 
+/// One vendor-grouped provider entry under `models.providers`: a shared
+/// base_url/api_key plus the list of models it hosts. Schema-only for now —
+/// resolution/switching comes in later tasks of this change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderGroup {
+    /// Human-readable label for the `/model` picker; `None` falls back to the
+    /// provider map key.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Shared base URL for every model in this group.
+    #[serde(default)]
+    pub base_url: String,
+    /// Shared API key; per-model entries may override it.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Force the API protocol (e.g. `"anthropic"`); `None` auto-detects from
+    /// base_url, mirroring [`ModelEndpoint::provider`].
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Models hosted by this provider, in user-declared order.
+    #[serde(default)]
+    pub models: Vec<ProviderModel>,
+}
+
+/// One model inside a [`ProviderGroup`]. `None` fields inherit from the group
+/// (`base_url`/`api_key`) or fall back to built-in model knowledge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderModel {
+    /// Model name sent to the provider API.
+    pub name: String,
+    /// Capability tier for routing; `None` = not auto-routable.
+    #[serde(default)]
+    pub tier: Option<ModelTier>,
+    /// Per-model API key override over the group key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Per-model base_url override over the group URL.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Per-model context window override (tokens).
+    #[serde(default)]
+    pub context_window: Option<usize>,
+    /// Sampling temperature override.
+    #[serde(default)]
+    pub temperature: Option<f32>,
+}
+
+/// Reference into `models.providers`: which group and which model inside it is
+/// currently active. Deserialized from `models.active_model`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveModelRef {
+    /// Key in `models.providers`.
+    pub provider: String,
+    /// `ProviderModel::name` inside that group.
+    pub model: String,
+}
+
 /// All model endpoints + shared transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
@@ -359,6 +416,17 @@ pub struct ModelsConfig {
     /// warning; see [`deserialize_profiles_skip_nulls`]).
     #[serde(default, deserialize_with = "deserialize_profiles_skip_nulls")]
     pub profiles: HashMap<String, ModelEndpoint>,
+    /// Vendor-grouped providers (`models.providers`). New-format config for
+    /// the multi-provider `/model` picker; empty (and thus inert) for legacy
+    /// configs that only use `main`/`profiles`. Consumers arrive in later
+    /// tasks of this change.
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderGroup>,
+    /// Currently selected provider-grouped model (`models.active_model`).
+    /// `None` = no grouped model selected, the legacy `profiles` path is
+    /// authoritative.
+    #[serde(default)]
+    pub active_model: Option<ActiveModelRef>,
     /// Currently active profile key (`None` = no profile active, `main` is
     /// used as-is). Persisted so a restart preserves the user's last choice.
     /// After `migrate_legacy` this always points at a real profile key.
@@ -399,6 +467,8 @@ impl Default for ModelsConfig {
             small: None,
             planner: None,
             profiles: HashMap::new(),
+            providers: HashMap::new(),
+            active_model: None,
             active_profile: None,
             roles: ModelRoles::default(),
             routing: ModelRoutingConfig::default(),
