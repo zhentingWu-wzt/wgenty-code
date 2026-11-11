@@ -67,10 +67,14 @@ pub enum RuntimeEvent {
         args: serde_json::Value,
     },
     /// A tool invocation finished (success or structured failure payload).
+    /// `metadata` carries the structured tool output side-channel (e.g.
+    /// file_edit/file_write before/after content, apply_patch per-file diffs)
+    /// so web/desktop frontends can render diffs; None for text-only tools.
     ToolResult {
         name: String,
         args: serde_json::Value,
         content: String,
+        metadata: Option<serde_json::Value>,
     },
     /// Background command task completed (non-subagent).
     BackgroundTaskResult(String),

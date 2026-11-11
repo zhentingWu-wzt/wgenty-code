@@ -689,7 +689,8 @@ mod tests {
             agent_phase_from_event(&AppEvent::ToolResult {
                 name: "x".into(),
                 args: serde_json::json!({}),
-                content: "y".into()
+                content: "y".into(),
+                metadata: None
             }),
             Some(AgentPhase::Thinking)
         );

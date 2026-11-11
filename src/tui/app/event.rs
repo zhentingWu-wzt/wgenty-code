@@ -211,6 +211,7 @@ impl App {
                 name,
                 args,
                 content,
+                metadata: _,
             } => {
                 if name == "background" {
                     // The command may finish after the local turn and trigger

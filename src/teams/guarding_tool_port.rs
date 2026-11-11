@@ -136,6 +136,7 @@ impl<'a> GuardingToolPort<'a> {
             })
             .to_string(),
             success: false,
+            metadata: None,
         }
     }
 
@@ -336,10 +337,12 @@ impl ToolPort for GuardingToolPort<'_> {
             Ok(output) => ToolResponse {
                 content: output.content,
                 success: true,
+                metadata: Some(serde_json::to_value(output.metadata).unwrap_or_default()),
             },
             Err(e) => ToolResponse {
                 content: format!("Error: {}", e.message),
                 success: false,
+                metadata: None,
             },
         }
     }

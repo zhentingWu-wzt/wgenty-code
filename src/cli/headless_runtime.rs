@@ -175,6 +175,7 @@ impl ToolPort for RegistryToolPort {
                     return ToolResponse {
                         content,
                         success: false,
+                        metadata: None,
                     };
                 }
             }
@@ -208,6 +209,7 @@ impl ToolPort for RegistryToolPort {
                 ToolResponse {
                     content,
                     success: true,
+                    metadata: Some(serde_json::to_value(result.metadata).unwrap_or_default()),
                 }
             }
             Err(e) => {
@@ -222,6 +224,7 @@ impl ToolPort for RegistryToolPort {
                 ToolResponse {
                     content,
                     success: false,
+                    metadata: None,
                 }
             }
         }

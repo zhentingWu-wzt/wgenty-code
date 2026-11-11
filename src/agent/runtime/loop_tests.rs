@@ -118,7 +118,11 @@ impl ToolPort for MockToolPort {
             format!(r#"{{"success":false,"error":"no mock for {0}"}}"#, req.name)
         });
         let success = content.contains("\"success\":true");
-        ToolResponse { content, success }
+        ToolResponse {
+            content,
+            success,
+            metadata: None,
+        }
     }
 
     fn definitions(&self) -> Vec<ToolDefinition> {

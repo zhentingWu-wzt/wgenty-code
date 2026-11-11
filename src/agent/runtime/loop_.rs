@@ -683,6 +683,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                             name: "task".to_string(),
                             args: args.clone(),
                             content: msg.clone(),
+                            metadata: None,
                         });
                         history.push(ChatMessage::tool(&tc.id, msg)).await;
                         continue;
@@ -716,18 +717,25 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                                 }),
                             )
                             .await;
-                            let content = match result {
-                                Ok(r) => r.content,
-                                Err(_) => format!(
-                                    r#"{{"success":false,"error":"Tool '{}' timed out after {}s"}}"#,
-                                    name,
-                                    tool_timeout.as_secs()
+                            let (content, metadata) = match result {
+                                Ok(r) => (
+                                    r.content,
+                                    Some(serde_json::to_value(r.metadata).unwrap_or_default()),
+                                ),
+                                Err(_) => (
+                                    format!(
+                                        r#"{{"success":false,"error":"Tool '{}' timed out after {}s"}}"#,
+                                        name,
+                                        tool_timeout.as_secs()
+                                    ),
+                                    None,
                                 ),
                             };
                             events.emit(RuntimeEvent::ToolResult {
                                 name,
                                 args,
                                 content: content.clone(),
+                                metadata,
                             });
                             (id, content)
                         }
@@ -798,6 +806,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                                 name: tc.function.name.clone(),
                                 args: args.clone(),
                                 content: content.clone(),
+                                metadata: None,
                             });
                             history.push(ChatMessage::tool(&tc.id, content)).await;
                             continue;
@@ -843,7 +852,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         &args,
                         config.subagent_timeout_secs,
                     );
-                    let mut exec_result = match tokio::time::timeout(
+                    let (mut exec_result, tool_metadata) = match tokio::time::timeout(
                         tool_timeout,
                         tools.execute(ToolRequest {
                             name: tc.function.name.clone(),
@@ -856,7 +865,10 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                     )
                     .await
                     {
-                        Ok(r) => r.content,
+                        Ok(r) => (
+                            r.content,
+                            Some(serde_json::to_value(r.metadata).unwrap_or_default()),
+                        ),
                         Err(_) => {
                             let msg = format!(
                                 r#"{{"success":false,"error":"Tool '{}' timed out after {}s"}}"#,
@@ -867,6 +879,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                                 name: tc.function.name.clone(),
                                 args: args.clone(),
                                 content: msg.clone(),
+                                metadata: None,
                             });
                             history.push(ChatMessage::tool(&tc.id, msg)).await;
                             continue;
@@ -883,6 +896,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         name: tc.function.name.clone(),
                         args,
                         content: exec_result.clone(),
+                        metadata: tool_metadata,
                     });
                     history.push(ChatMessage::tool(&tc.id, exec_result)).await;
                 }
@@ -1263,6 +1277,7 @@ async fn schedule_compact(
         name: "compact".to_string(),
         args: serde_json::json!({}),
         content: "Conversation will be compacted before the next step.".to_string(),
+        metadata: None,
     });
     history
         .push(ChatMessage::tool(

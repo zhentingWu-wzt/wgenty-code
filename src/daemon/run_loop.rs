@@ -264,10 +264,11 @@ impl EventSink for DaemonEventSink {
                 name,
                 args,
                 content,
+                metadata,
             } => {
                 self.publish(
                     SessionEventKind::ToolResult,
-                    serde_json::json!({ "name": name, "args": args, "content": content }),
+                    serde_json::json!({ "name": name, "args": args, "content": content, "metadata": metadata }),
                 );
             }
             RuntimeEvent::StreamDone { finish_reason } => {
@@ -597,6 +598,7 @@ impl RootToolPort {
             })
             .to_string(),
             success: false,
+            metadata: None,
         }
     }
 
@@ -694,6 +696,7 @@ impl RootToolPort {
             return Some(ToolResponse {
                 content,
                 success: false,
+                metadata: None,
             });
         }
         None
@@ -742,6 +745,7 @@ impl ToolPort for RootToolPort {
                     return ToolResponse {
                         content: output.content,
                         success: true,
+                        metadata: None,
                     }
                 }
                 Err(e) => {
@@ -772,10 +776,12 @@ impl ToolPort for RootToolPort {
             Ok(output) => ToolResponse {
                 content: output.content,
                 success: true,
+                metadata: Some(serde_json::to_value(output.metadata).unwrap_or_default()),
             },
             Err(e) => ToolResponse {
                 content: format!("Error: {}", e.message),
                 success: false,
+                metadata: None,
             },
         }
     }

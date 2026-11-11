@@ -65,10 +65,12 @@ impl EventSink for TuiEventSink {
                 name,
                 args,
                 content,
+                metadata,
             } => AppEvent::ToolResult {
                 name,
                 args,
                 content,
+                metadata,
             },
             RuntimeEvent::BackgroundTaskResult(msg) => AppEvent::BackgroundTaskResult(msg),
             RuntimeEvent::PlanUpdate(value) => AppEvent::PlanUpdate(value),
@@ -252,6 +254,7 @@ impl ToolPort for DaemonToolPort {
                 return ToolResponse {
                     content: format!(r#"{{"success":false,"error":"{}"}}"#, msg),
                     success: false,
+                    metadata: None,
                 };
             }
         }
@@ -265,7 +268,7 @@ impl ToolPort for DaemonToolPort {
 
         if req.parallel {
             // No interactive permission in parallel batches.
-            let content = match self
+            let (content, metadata) = match self
                 .client
                 .execute_tool(
                     &req.name,
@@ -276,22 +279,27 @@ impl ToolPort for DaemonToolPort {
                 .await
             {
                 Ok(resp) => {
+                    let metadata = resp.metadata.clone();
                     if let Some(perm) = resp.permission_required {
-                        format!(
-                            r#"{{"success":false,"error":"PERMISSION REQUIRED: {} (cannot prompt in parallel mode)"}}"#,
-                            perm.reason
+                        (
+                            format!(
+                                r#"{{"success":false,"error":"PERMISSION REQUIRED: {} (cannot prompt in parallel mode)"}}"#,
+                                perm.reason
+                            ),
+                            None,
                         )
                     } else {
-                        Self::format_resp(&resp)
+                        (Self::format_resp(&resp), metadata)
                     }
                 }
-                Err(e) => format!(r#"{{"success":false,"error":"{}"}}"#, e),
+                Err(e) => (format!(r#"{{"success":false,"error":"{}"}}"#, e), None),
             };
             // Detach poller (do not abort) — see historical comments on task fire-and-forget.
             drop(poll_handle);
             return ToolResponse {
                 success: content.contains("\"success\":true"),
                 content,
+                metadata,
             };
         }
 
@@ -313,6 +321,7 @@ impl ToolPort for DaemonToolPort {
                 return ToolResponse {
                     content: format!(r#"{{"success":false,"error":"{}"}}"#, e),
                     success: false,
+                    metadata: None,
                 };
             }
         };
@@ -377,6 +386,7 @@ impl ToolPort for DaemonToolPort {
                             content: r#"{"success":false,"error":"Failed to approve permission"}"#
                                 .to_string(),
                             success: false,
+                            metadata: None,
                         };
                     }
                     let result = self
@@ -401,6 +411,7 @@ impl ToolPort for DaemonToolPort {
                             content: r#"{"success":false,"error":"Failed to approve permission"}"#
                                 .to_string(),
                             success: false,
+                            metadata: None,
                         };
                     }
                     match self
@@ -428,6 +439,7 @@ impl ToolPort for DaemonToolPort {
             return ToolResponse {
                 success: content.contains("\"success\":true"),
                 content,
+                metadata: None,
             };
         }
 
@@ -436,6 +448,7 @@ impl ToolPort for DaemonToolPort {
         ToolResponse {
             success: result.success,
             content,
+            metadata: result.metadata.clone(),
         }
     }
 

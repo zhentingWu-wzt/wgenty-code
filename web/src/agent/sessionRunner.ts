@@ -562,6 +562,7 @@ function handleEvent(
       const name = String(ev.data.name ?? "unknown");
       const args = (ev.data.args as Record<string, unknown>) ?? {};
       const content = String(ev.data.content ?? "");
+      const metadata = ev.data.metadata as Record<string, unknown> | undefined;
       // Tools finished: the next LLM round starts (Thinking, per TUI).
       s.setAgentPhase({ phase: "thinking" });
       const pending = ctx.pendingTools.shift();
@@ -574,7 +575,11 @@ function handleEvent(
             arguments: JSON.stringify(pending?.args ?? args),
           },
         },
-        response: { success: !content.toLowerCase().startsWith("error"), content },
+        response: {
+          success: !content.toLowerCase().startsWith("error"),
+          content,
+          metadata,
+        },
       };
       if (pending?.msgId) store.getState().completeTool(pending.msgId, exec);
       break;

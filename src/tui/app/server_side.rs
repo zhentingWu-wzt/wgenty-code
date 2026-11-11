@@ -91,6 +91,7 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
                 name,
                 args,
                 content,
+                metadata: ev.data.get("metadata").cloned(),
             }]
         }
         SessionEventKind::TurnDone => {

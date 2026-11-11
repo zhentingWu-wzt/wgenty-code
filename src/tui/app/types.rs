@@ -274,6 +274,8 @@ pub enum AppEvent {
         name: String,
         args: serde_json::Value,
         content: String,
+        /// Structured tool output side-channel (diffs etc.), optional.
+        metadata: Option<serde_json::Value>,
     },
     /// Permission is needed
     PermissionRequired {

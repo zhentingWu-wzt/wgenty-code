@@ -167,4 +167,7 @@ pub struct ToolRequest {
 pub struct ToolResponse {
     pub content: String,
     pub success: bool,
+    /// Structured output side-channel from the tool (`ToolOutput.metadata`),
+    /// forwarded to `RuntimeEvent::ToolResult` for frontend diff rendering.
+    pub metadata: Option<serde_json::Value>,
 }
