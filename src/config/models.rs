@@ -358,6 +358,11 @@ pub struct ProviderGroup {
 pub struct ProviderModel {
     /// Model name sent to the provider API.
     pub name: String,
+    /// Original legacy `models.profiles` key this entry was migrated from.
+    /// Kept so `/model <old-key>` keeps working after the profiles→providers
+    /// migration; `None` for entries written directly in the new format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_key: Option<String>,
     /// Capability tier for routing; `None` = not auto-routable.
     #[serde(default)]
     pub tier: Option<ModelTier>,
@@ -377,7 +382,7 @@ pub struct ProviderModel {
 
 /// Reference into `models.providers`: which group and which model inside it is
 /// currently active. Deserialized from `models.active_model`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveModelRef {
     /// Key in `models.providers`.
     pub provider: String,
@@ -390,11 +395,12 @@ pub struct ActiveModelRef {
 pub struct ModelsConfig {
     #[serde(default)]
     pub transport: TransportConfig,
-    /// Runtime-materialized view of the active profile (`active_profile`).
+    /// Runtime-materialized view of the active profile or provider model.
     /// NOT serialized — the disk source of truth is `profiles` +
-    /// `active_profile`. Kept as a field so the many read-only consumers
-    /// (`ApiClient`, TUI status bar, daemon handlers) need no changes; it is
-    /// resynced by `migrate_legacy` (load) and `switch_to_profile`.
+    /// `active_profile` or `providers` + `active_model`. Kept as a field so
+    /// the many read-only consumers (`ApiClient`, TUI status bar, daemon
+    /// handlers) need no changes; it is resynced by model migrations and
+    /// `switch_to_profile`.
     #[serde(default = "default_main", skip_serializing)]
     pub main: ModelEndpoint,
     /// Legacy cheap-model slot. Consumed by `migrate_legacy` at load into an
@@ -692,6 +698,161 @@ impl ModelsConfig {
             };
             self.roles.planner.get_or_insert(key);
         }
+    }
+
+    /// Find a provider-grouped model by name (deterministic:
+    /// alphabetically-first group on ties). Used by `/model`-style switching
+    /// once legacy `profiles` have been migrated into `providers`.
+    pub fn find_provider_model(&self, model_name: &str) -> Option<(String, &ProviderModel)> {
+        self.providers
+            .iter()
+            .filter(|(_, g)| g.models.iter().any(|m| m.name == model_name))
+            .min_by(|a, b| a.0.cmp(b.0))
+            .map(|(k, g)| {
+                (
+                    k.clone(),
+                    g.models.iter().find(|m| m.name == model_name).unwrap(),
+                )
+            })
+    }
+
+    /// Find a provider-grouped model by its original legacy profile key
+    /// (deterministic: alphabetically-first group on ties).
+    pub fn find_provider_model_by_key(&self, key: &str) -> Option<(String, &ProviderModel)> {
+        self.providers
+            .iter()
+            .filter(|(_, g)| {
+                g.models
+                    .iter()
+                    .any(|m| m.profile_key.as_deref() == Some(key))
+            })
+            .min_by(|a, b| a.0.cmp(b.0))
+            .map(|(k, g)| {
+                (
+                    k.clone(),
+                    g.models
+                        .iter()
+                        .find(|m| m.profile_key.as_deref() == Some(key))
+                        .unwrap(),
+                )
+            })
+    }
+
+    /// Migrate legacy `models.profiles` into the vendor-grouped
+    /// `models.providers` + `models.active_model` format. Idempotent:
+    /// - `profiles` empty → no-op;
+    /// - `providers` already populated → profiles are merged into the
+    ///   existing groups under the same rules (same `(group, model)` pairs
+    ///   are skipped);
+    /// - otherwise new groups are created.
+    ///
+    /// Grouping: the profile's base_url host is mapped through
+    /// [`vendor_for_host`] (unknown hosts use the host itself as the group
+    /// name; an unparsable URL groups under `"custom"`). A profile whose
+    /// base_url/api_key matches its group does NOT duplicate the value into
+    /// the model entry (stays `None` = inherit). The group's shared
+    /// `api_key` is the first profile's key. When `active_profile` resolves
+    /// into a group, `active_model` is written and the `main` runtime cache
+    /// is synced from the active profile.
+    pub fn migrate_providers(&mut self) {
+        if self.profiles.is_empty() {
+            return;
+        }
+        // Deterministic processing order: sorted by profile key so group
+        // creation and "first key wins" do not depend on HashMap iteration.
+        let mut entries: Vec<(String, ModelEndpoint)> = self
+            .profiles
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (profile_key, ep) in &entries {
+            let host = extract_host(ep.base_url.as_deref().unwrap_or_default());
+            let group_name = vendor_for_host(&host).unwrap_or(&host).to_string();
+            let group = self
+                .providers
+                .entry(group_name)
+                .or_insert_with(|| ProviderGroup {
+                    display_name: None,
+                    base_url: ep.base_url.clone().unwrap_or_default(),
+                    api_key: ep.api_key.clone(),
+                    protocol: ep.provider.clone(),
+                    models: Vec::new(),
+                });
+            if group.models.iter().any(|m| m.name == ep.name) {
+                continue;
+            }
+            group.models.push(ProviderModel {
+                name: ep.name.clone(),
+                profile_key: Some(profile_key.clone()),
+                tier: ep.tier,
+                api_key: (ep.api_key != group.api_key)
+                    .then(|| ep.api_key.clone())
+                    .flatten(),
+                base_url: if ep.base_url.as_deref() == Some(group.base_url.as_str())
+                    || ep.base_url.is_none()
+                {
+                    None
+                } else {
+                    ep.base_url.clone()
+                },
+                context_window: ep.context_window,
+                temperature: ep.temperature,
+            });
+        }
+
+        // Map the active profile onto (group, model) and sync the `main`
+        // runtime cache from the still-present profile entry.
+        if let Some(active_key) = self.active_profile.clone() {
+            if let Some(ep) = self.profiles.get(&active_key).cloned() {
+                let host = extract_host(ep.base_url.as_deref().unwrap_or_default());
+                let group_name = vendor_for_host(&host).unwrap_or(&host).to_string();
+                if self
+                    .providers
+                    .get(&group_name)
+                    .is_some_and(|g| g.models.iter().any(|m| m.name == ep.name))
+                {
+                    self.active_model = Some(ActiveModelRef {
+                        provider: group_name,
+                        model: ep.name.clone(),
+                    });
+                }
+                self.main = ep;
+            }
+        }
+
+        // Old structure is dropped: a subsequent save serializes only
+        // `providers` + `active_model`.
+        self.profiles.clear();
+    }
+}
+
+/// Extract the lowercased host from a URL string, or `"custom"` when the URL
+/// is invalid or has no host.
+fn extract_host(base_url: &str) -> String {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_else(|| "custom".to_string())
+}
+
+/// Map a base_url host to the built-in vendor group name. Unknown hosts
+/// return `None` — the caller uses the host itself as the group name.
+pub fn vendor_for_host(host: &str) -> Option<&'static str> {
+    let host = host.to_ascii_lowercase();
+    if host.contains("kimi.com") || host.contains("moonshot") {
+        Some("kimi")
+    } else if host.contains("z.ai") || host.contains("bigmodel") {
+        Some("zhipu")
+    } else if host.contains("deepseek") {
+        Some("deepseek")
+    } else if host.contains("openai.com") {
+        Some("openai")
+    } else if host.contains("anthropic.com") {
+        Some("anthropic")
+    } else {
+        None
     }
 }
 

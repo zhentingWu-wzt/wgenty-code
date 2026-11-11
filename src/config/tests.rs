@@ -68,33 +68,50 @@ fn load_from_disk_migrates_legacy_model_fields() {
     let _dir = seed_legacy_settings_home();
     let s = Settings::load_from_disk().expect("load");
 
-    // main → synthesized "main" profile, active.
+    // The load path runs both migrations in sequence: legacy main/small/
+    // planner → profiles (covered by `migrate_legacy` unit tests) → the
+    // vendor-grouped `providers` view.
     assert_eq!(s.models.active_profile.as_deref(), Some("main"));
-    assert_eq!(s.models.profiles["main"].name, "glm-5.3");
+    assert!(s.models.profiles.is_empty(), "profiles migrated on load");
     assert_eq!(s.models.main.name, "glm-5.3", "runtime cache resynced");
 
-    // small → light-tier profile inheriting main's base_url.
-    let small = &s.models.profiles["small"];
-    assert_eq!(small.name, "haiku");
-    assert_eq!(small.tier, Some(crate::config::models::ModelTier::Light));
-    assert_eq!(small.base_url.as_deref(), Some("https://relay.example"));
-    assert_eq!(small.api_key.as_deref(), Some("k-main"));
-
-    // planner → profile + role ref.
-    assert_eq!(s.models.roles.planner.as_deref(), Some("planner"));
-    assert_eq!(s.models.profiles["planner"].name, "planner-x");
+    // main + small (light tier) are grouped by host under the relay host.
+    let relay = &s.models.providers["relay.example"];
     assert_eq!(
-        s.models.profiles["planner"].base_url.as_deref(),
-        Some("https://planner.example")
+        relay
+            .models
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        ["glm-5.3", "haiku"]
+    );
+    assert_eq!(
+        relay.models[1].tier,
+        Some(crate::config::models::ModelTier::Light)
     );
 
-    // Legacy slots consumed; save→reload round-trips the new format.
+    // planner → role ref survives; the planner endpoint is grouped by its
+    // own host ("planner.example").
+    assert_eq!(s.models.roles.planner.as_deref(), Some("planner"));
+    assert!(s.models.providers["planner.example"]
+        .models
+        .iter()
+        .any(|m| m.name == "planner-x"));
+
+    // Legacy slots consumed; save→reload round-trips the new format without
+    // synthesizing another profile or changing the active provider model.
     assert!(s.models.small.is_none() && s.models.planner.is_none());
+    let providers = serde_json::to_value(&s.models.providers).expect("serialize providers");
+    let active_model = s.models.active_model.clone();
     s.save().expect("save");
     let re = Settings::load_from_disk().expect("reload");
     assert_eq!(re.models.active_profile.as_deref(), Some("main"));
-    assert!(re.models.profiles.contains_key("small"));
-    assert!(re.models.profiles.contains_key("planner"));
+    assert_eq!(re.models.active_model, active_model);
+    assert!(re.models.profiles.is_empty());
+    assert_eq!(
+        serde_json::to_value(&re.models.providers).expect("serialize reloaded providers"),
+        providers
+    );
     restore_wgenty_home(prev);
 }
 
@@ -141,11 +158,15 @@ fn set_models_main_name_remaps_onto_active_profile_without_clobber() {
     Settings::set("models.main.name", "\"glm-5.2\"").expect("set");
 
     let s = Settings::load_from_disk().expect("reload");
-    let main_profile = s.models.profiles.get("main").expect("main profile exists");
-    assert_eq!(main_profile.name, "glm-5.2");
+    let relay = &s.models.providers["relay.example"];
+    let main_model = relay
+        .models
+        .iter()
+        .find(|m| m.profile_key.as_deref() == Some("main"))
+        .expect("main provider model exists");
+    assert_eq!(main_model.name, "glm-5.2");
     assert_eq!(
-        main_profile.base_url.as_deref(),
-        Some("https://relay.example"),
+        relay.base_url, "https://relay.example",
         "sibling fields survive the legacy-path set"
     );
     assert_eq!(s.models.active_profile.as_deref(), Some("main"));
@@ -160,7 +181,11 @@ fn set_models_small_name_keeps_light_role() {
     // "small" light profile already exists post-migration → set targets it.
     Settings::set("models.small.name", "\"haiku-2\"").expect("set");
     let s = Settings::load_from_disk().expect("reload");
-    let small = &s.models.profiles["small"];
+    let small = s.models.providers["relay.example"]
+        .models
+        .iter()
+        .find(|m| m.profile_key.as_deref() == Some("small"))
+        .expect("small provider model exists");
     assert_eq!(small.name, "haiku-2");
     assert_eq!(small.tier, Some(crate::config::models::ModelTier::Light));
     restore_wgenty_home(prev);
@@ -735,4 +760,196 @@ fallback_models = ["claude-sonnet-4", "gpt-4o"]
         assert_eq!(trace.context_char_limit, 4096);
         assert_eq!(trace.sink, TraceSinkMode::Off);
     }
+}
+
+/// Legacy `models.profiles` fixture mirroring a real settings.json: a kimi
+/// profile plus two z.ai profiles sharing host and key (one light-tier).
+fn legacy_profiles_json() -> String {
+    r#"{
+        "main": {"name": "glm-5.3", "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-z"},
+        "profiles": {
+            "kimi": {"name": "k3", "base_url": "https://api.kimi.com/coding/v1", "api_key": "sk-k"},
+            "glm": {"name": "glm-5.3", "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-z"},
+            "glm-flash": {"name": "glm-5.3-flash", "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-z", "tier": "light"}
+        },
+        "active_profile": "glm"
+    }"#
+    .to_string()
+}
+
+#[test]
+fn migrate_profiles_groups_by_host() {
+    let mut cfg: ModelsConfig = serde_json::from_str(&legacy_profiles_json()).unwrap();
+    cfg.migrate_providers();
+    assert_eq!(cfg.providers.len(), 2, "kimi + zhipu");
+    let zg = cfg.providers.get("zhipu").expect("zhipu group");
+    assert_eq!(
+        zg.models
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        ["glm-5.3", "glm-5.3-flash"]
+    );
+    assert_eq!(zg.api_key.as_deref(), Some("sk-z"));
+    assert_eq!(
+        cfg.active_model,
+        Some(ActiveModelRef {
+            provider: "zhipu".into(),
+            model: "glm-5.3".into()
+        })
+    );
+    // 迁移后 profiles 置空（写回时不序列化旧结构）。
+    assert!(cfg.profiles.is_empty());
+}
+
+#[test]
+fn migrate_is_idempotent() {
+    let mut cfg: ModelsConfig = serde_json::from_str(&legacy_profiles_json()).unwrap();
+    cfg.migrate_providers();
+    let once = serde_json::to_string(&cfg.providers).unwrap();
+    cfg.migrate_providers();
+    let twice = serde_json::to_string(&cfg.providers).unwrap();
+    assert_eq!(once, twice);
+}
+
+#[test]
+fn migrate_unknown_host_uses_host_as_group_name() {
+    let mut cfg: ModelsConfig = serde_json::from_str(
+        r#"{"profiles": {"x": {"name": "m", "base_url": "https://llm.internal.io/v1"}}}"#,
+    )
+    .unwrap();
+    cfg.migrate_providers();
+    assert!(cfg.providers.contains_key("llm.internal.io"));
+}
+
+#[test]
+fn migrate_invalid_url_uses_custom_group() {
+    let mut cfg: ModelsConfig =
+        serde_json::from_str(r#"{"profiles": {"x": {"name": "m", "base_url": "not a url"}}}"#)
+            .unwrap();
+    cfg.migrate_providers();
+    assert!(cfg.providers.contains_key("custom"));
+}
+
+#[test]
+fn migrate_merges_into_existing_providers_without_duplicates() {
+    // Pre-existing group (new format already partially adopted) + legacy
+    // profiles: same-host profiles merge into the group, a same-named model
+    // is skipped instead of duplicated.
+    let mut cfg: ModelsConfig = serde_json::from_str(
+        r#"{
+            "profiles": {
+                "glm": {"name": "glm-5.3", "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-z"},
+                "glm-flash": {"name": "glm-5.3-flash", "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-z"}
+            },
+            "providers": {
+                "zhipu": {"base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-z",
+                          "models": [{"name": "glm-5.3"}]}
+            }
+        }"#,
+    )
+    .unwrap();
+    cfg.migrate_providers();
+    let zg = cfg.providers.get("zhipu").expect("zhipu group");
+    assert_eq!(
+        zg.models
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        ["glm-5.3", "glm-5.3-flash"],
+        "existing model kept, new one appended, no duplicate"
+    );
+    assert!(cfg.profiles.is_empty());
+}
+
+#[test]
+fn vendor_for_host_maps_builtin_vendors() {
+    assert_eq!(vendor_for_host("api.kimi.com"), Some("kimi"));
+    assert_eq!(vendor_for_host("api.moonshot.cn"), Some("kimi"));
+    assert_eq!(vendor_for_host("api.z.ai"), Some("zhipu"));
+    assert_eq!(vendor_for_host("open.bigmodel.cn"), Some("zhipu"));
+    assert_eq!(vendor_for_host("api.deepseek.com"), Some("deepseek"));
+    assert_eq!(vendor_for_host("api.openai.com"), Some("openai"));
+    assert_eq!(vendor_for_host("api.anthropic.com"), Some("anthropic"));
+    assert_eq!(vendor_for_host("llm.internal.io"), None);
+}
+
+#[test]
+#[serial_test::serial]
+fn load_from_disk_migrates_profiles_to_providers_and_writes_bak() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    let settings_path = cfg_dir.join("settings.json");
+    let original = format!("{{\"models\": {}}}", legacy_profiles_json());
+    std::fs::write(&settings_path, &original).expect("seed settings");
+    std::env::set_var("WGENTY_HOME", dir.path());
+
+    let s = Settings::load_from_disk().expect("load");
+    restore_wgenty_home(prev);
+
+    // Migrated in memory: providers grouped, profiles gone.
+    assert!(s.models.profiles.is_empty());
+    assert!(s.models.providers.contains_key("zhipu"));
+    assert!(s.models.providers.contains_key("kimi"));
+    assert!(s.models.active_model.is_some());
+
+    // Backup written next to settings.json as settings.json.bak-<date>,
+    // preserving the untouched legacy content.
+    let bak = std::fs::read_dir(&cfg_dir)
+        .expect("read cfg dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.starts_with("settings.json.bak-"))
+        .expect("a settings.json.bak-<date> file must exist");
+    let bak_content = std::fs::read_to_string(cfg_dir.join(&bak)).expect("read bak");
+    assert_eq!(bak_content, original, "backup keeps the pre-migration file");
+
+    // Rewritten settings.json no longer carries legacy profiles.
+    let rewritten: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read settings"))
+            .expect("parse rewritten");
+    assert!(rewritten["models"]["profiles"]
+        .as_object()
+        .unwrap()
+        .is_empty());
+    assert!(rewritten["models"]["providers"].is_object());
+}
+
+#[test]
+#[serial_test::serial]
+fn load_from_disk_does_not_overwrite_same_day_bak() {
+    let prev = std::env::var_os("WGENTY_HOME");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    let settings_path = cfg_dir.join("settings.json");
+    std::fs::write(
+        &settings_path,
+        format!("{{\"models\": {}}}", legacy_profiles_json()),
+    )
+    .expect("seed settings");
+    std::env::set_var("WGENTY_HOME", dir.path());
+
+    Settings::load_from_disk().expect("first load migrates");
+    let bak_name = std::fs::read_dir(&cfg_dir)
+        .expect("read cfg dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.starts_with("settings.json.bak-"))
+        .expect("bak exists after first load");
+    let marker = "sentinel — do not overwrite";
+    std::fs::write(cfg_dir.join(&bak_name), marker).expect("overwrite bak with sentinel");
+    // Force a second migration pass over a legacy-shaped file.
+    std::fs::write(
+        &settings_path,
+        format!("{{\"models\": {}}}", legacy_profiles_json()),
+    )
+    .expect("reseed legacy settings");
+    Settings::load_from_disk().expect("second load migrates again");
+    restore_wgenty_home(prev);
+
+    let bak_content = std::fs::read_to_string(cfg_dir.join(&bak_name)).expect("read bak");
+    assert_eq!(bak_content, marker, "same-day bak must not be overwritten");
 }

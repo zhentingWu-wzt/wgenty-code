@@ -85,11 +85,11 @@ impl Settings {
     /// flat fields will fail to deserialize.
     ///
     /// Model config IS migrated: legacy `models.main` / `models.small` /
-    /// `models.planner` are normalized into `models.profiles` +
-    /// `models.active_profile` + `models.roles` (see
-    /// [`crate::config::models::ModelsConfig::migrate_legacy`]). A subsequent
-    /// save upgrades the file to the new format (the legacy keys are no
-    /// longer serialized).
+    /// `models.planner` are normalized through `models.profiles` into
+    /// `models.providers` + `models.active_model` + `models.roles` (see
+    /// [`crate::config::models::ModelsConfig::migrate_legacy`] and
+    /// [`crate::config::models::ModelsConfig::migrate_providers`]). Migration
+    /// writes a dated backup before saving the upgraded file.
     pub fn load_from_disk() -> anyhow::Result<Self> {
         let path = Self::config_path();
         if path.exists() {
@@ -109,6 +109,8 @@ impl Settings {
                 .context(format!("Failed to parse config file: {}", path.display()))?;
             match legacy {
                 Some((main, small, planner)) => {
+                    let legacy_fields_present =
+                        main.is_some() || small.is_some() || planner.is_some();
                     if let Some(m) = main {
                         settings.models.main = serde_json::from_value(m).context(format!(
                             "Failed to parse models.main in config file: {}",
@@ -129,11 +131,29 @@ impl Settings {
                                 path.display()
                             ))?);
                     }
-                    settings.models.migrate_legacy(true);
+                    if legacy_fields_present || !settings.models.profiles.is_empty() {
+                        settings.models.migrate_legacy(legacy_fields_present);
+                    }
                 }
                 None => {
                     settings.models.migrate_legacy(false);
                 }
+            }
+            // profiles→providers migration: when legacy profiles were
+            // present, preserve the pre-migration file once as
+            // `settings.json.bak-<date>` (same-day backups are not
+            // overwritten) before writing back the migrated form.
+            if !settings.models.profiles.is_empty() {
+                let date = chrono::Local::now().format("%Y-%m-%d");
+                let bak = path.with_extension(format!("json.bak-{date}"));
+                if !bak.exists() {
+                    std::fs::copy(&path, &bak).context(format!(
+                        "Failed to back up config file to {}",
+                        bak.display()
+                    ))?;
+                }
+                settings.models.migrate_providers();
+                settings.save()?;
             }
             Ok(settings)
         } else {
@@ -271,11 +291,11 @@ impl Settings {
         s
     }
 
-    /// Activate a named profile in place: record `active_profile` and sync
-    /// the `models.main` runtime cache. Non-destructive — the previously
-    /// active model always remains available as its profile.
-    /// Returns `Err` if the profile key is not in `models.profiles`, with the
-    /// list of available keys for actionable feedback.
+    /// Activate a named profile or migrated provider model in place, recording
+    /// its legacy/provider reference and syncing the `models.main` runtime
+    /// cache. Non-destructive — the previously active model remains available.
+    /// Returns `Err` with the available keys if no profile, original profile
+    /// key, or provider model name matches.
     ///
     /// This is the single source of truth for the `/model` switch — the daemon
     /// handler and any future switch surface should call this so behavior stays
@@ -283,25 +303,57 @@ impl Settings {
     /// (subagent `small_model_settings`, fallback, planner) follows
     /// automatically on the next request.
     pub fn switch_to_profile(&mut self, profile: &str) -> anyhow::Result<()> {
-        match self.models.profiles.get(profile) {
-            Some(endpoint) => {
-                self.models.active_profile = Some(profile.to_string());
-                self.models.main = endpoint.clone();
-                Ok(())
-            }
-            None => {
-                let mut keys: Vec<&String> = self.models.profiles.keys().collect();
-                keys.sort();
-                Err(anyhow::anyhow!(
-                    "unknown model profile '{}'; available: [{}]",
-                    profile,
-                    keys.iter()
-                        .map(|k| k.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            }
+        if let Some(endpoint) = self.models.profiles.get(profile) {
+            self.models.active_profile = Some(profile.to_string());
+            self.models.main = endpoint.clone();
+            return Ok(());
         }
+        // Post-migration fallback: `profiles` has been folded into
+        // `providers`; accept both the original profile key and the model
+        // name so existing `/model <key>` muscle memory keeps working.
+        if let Some((group_name, model)) = self
+            .models
+            .find_provider_model_by_key(profile)
+            .or_else(|| self.models.find_provider_model(profile))
+        {
+            let group_base_url = self.models.providers[&group_name].base_url.clone();
+            let group_api_key = self.models.providers[&group_name].api_key.clone();
+            let group_protocol = self.models.providers[&group_name].protocol.clone();
+            let endpoint = crate::config::models::ModelEndpoint {
+                name: model.name.clone(),
+                base_url: Some(model.base_url.clone().unwrap_or(group_base_url)),
+                api_key: model.api_key.clone().or(group_api_key),
+                appkey: None,
+                provider: group_protocol,
+                context_window: model.context_window,
+                temperature: model.temperature,
+                display_name: None,
+                tier: model.tier,
+                pricing: None,
+            };
+            self.models.active_model = Some(crate::config::models::ActiveModelRef {
+                provider: group_name,
+                model: endpoint.name.clone(),
+            });
+            // Keep `active_profile` pointing at the user's last choice so the
+            // persisted file still round-trips for legacy consumers.
+            self.models.active_profile = Some(profile.to_string());
+            self.models.main = endpoint;
+            return Ok(());
+        }
+        let mut keys: Vec<String> = self.models.profiles.keys().cloned().collect();
+        keys.extend(
+            self.models
+                .providers
+                .values()
+                .flat_map(|g| g.models.iter().map(|m| m.name.clone())),
+        );
+        keys.sort();
+        Err(anyhow::anyhow!(
+            "unknown model profile '{}'; available: [{}]",
+            profile,
+            keys.join(", ")
+        ))
     }
 
     /// Human-readable label for `models.main`: `display_name` if set, else
@@ -343,8 +395,8 @@ impl Settings {
     ///   set("prompt.include.skills", "false")
     ///   set("plugins.enabled_map.foo@bar", "true")
     /// Legacy model paths (`models.main.*`, `models.small.*`,
-    /// `models.planner.*`) are transparently remapped onto their profiles
-    /// equivalents (see [`Self::remap_legacy_models_key`]).
+    /// `models.planner.*`) are transparently remapped onto their profile or
+    /// provider-model equivalents (see [`Self::remap_legacy_models_key`]).
     /// Values are parsed as JSON literals first (so "true"/"42"/"3.14" become bool/number);
     /// on parse failure, the value is treated as a string.
     /// Type validation happens at deserialize time — invalid paths/types return Err
@@ -352,9 +404,21 @@ impl Settings {
     pub fn set(key: &str, value: &str) -> anyhow::Result<()> {
         use serde_json::Value;
         // Load disk form so runtime-resolved absolute working_dir is not written back.
-        let settings = Self::load_from_disk()?;
+        let mut settings = Self::load_from_disk()?;
         let remapped = Self::remap_legacy_models_key(&settings.models, key);
         let key = remapped.as_str();
+
+        // Provider-model paths contain dots in the group name and an array
+        // index — handle them structurally instead of via the JSON pointer
+        // path below (which splits on '.' and cannot address Vec elements).
+        if let Some(rest) = key.strip_prefix("models.providers.") {
+            let parsed: Value =
+                serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
+            Self::set_provider_model_field(&mut settings, rest, parsed)?;
+            settings.save()?;
+            return Ok(());
+        }
+
         let mut json = serde_json::to_value(&settings)?;
 
         let parsed: Value =
@@ -432,10 +496,9 @@ impl Settings {
     }
 
     /// Translate legacy `models.main` / `models.small` / `models.planner`
-    /// keys onto their profiles equivalents. The remapped path patches the
-    /// existing profile object in the JSON view, so `models.main.name = X`
-    /// no longer risks clobbering sibling fields (the legacy path replaced
-    /// the whole `main` object whenever it was absent from the view).
+    /// keys onto their profile or provider-model equivalents. The remapped
+    /// path patches the existing model object, so `models.main.name = X` does
+    /// not clobber sibling fields.
     fn remap_legacy_models_key(models: &crate::config::models::ModelsConfig, key: &str) -> String {
         use crate::config::models::ModelTier;
         let candidates = [
@@ -465,10 +528,67 @@ impl Settings {
         for (prefix, target) in candidates {
             if key == prefix || key.starts_with(&format!("{prefix}.")) {
                 let rest = &key[prefix.len()..];
+                // Post-migration form: profiles folded into providers. Patch
+                // the migrated provider-model entry directly, addressed by
+                // its original profile key, so the legacy set still lands on
+                // the same logical model.
+                if models.profiles.is_empty() && !models.providers.is_empty() {
+                    if let Some((group, model)) = models.find_provider_model_by_key(&target) {
+                        let idx = models.providers[&group]
+                            .models
+                            .iter()
+                            .position(|m| m.profile_key.as_deref() == Some(target.as_str()))
+                            .unwrap();
+                        let _ = model;
+                        return format!("models.providers.{group}.models.{idx}{rest}");
+                    }
+                }
                 return format!("models.profiles.{target}{rest}");
             }
         }
         key.to_string()
+    }
+
+    /// Apply a `set` value to a `models.providers.<group>.models.<idx>.<field>`
+    /// path. The group name may itself contain dots, so the path is parsed
+    /// from the right: `<field>` and `<idx>` are the last two segments and
+    /// everything before them is the group key.
+    fn set_provider_model_field(
+        settings: &mut Settings,
+        rest: &str,
+        value: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        // rest = "<group>.models.<idx>.<field>"; the group name may contain
+        // dots, so parse from the right: strip field, then the ".models.<idx>"
+        // suffix.
+        let (group_and_idx, field) = rest
+            .rsplit_once('.')
+            .ok_or_else(|| anyhow::anyhow!("invalid provider-model path '{}'", rest))?;
+        let (group, idx_str) = group_and_idx
+            .rsplit_once(".models.")
+            .ok_or_else(|| anyhow::anyhow!("invalid provider-model path '{}'", rest))?;
+        let idx: usize = idx_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid model index in path '{}'", rest))?;
+        let group_cfg = settings
+            .models
+            .providers
+            .get_mut(group)
+            .ok_or_else(|| anyhow::anyhow!("unknown provider group '{}'", group))?;
+        let model = group_cfg
+            .models
+            .get_mut(idx)
+            .ok_or_else(|| anyhow::anyhow!("no model at index {} in group '{}'", idx, group))?;
+        // Serialize the single field through JSON so type validation matches
+        // the struct definition.
+        let mut model_json = serde_json::to_value(&*model)?;
+        model_json
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("provider model is not an object"))?
+            .insert(field.to_string(), value);
+        *model = serde_json::from_value(model_json)
+            .map_err(|e| anyhow::anyhow!("invalid value for '{}': {}", field, e))?;
+        Ok(())
     }
 
     /// Reset settings to defaults
