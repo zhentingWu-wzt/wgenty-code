@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  History,
   FolderGit2,
   FolderMinus,
   GitBranchPlus,
@@ -13,6 +14,7 @@ import {
 import { toast } from "sonner";
 import type { DaemonClient } from "../../api/client";
 import type { ProjectInfo, SessionInfo, WorktreeInfo } from "../../api/types";
+import { sessionMessagesToDisplay } from "../../agent/sessionLoad";
 import { cn } from "../../lib/utils";
 import { useSessionManager, type SessionEntry } from "../../state/sessionManager";
 import { NewSessionModal, type NewSessionPreset } from "./NewSessionModal";
@@ -45,6 +47,44 @@ const STATUS_DOT: Record<string, string> = {
   awaiting_approval: "text-warning",
   error: "text-danger",
 };
+
+/** Non-open daemon sessions listed under each project's "Show more" node. */
+function MoreSessions({
+  sessions,
+  onOpen,
+}: {
+  sessions: SessionInfo[];
+  onOpen: (info: SessionInfo) => void;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <TreeNode
+      icon={<History size={12} />}
+      title="Show more"
+      count={sessions.length}
+      defaultCollapsed
+    >
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
+        {sessions.map((s) => (
+          <li key={s.id} className="flex items-center gap-1">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-left text-[13px] hover:bg-accent"
+              onClick={() => onOpen(s)}
+            >
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate font-medium">{s.name}</span>
+                <span className="truncate text-[11px] text-muted-foreground">
+                  {s.message_count} messages · {new Date(s.updated_at).toLocaleDateString()}
+                </span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </TreeNode>
+  );
+}
 
 function TreeNode({
   icon,
@@ -167,6 +207,9 @@ export function ProjectTree({
 
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null);
   const [worktreesByProject, setWorktreesByProject] = useState<Record<string, WorktreeInfo[]>>({});
+  // Daemon-side session index for the "Show more" sections: everything not
+  // currently open locally, grouped per project on render.
+  const [daemonSessions, setDaemonSessions] = useState<SessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [newSession, setNewSession] = useState<{ preset?: NewSessionPreset } | null>(null);
   const [newTask, setNewTask] = useState<{ project: ProjectInfo } | null>(null);
@@ -179,13 +222,17 @@ export function ProjectTree({
         setError(null);
         // Worktrees are per-project; non-git projects 400 on the endpoint,
         // so only query git repos.
-        const results = await Promise.all(
-          ps
-            .filter((p) => p.is_git_repo)
-            .map(
-              async (p) => [p.path, await client.listWorktrees(p.path).catch(() => [])] as const,
-            ),
-        );
+        const [sessionList, results] = await Promise.all([
+          client.listSessions().catch(() => null),
+          Promise.all(
+            ps
+              .filter((p) => p.is_git_repo)
+              .map(
+                async (p) => [p.path, await client.listWorktrees(p.path).catch(() => [])] as const,
+              ),
+          ),
+        ]);
+        setDaemonSessions(sessionList);
         setWorktreesByProject(Object.fromEntries(results));
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
@@ -204,6 +251,47 @@ export function ProjectTree({
         if (!wt) return !e.worktree;
         return e.worktree && (e.worktree.branch === wt.branch || e.worktree.path === wt.path);
       });
+
+  /** Daemon sessions under `project`/`wt` that are not open locally — the
+   *  "Show more" pool. Mirrors `sessionsIn`'s grouping rules (projectPath
+   *  fallback to main; worktree match by branch or path). */
+  const moreSessionsIn = (project: ProjectInfo, wt: WorktreeInfo | null): SessionInfo[] => {
+    if (!daemonSessions) return [];
+    const openIds = new Set(
+      Object.values(entries)
+        .map((e) => e.daemonId)
+        .filter((id): id is string => id !== null),
+    );
+    return daemonSessions
+      .filter((s) => s.status !== "Archived")
+      .filter((s) => {
+        if ((s.project_path ?? mainPath) !== project.path) return false;
+        if (!wt) return !s.worktree;
+        return !!s.worktree && (s.worktree.branch === wt.branch || s.worktree.path === wt.path);
+      })
+      .filter((s) => !openIds.has(s.id))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  };
+
+  /** Open a daemon session from a "Show more" list: same restore path the
+   *  right-rail Sessions panel uses (load full history, create local entry). */
+  const openDaemonSession = async (info: SessionInfo) => {
+    const full = await client.loadSession(info.id).catch(() => null);
+    if (!full) {
+      toast.error(`Failed to open session "${info.name ?? info.id}"`);
+      return;
+    }
+    useSessionManager.getState().createLocalSession(info.name ?? "Session", {
+      id: info.id,
+      daemonId: info.id,
+      projectPath: info.project_path ?? null,
+      ...(info.worktree ? { worktree: info.worktree } : {}),
+    });
+    for (const dm of sessionMessagesToDisplay(full.messages ?? [])) {
+      const store = useSessionManager.getState().entries[info.id]?.store;
+      store?.getState().pushLoadedMessage(dm);
+    }
+  };
 
   // ── Session actions ────────────────────────────────────────────────────────
   const archiveSession = async (e: SessionEntry) => {
@@ -358,6 +446,7 @@ export function ProjectTree({
                   Detached scratch space for sessions without a project
                 </div>
                 {renderSessions(sessionsIn(p, null))}
+                <MoreSessions sessions={moreSessionsIn(p, null)} onOpen={openDaemonSession} />
               </>
             ) : (
               <>
@@ -381,6 +470,7 @@ export function ProjectTree({
                   }
                 >
                   {renderSessions(sessionsIn(p, null))}
+                  <MoreSessions sessions={moreSessionsIn(p, null)} onOpen={openDaemonSession} />
                 </TreeNode>
 
                 {/* One task node per linked worktree. */}
@@ -421,6 +511,7 @@ export function ProjectTree({
                     }
                   >
                     {renderSessions(sessionsIn(p, w))}
+                    <MoreSessions sessions={moreSessionsIn(p, w)} onOpen={openDaemonSession} />
                   </TreeNode>
                 ))}
               </>

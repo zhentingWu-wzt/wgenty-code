@@ -93,9 +93,7 @@ describe("ProjectTree", () => {
     await user.click(screen.getByRole("button", { name: "Create" }));
 
     const mk = await waitFor(() =>
-      spy.mock.calls.find(
-        ([u, i]) => String(u) === "/api/v1/worktrees" && i?.method === "POST",
-      ),
+      spy.mock.calls.find(([u, i]) => String(u) === "/api/v1/worktrees" && i?.method === "POST"),
     );
     expect(JSON.parse(mk![1]!.body as string)).toEqual({
       path: ".worktrees/feat-y",
@@ -333,5 +331,62 @@ describe("ProjectTree", () => {
     expect(screen.getByTitle("Remove project docs")).toBeInTheDocument();
     // The No Project node exposes its own "+ session" action.
     expect(screen.getByTitle("New session in No Project")).toBeInTheDocument();
+  });
+
+  it("shows unopened daemon sessions under Show more and opens them on click", async () => {
+    const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const json = (p: unknown, status = 200) => new Response(JSON.stringify(p), { status });
+      if (url === "/api/v1/projects" && method === "GET") return json(PROJECTS);
+      if (url.startsWith("/api/v1/worktrees") && method === "GET") return json(WORKTREES);
+      if (url === "/api/v1/sessions" && method === "GET") {
+        return json([
+          {
+            id: "older-1",
+            name: "older chat",
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            message_count: 3,
+            status: "Active",
+          },
+          {
+            id: "d1",
+            name: "already open",
+            created_at: "2026-01-02T00:00:00Z",
+            updated_at: "2026-01-02T00:00:00Z",
+            message_count: 1,
+            status: "Active",
+          },
+        ]);
+      }
+      if (url === "/api/v1/sessions/older-1" && method === "GET") {
+        return json({ id: "older-1", name: "older chat", messages: [] });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", spy);
+    const m = useSessionManager.getState();
+    m.createLocalSession("already open", { id: "d1", daemonId: "d1" });
+    render(<ProjectTree client={client} />);
+
+    // The Show more node exists with only the unopened session counted;
+    // already-open ones are excluded.
+    const moreBtn = await screen.findByRole("button", { name: /show more/i });
+    expect(moreBtn).toHaveTextContent("1");
+    // Collapsed by default — its session is hidden.
+    expect(screen.queryByText("older chat")).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(moreBtn);
+    expect(await screen.findByText("older chat")).toBeInTheDocument();
+
+    // Clicking the row loads its history and creates the local entry.
+    await user.click(screen.getByRole("button", { name: /older chat/i }));
+    await waitFor(() => {
+      expect(useSessionManager.getState().entries["older-1"]).toBeDefined();
+      expect(useSessionManager.getState().activeId).toBe("older-1");
+    });
+    expect(spy.mock.calls.some(([u]) => String(u) === "/api/v1/sessions/older-1")).toBe(true);
   });
 });

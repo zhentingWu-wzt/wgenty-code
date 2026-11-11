@@ -35,8 +35,10 @@ import { startUiSync } from "./state/uiSync";
 import { useUiStore } from "./state/uiStore";
 
 /** How many most-recent daemon sessions to restore into the left rail on
- *  startup (newest first). Mirrors the TUI's behavior of resuming the
- *  latest conversation history. */
+ *  startup (newest first) **per project** — every project re-appears with its
+ *  latest history after a reload, not just whichever projects happen to own
+ *  the 5 globally-newest sessions. Older sessions stay reachable via each
+ *  project's "Show more" section in the ProjectTree. */
 const RECENT_SESSION_LIMIT = 5;
 
 /**
@@ -101,12 +103,23 @@ export function App() {
       try {
         const sessions = await client.listSessions();
         if (cancelled) return;
-        // Newest first; archived sessions stay hidden from the default view
-        // (same client-side filtering as the right-rail Sessions panel).
-        const recent = sessions
+        // Newest first per project; archived sessions stay hidden from the
+        // default view (same client-side filtering as the right-rail Sessions
+        // panel). Grouping by project keeps every project represented after a
+        // reload instead of only the globally-newest sessions.
+        const active = sessions
           .filter((s) => s.status !== "Archived")
-          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-          .slice(0, RECENT_SESSION_LIMIT);
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+        // Per-project restore counters (project path → sessions kept so far).
+        const kept = new Map<string, number>();
+        const recent = active.filter((s) => {
+          // Unscoped sessions (no project_path) all belong to the main
+          // project — bucket them together so they share one quota.
+          const key = s.project_path ?? "";
+          if ((kept.get(key) ?? 0) >= RECENT_SESSION_LIMIT) return false;
+          kept.set(key, (kept.get(key) ?? 0) + 1);
+          return true;
+        });
         if (recent.length > 0) {
           // Load full history in parallel, then restore each session — the
           // same path the right-rail Sessions panel uses to open one.

@@ -27,11 +27,18 @@ function resetStores() {
     contextWindow: null,
     permissionMode: null,
   });
-  useUiStore.setState({ openTabs: [], activeTabId: null, subagentTabs: {}, previewTabs: {}, diffTabs: {} });
+  useUiStore.setState({
+    openTabs: [],
+    activeTabId: null,
+    subagentTabs: {},
+    previewTabs: {},
+    diffTabs: {},
+  });
 }
 
 describe("App welcome screen", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     resetStores();
     vi.spyOn(DaemonClient.prototype, "health").mockRejectedValue(new Error("offline"));
     vi.spyOn(DaemonClient.prototype, "traceReplay").mockRejectedValue(new Error("offline"));
@@ -51,9 +58,7 @@ describe("App welcome screen", () => {
     // Open a session from the welcome screen.
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /new session/i }));
-    await waitFor(() =>
-      expect(useSessionManager.getState().activeId).not.toBeNull(),
-    );
+    await waitFor(() => expect(useSessionManager.getState().activeId).not.toBeNull());
     // Welcome is replaced by the chat shell.
     expect(screen.queryByText("Wgenty Code", { selector: "h1" })).not.toBeInTheDocument();
 
@@ -61,9 +66,7 @@ describe("App welcome screen", () => {
     const closeBtn = await screen.findAllByRole("button", { name: /^Close /i });
     await user.click(closeBtn[0]);
 
-    expect(
-      await screen.findByText("Wgenty Code", { selector: "h1" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Wgenty Code", { selector: "h1" })).toBeInTheDocument();
     expect(useSessionManager.getState().activeId).toBeNull();
   });
 
@@ -91,18 +94,58 @@ describe("App welcome screen", () => {
     render(<App />);
 
     // Session restored + activated → chat shell (no welcome yet).
-    await waitFor(() =>
-      expect(useSessionManager.getState().activeId).toBe("d1"),
-    );
+    await waitFor(() => expect(useSessionManager.getState().activeId).toBe("d1"));
     expect(screen.queryByText("Wgenty Code", { selector: "h1" })).not.toBeInTheDocument();
 
     // Close the only tab → welcome screen, not a blank app.
     const closeBtn = await screen.findAllByRole("button", { name: /^Close /i });
     await user.click(closeBtn[0]);
 
-    expect(
-      await screen.findByText("Wgenty Code", { selector: "h1" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Wgenty Code", { selector: "h1" })).toBeInTheDocument();
     expect(useSessionManager.getState().activeId).toBeNull();
+  });
+
+  it("restores the newest sessions per project, not just the global top 5", async () => {
+    // Regression: bootstrap kept only the 5 globally-newest sessions, so an
+    // active project could vanish from the left rail after a reload when
+    // another project owned all 5 newest sessions.
+    vi.spyOn(DaemonClient.prototype, "listProjects").mockRejectedValue(new Error("offline"));
+    const mk = (id: string, project: string | null, at: string) => ({
+      id,
+      name: id,
+      project_path: project,
+      status: "Active",
+      created_at: at,
+      updated_at: at,
+      message_count: 0,
+    });
+    vi.spyOn(DaemonClient.prototype, "listSessions").mockResolvedValue([
+      mk("main-1", null, "2026-01-05T00:00:00Z"),
+      mk("main-2", null, "2026-01-04T00:00:00Z"),
+      mk("docs-1", "/repo/docs", "2026-01-03T00:00:00Z"),
+      mk("main-3", null, "2026-01-02T00:00:00Z"),
+      mk("main-4", null, "2026-01-01T00:00:00Z"),
+      mk("docs-2", "/repo/docs", "2025-12-31T00:00:00Z"),
+      mk("main-5", null, "2025-12-30T00:00:00Z"),
+      mk("main-6", null, "2025-12-29T00:00:00Z"),
+    ]);
+    vi.spyOn(DaemonClient.prototype, "loadSession").mockImplementation(
+      async (id: string) =>
+        ({
+          id,
+          name: id,
+          messages: [],
+        }) as never,
+    );
+
+    render(<App />);
+
+    // Per-project cap of 5: main keeps 5 of its 6, docs keeps both of its 2.
+    await waitFor(() => {
+      const entries = useSessionManager.getState().entries;
+      expect(Object.keys(entries).sort()).toEqual(
+        ["main-1", "main-2", "main-3", "main-4", "main-5", "docs-1", "docs-2"].sort(),
+      );
+    });
   });
 });
