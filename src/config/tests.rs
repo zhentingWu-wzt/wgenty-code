@@ -456,6 +456,169 @@ fn providers_absent_keeps_old_config_parsing() {
     assert!(cfg.active_model.is_none());
 }
 
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_endpoint_prefers_model_override_then_group_then_env() {
+    let _env = EnvVarGuard::set("ZHIPU_API_KEY", "test-env-key");
+    let mut cfg = ModelsConfig::default();
+    cfg.providers.insert(
+        "zhipu".into(),
+        ProviderGroup {
+            display_name: None,
+            base_url: "https://group.zhipu.test".into(),
+            api_key: Some("test-group-key".into()),
+            protocol: Some("openai".into()),
+            models: vec![ProviderModel {
+                name: "glm-test".into(),
+                profile_key: None,
+                tier: Some(ModelTier::Light),
+                api_key: Some("test-model-key".into()),
+                base_url: Some("https://model.zhipu.test".into()),
+                context_window: Some(123_456),
+                temperature: Some(0.2),
+            }],
+        },
+    );
+
+    let resolved = cfg.resolve_endpoint("zhipu", "glm-test").expect("model");
+    assert_eq!(resolved.name, "glm-test");
+    assert_eq!(resolved.api_key.as_deref(), Some("test-model-key"));
+    assert_eq!(
+        resolved.base_url.as_deref(),
+        Some("https://model.zhipu.test")
+    );
+    assert_eq!(resolved.provider.as_deref(), Some("openai"));
+    assert_eq!(resolved.context_window, Some(123_456));
+    assert_eq!(resolved.temperature, Some(0.2));
+    assert_eq!(resolved.tier, Some(ModelTier::Light));
+
+    let model = &mut cfg.providers.get_mut("zhipu").unwrap().models[0];
+    model.api_key = None;
+    model.base_url = None;
+    let resolved = cfg.resolve_endpoint("zhipu", "glm-test").expect("model");
+    assert_eq!(resolved.api_key.as_deref(), Some("test-group-key"));
+    assert_eq!(
+        resolved.base_url.as_deref(),
+        Some("https://group.zhipu.test")
+    );
+
+    cfg.providers.get_mut("zhipu").unwrap().api_key = None;
+    let resolved = cfg.resolve_endpoint("zhipu", "glm-test").expect("model");
+    assert_eq!(resolved.api_key.as_deref(), Some("test-env-key"));
+}
+
+#[test]
+fn resolve_endpoint_returns_none_for_unknown_provider_or_model() {
+    let mut cfg = ModelsConfig::default();
+    cfg.providers.insert(
+        "deepseek".into(),
+        ProviderGroup {
+            display_name: None,
+            base_url: "https://api.deepseek.com".into(),
+            api_key: None,
+            protocol: None,
+            models: Vec::new(),
+        },
+    );
+    assert!(cfg.resolve_endpoint("missing", "model").is_none());
+    assert!(cfg.resolve_endpoint("deepseek", "missing").is_none());
+}
+
+#[test]
+fn provider_env_key_maps_supported_vendors() {
+    assert_eq!(provider_env_key("kimi").as_deref(), Some("KIMI_API_KEY"));
+    assert_eq!(provider_env_key("zhipu").as_deref(), Some("ZHIPU_API_KEY"));
+    assert_eq!(
+        provider_env_key("deepseek").as_deref(),
+        Some("DEEPSEEK_API_KEY")
+    );
+    assert_eq!(
+        provider_env_key("anthropic").as_deref(),
+        Some("ANTHROPIC_API_KEY")
+    );
+    assert_eq!(
+        provider_env_key("openai").as_deref(),
+        Some("OPENAI_API_KEY")
+    );
+    assert_eq!(provider_env_key("custom"), None);
+}
+
+#[test]
+fn endpoint_for_tier_cross_provider_deterministic() {
+    let group = |model_name: &str| ProviderGroup {
+        display_name: None,
+        base_url: format!("https://{model_name}.test"),
+        api_key: Some(format!("key-{model_name}")),
+        protocol: None,
+        models: vec![ProviderModel {
+            name: model_name.into(),
+            profile_key: None,
+            tier: Some(ModelTier::Light),
+            api_key: None,
+            base_url: None,
+            context_window: None,
+            temperature: None,
+        }],
+    };
+    let mut cfg = ModelsConfig::default();
+    cfg.providers.insert("b".into(), group("m1"));
+    cfg.providers.insert("a".into(), group("m2"));
+
+    let selected = cfg.endpoint_for_tier(ModelTier::Light);
+    assert_eq!(selected.name, "m2");
+    assert_eq!(selected.base_url.as_deref(), Some("https://m2.test"));
+    assert_eq!(selected.api_key.as_deref(), Some("key-m2"));
+    assert_eq!(
+        serde_json::to_value(&selected).unwrap(),
+        serde_json::to_value(cfg.endpoint_for_tier(ModelTier::Light)).unwrap()
+    );
+
+    let mut reversed = ModelsConfig::default();
+    reversed.providers.insert("a".into(), group("m2"));
+    reversed.providers.insert("b".into(), group("m1"));
+    assert_eq!(
+        serde_json::to_value(selected).unwrap(),
+        serde_json::to_value(reversed.endpoint_for_tier(ModelTier::Light)).unwrap()
+    );
+}
+
+#[test]
+fn endpoint_for_tier_migration_preserves_choice() {
+    let mut cfg: ModelsConfig = serde_json::from_str(&legacy_profiles_json()).unwrap();
+    let before = cfg.endpoint_for_tier(ModelTier::Light);
+    assert_eq!(before.name, "glm-5.3-flash");
+
+    cfg.migrate_providers();
+    let after = cfg.endpoint_for_tier(ModelTier::Light);
+    assert_eq!(after.name, "glm-5.3-flash");
+    assert_eq!(
+        serde_json::to_value(before).unwrap(),
+        serde_json::to_value(after).unwrap()
+    );
+}
+
 #[test]
 fn test_small_model_settings_uses_small_overrides() {
     let mut s = Settings::default();

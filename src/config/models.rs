@@ -533,21 +533,79 @@ where
     })
 }
 
+/// Return the conventional API-key environment variable for a built-in vendor.
+pub fn provider_env_key(vendor: &str) -> Option<String> {
+    let key = match vendor {
+        "kimi" => "KIMI_API_KEY",
+        "zhipu" => "ZHIPU_API_KEY",
+        "deepseek" => "DEEPSEEK_API_KEY",
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        _ => return None,
+    };
+    Some(key.to_string())
+}
+
 impl ModelsConfig {
+    /// Resolve a provider model, applying model overrides, group defaults,
+    /// then the built-in vendor's API-key environment variable.
+    pub fn resolve_endpoint(&self, provider: &str, model: &str) -> Option<ModelEndpoint> {
+        let group = self.providers.get(provider)?;
+        let model = group.models.iter().find(|entry| entry.name == model)?;
+        Some(ModelEndpoint {
+            name: model.name.clone(),
+            base_url: Some(
+                model
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| group.base_url.clone()),
+            ),
+            api_key: model
+                .api_key
+                .clone()
+                .or_else(|| group.api_key.clone())
+                .or_else(|| provider_env_key(provider).and_then(|key| std::env::var(key).ok())),
+            appkey: None,
+            provider: group.protocol.clone(),
+            context_window: model.context_window,
+            temperature: model.temperature,
+            display_name: None,
+            tier: model.tier,
+            pricing: None,
+        })
+    }
+
     /// Resolve the [`ModelEndpoint`] to use for a given [`ModelTier`].
     ///
     /// Lookup order:
-    /// 1. The first `models.profiles` entry whose `tier` matches → that entry.
-    /// 2. `Light` falls back to `models.small` (the legacy cheap-model slot)
+    /// 1. The first provider model whose `tier` matches, ordered by
+    ///    `(provider_key, model_name)`.
+    /// 2. The first legacy `models.profiles` entry whose `tier` matches.
+    /// 3. `Light` falls back to `models.small` (the legacy cheap-model slot)
     ///    when present, then to `main`.
-    /// 3. `Medium` / `Heavy` fall back to `main`.
+    /// 4. `Medium` / `Heavy` fall back to `main`.
     ///
     /// This keeps the legacy `small` slot working as an implicit `Light` tier
     /// even when the user hasn't declared any `profiles` with `tier`.
     pub fn endpoint_for_tier(&self, tier: ModelTier) -> ModelEndpoint {
-        // 1. Prefer a profile that explicitly declares this tier. Multiple
-        //    candidates resolve deterministically to the alphabetically-first
-        //    key (HashMap iteration order must not leak into model choice).
+        let mut matching: Vec<(&String, &ProviderModel)> = self
+            .providers
+            .iter()
+            .flat_map(|(provider, group)| {
+                group
+                    .models
+                    .iter()
+                    .filter(move |model| model.tier == Some(tier))
+                    .map(move |model| (provider, model))
+            })
+            .collect();
+        matching.sort_by(|a, b| a.0.cmp(b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        if let Some((provider, model)) = matching.first() {
+            if let Some(endpoint) = self.resolve_endpoint(provider, &model.name) {
+                return endpoint;
+            }
+        }
+
         let mut matching: Vec<(&String, &ModelEndpoint)> = self
             .profiles
             .iter()
@@ -565,7 +623,6 @@ impl ModelsConfig {
         if let Some((_, ep)) = matching.first() {
             return (*ep).clone();
         }
-        // 2. Light → legacy `small` slot, else main.
         match tier {
             ModelTier::Light => self
                 .small
