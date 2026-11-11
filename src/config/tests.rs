@@ -467,6 +467,12 @@ impl EnvVarGuard {
         std::env::set_var(key, value);
         Self { key, previous }
     }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -527,6 +533,51 @@ fn resolve_endpoint_prefers_model_override_then_group_then_env() {
     cfg.providers.get_mut("zhipu").unwrap().api_key = None;
     let resolved = cfg.resolve_endpoint("zhipu", "glm-test").expect("model");
     assert_eq!(resolved.api_key.as_deref(), Some("test-env-key"));
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_endpoint_uses_global_env_fallback_chain() {
+    let _deepseek = EnvVarGuard::remove("DEEPSEEK_API_KEY");
+    let _anthropic = EnvVarGuard::remove("ANTHROPIC_API_KEY");
+    let _dashscope = EnvVarGuard::remove("DASHSCOPE_API_KEY");
+    let mut cfg = ModelsConfig::default();
+    cfg.providers.insert(
+        "custom".into(),
+        ProviderGroup {
+            display_name: None,
+            base_url: "https://custom.test".into(),
+            api_key: None,
+            protocol: None,
+            models: vec![ProviderModel {
+                name: "custom-model".into(),
+                profile_key: None,
+                tier: None,
+                api_key: None,
+                base_url: None,
+                context_window: None,
+                temperature: None,
+            }],
+        },
+    );
+
+    let _dashscope_key = EnvVarGuard::set("DASHSCOPE_API_KEY", "test-dashscope-key");
+    let resolved = cfg
+        .resolve_endpoint("custom", "custom-model")
+        .expect("model");
+    assert_eq!(resolved.api_key.as_deref(), Some("test-dashscope-key"));
+
+    let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-anthropic-key");
+    let resolved = cfg
+        .resolve_endpoint("custom", "custom-model")
+        .expect("model");
+    assert_eq!(resolved.api_key.as_deref(), Some("test-anthropic-key"));
+
+    let _deepseek_key = EnvVarGuard::set("DEEPSEEK_API_KEY", "test-deepseek-key");
+    let resolved = cfg
+        .resolve_endpoint("custom", "custom-model")
+        .expect("model");
+    assert_eq!(resolved.api_key.as_deref(), Some("test-deepseek-key"));
 }
 
 #[test]
@@ -602,6 +653,46 @@ fn endpoint_for_tier_cross_provider_deterministic() {
         serde_json::to_value(selected).unwrap(),
         serde_json::to_value(reversed.endpoint_for_tier(ModelTier::Light)).unwrap()
     );
+}
+
+#[test]
+fn has_tier_recognizes_provider_model_tiers() {
+    let mut cfg = ModelsConfig::default();
+    cfg.providers.insert(
+        "custom".into(),
+        ProviderGroup {
+            display_name: None,
+            base_url: "https://custom.test".into(),
+            api_key: Some("test-key".into()),
+            protocol: None,
+            models: vec![
+                ProviderModel {
+                    name: "light-model".into(),
+                    profile_key: None,
+                    tier: Some(ModelTier::Light),
+                    api_key: None,
+                    base_url: None,
+                    context_window: None,
+                    temperature: None,
+                },
+                ProviderModel {
+                    name: "heavy-model".into(),
+                    profile_key: None,
+                    tier: Some(ModelTier::Heavy),
+                    api_key: None,
+                    base_url: None,
+                    context_window: None,
+                    temperature: None,
+                },
+            ],
+        },
+    );
+
+    assert!(cfg.profiles.is_empty());
+    assert!(cfg.has_tier(ModelTier::Light));
+    assert!(cfg.has_tier(ModelTier::Heavy));
+    assert!(!cfg.has_tier(ModelTier::Medium));
+    assert_eq!(cfg.endpoint_for_tier(ModelTier::Light).name, "light-model");
 }
 
 #[test]

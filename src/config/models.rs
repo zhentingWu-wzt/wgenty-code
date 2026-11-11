@@ -548,7 +548,8 @@ pub fn provider_env_key(vendor: &str) -> Option<String> {
 
 impl ModelsConfig {
     /// Resolve a provider model, applying model overrides, group defaults,
-    /// then the built-in vendor's API-key environment variable.
+    /// the built-in vendor's API-key environment variable, then the legacy
+    /// global environment fallback chain.
     pub fn resolve_endpoint(&self, provider: &str, model: &str) -> Option<ModelEndpoint> {
         let group = self.providers.get(provider)?;
         let model = group.models.iter().find(|entry| entry.name == model)?;
@@ -564,7 +565,10 @@ impl ModelsConfig {
                 .api_key
                 .clone()
                 .or_else(|| group.api_key.clone())
-                .or_else(|| provider_env_key(provider).and_then(|key| std::env::var(key).ok())),
+                .or_else(|| provider_env_key(provider).and_then(|key| std::env::var(key).ok()))
+                .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
+                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+                .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok()),
             appkey: None,
             provider: group.protocol.clone(),
             context_window: model.context_window,
@@ -633,10 +637,14 @@ impl ModelsConfig {
         }
     }
 
-    /// Whether any profile declares the given tier (used by the router to
-    /// decide if auto-routing can actually select a non-default model).
+    /// Whether any provider model or legacy profile declares the given tier
+    /// (used by the router to decide if auto-routing can select a candidate).
     pub fn has_tier(&self, tier: ModelTier) -> bool {
         self.profiles.values().any(|ep| ep.tier == Some(tier))
+            || self
+                .providers
+                .values()
+                .any(|group| group.models.iter().any(|model| model.tier == Some(tier)))
     }
 
     /// Keep a profile literally named `"small"` serving the light role: when
