@@ -26,6 +26,125 @@ async fn daemon_registers_contextual_work_graph_tools() {
 }
 
 #[tokio::test]
+async fn root_context_restores_persisted_subagent_history() {
+    use crate::agent::AgentId;
+    use crate::config::Settings;
+    use crate::state::AppState;
+    use crate::transcript::{SubagentTranscript, SubagentTranscriptStore, TranscriptStatus};
+
+    let temp = tempfile::tempdir().expect("temp directory");
+    let db_path = temp.path().join("restore.db");
+    {
+        let store = SubagentTranscriptStore::open(&db_path).unwrap();
+        let mk = |id: &str, status: TranscriptStatus, summary: Option<&str>| SubagentTranscript {
+            id: id.into(),
+            session_id: "restore-session".into(),
+            parent_id: None,
+            label: format!("task: {id}"),
+            status,
+            system_prompt: None,
+            user_prompt: "u".into(),
+            started_at: 1_000,
+            finished_at: Some(6_000),
+            total_tokens: 42,
+            max_rounds: None,
+            actual_rounds: 3,
+            token_budget_k: None,
+            error_message: None,
+            summary: summary.map(str::to_string),
+            failure_diagnostics: None,
+            project_path: None,
+            node_type: None,
+            events: vec![],
+        };
+        store
+            .save(
+                &mk("agent-done", TranscriptStatus::Completed, Some("all good")),
+                None,
+            )
+            .unwrap();
+        store
+            .save(
+                &mk("agent-dead-running", TranscriptStatus::Running, None),
+                None,
+            )
+            .unwrap();
+    }
+
+    let mut settings = Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    settings.storage.transcript.db_path = db_path.to_string_lossy().into_owned();
+    let state = DaemonState::new(AppState::new(settings)).await;
+
+    // First touch of the session replays the persisted history.
+    let root = state.root_context("restore-session").await.expect("root");
+
+    // The directory projection sees the terminal child under the fresh root.
+    let directory = state
+        .coordinator
+        .trusted_ui_directory(&root.session_id, &root.agent_id)
+        .await
+        .expect("directory");
+    let child_ids: Vec<&str> = directory
+        .children
+        .iter()
+        .map(|c| c.agent_id.as_str())
+        .collect();
+    assert_eq!(child_ids, vec!["agent-done"]);
+    assert_eq!(directory.children[0].label, "task: agent-done");
+    assert_eq!(directory.children[0].summary.as_deref(), Some("all good"));
+    assert!(directory.children[0].status.is_terminal());
+
+    // Non-terminal rows are NOT restored — a dead process stays dead.
+    assert!(!child_ids.contains(&"agent-dead-running"));
+
+    // Progress cross-fill: the restored node carries token/round telemetry so
+    // the tree doesn't render zeroed metrics.
+    {
+        let progress = state.subagent_progress.read().await;
+        let session_map = progress.get("restore-session").expect("session progress");
+        let node = session_map.get("agent-done").expect("restored progress");
+        assert_eq!(node.cumulative_tokens, 42);
+        assert_eq!(node.round, Some(3));
+        assert!(node.status.is_terminal());
+    }
+
+    // Second root_context is a cache hit — restore does not run again and the
+    // restored state stays stable (idempotent insert would also be a no-op).
+    let _again = state.root_context("restore-session").await.expect("root 2");
+    let directory2 = state
+        .coordinator
+        .trusted_ui_directory(&root.session_id, &root.agent_id)
+        .await
+        .expect("directory 2");
+    assert_eq!(directory2.children.len(), 1);
+
+    // A session with no persisted history restores nothing and still works.
+    let other = state
+        .root_context("empty-session")
+        .await
+        .expect("other root");
+    let other_dir = state
+        .coordinator
+        .trusted_ui_directory(&other.session_id, &other.agent_id)
+        .await
+        .expect("other directory");
+    assert!(other_dir.children.is_empty());
+
+    // Restored nodes resolve through the trusted record path (navigate/detail
+    // view dependency) and never collide with live ids.
+    let record = state
+        .coordinator
+        .trusted_ui_record(
+            &crate::agent::SessionId::new("restore-session"),
+            &AgentId::new("agent-done".to_string()),
+        )
+        .await
+        .expect("restored record resolves");
+    assert!(record.status.is_terminal());
+}
+
+#[tokio::test]
 async fn daemon_specialist_tool_accepts_a_trusted_root_cause_child() {
     use crate::agent::{SpawnChildRequest, ToolContext, ToolInvocationId};
     use crate::config::Settings;

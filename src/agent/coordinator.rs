@@ -494,6 +494,33 @@ impl AgentCoordinator {
         Ok(context)
     }
 
+    /// Restores previously-persisted child records into the in-memory store
+    /// after a daemon restart.
+    ///
+    /// Restored records are terminal history: they are inserted as store
+    /// records only — no scope, no permit, no cancellation token — so they can
+    /// never be scheduled, cancelled, or finish again. Reads that resolve
+    /// through the store (`trusted_ui_directory`, `local_view`,
+    /// `resolve_navigation_context`) see them immediately. Idempotent per
+    /// (session, agent_id): duplicates are skipped, so re-running the restore
+    /// for an already-recovered session is a no-op.
+    pub async fn restore_child_records(
+        &self,
+        records: Vec<crate::agent::store::RestoredChildRecord>,
+    ) -> Result<(), CoordinatorError> {
+        for restored in records {
+            let record = restored.into_record();
+            match self.store.insert(record).await {
+                Ok(()) => {}
+                // Already known (live record or prior restore) — keep the
+                // existing record, which is by definition at least as fresh.
+                Err(crate::agent::store::StoreError::AlreadyExists) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+
     /// Resolves the effective max depth for a caller: a contract-level
     /// `budget.max_depth` overrides the global limit, while `None` falls back
     /// to the global [`SubagentLimits`] value. Extracted as an associated

@@ -1575,6 +1575,19 @@ impl DaemonState {
                     .ensure_root(crate::agent::SessionId::new(session_id))
                     .await
                     .map_err(|e| anyhow::anyhow!("ensure_root failed: {e}"))?;
+                // First touch of this session since daemon start: replay the
+                // session's persisted terminal subagent history (transcript
+                // store -> in-memory agent store) so the web tree/detail views
+                // survive daemon restarts. Best-effort; failures degrade to a
+                // live-only tree and are logged by the restore path.
+                crate::daemon::restore::restore_session_subagents(
+                    self.transcript_store.as_ref(),
+                    &self.coordinator,
+                    &self.subagent_progress,
+                    session_id,
+                    &ctx.agent_id,
+                )
+                .await;
                 let mut roots = self.root_contexts.write().await;
                 roots.insert(session_id.to_string(), ctx.clone());
                 ctx

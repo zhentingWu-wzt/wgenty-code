@@ -74,6 +74,67 @@ impl AgentRecord {
         self.generation = generation;
         self
     }
+
+    /// Marks the record terminal with its persisted summary and timestamps.
+    ///
+    /// Used only by restart-time restore paths that rebuild historical
+    /// children from the transcript store: the record is then read-only
+    /// history (never scheduled, never finished again).
+    #[must_use]
+    pub fn with_terminal(
+        mut self,
+        status: AgentLifecycleStatus,
+        summary: Option<ChildSummary>,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        self.status = status;
+        self.summary = summary;
+        self.created_at = created_at;
+        self.updated_at = updated_at;
+        self
+    }
+}
+
+/// A persisted child execution replayed into the in-memory store after a
+/// daemon restart.
+///
+/// Carries the trusted hierarchy coordinates plus the terminal projection the
+/// transcript store recorded at write time. The restored agent id is the
+/// transcript id — the two are the same value at spawn time, which is what
+/// lets navigation capabilities and detail views resolve against restored
+/// nodes.
+#[derive(Debug, Clone)]
+pub struct RestoredChildRecord {
+    pub session_id: SessionId,
+    pub agent_id: AgentId,
+    pub parent_id: AgentId,
+    pub depth: usize,
+    pub label: String,
+    pub status: AgentLifecycleStatus,
+    pub summary: Option<ChildSummary>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl RestoredChildRecord {
+    pub(crate) fn into_record(self) -> AgentRecord {
+        AgentRecord {
+            session_id: self.session_id,
+            agent_id: self.agent_id,
+            parent_id: Some(self.parent_id),
+            depth: self.depth,
+            // Generation 0 never matches a live navigation grant (grants are
+            // issued against the coordinator's monotonically increasing
+            // generation), so a stale restored node cannot be resumed.
+            generation: 0,
+            status: self.status,
+            label: self.label,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            summary: self.summary,
+        }
+    }
 }
 
 /// Serializable self-projection visible to the caller.
