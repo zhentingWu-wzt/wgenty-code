@@ -165,40 +165,76 @@ pub struct PermissionModeQuery {
 
 // ── Model Switch ─────────────────────────────────────────────────────────────
 
+/// `POST /api/v1/model/switch` — vendor-grouped selection. With `session_id`
+/// the switch writes only that session's `model_override` (never global
+/// settings); without it the global `active_model` is set and persisted.
 #[derive(Debug, Deserialize)]
 pub struct SwitchModelRequest {
-    /// Profile key in `models.profiles` to activate.
-    pub profile: String,
+    /// Key in `models.providers`.
+    pub provider: String,
+    /// `ProviderModel::name` inside that group.
+    pub model: String,
+    /// Session whose model override to set. `None` = global switch.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SwitchModelResponse {
     pub success: bool,
-    /// The activated profile key.
-    pub profile: String,
-    /// Human-readable label (`display_name` or model name).
+    /// Human-readable label (`display_name/model` flat form).
     pub label: String,
-    /// The underlying model name now in `models.main`.
+    /// The underlying model name now in `models.main` / the override.
     pub model_name: String,
-    /// Resolved provider, if any.
+    /// The vendor group key.
     pub provider: Option<String>,
 }
 
-/// One selectable entry for the `/model` picker, returned by `list_models`.
+/// `GET /api/v1/models` query — with `session_id`, `active` follows the
+/// session-synthesized selection instead of the global `active_model`.
+#[derive(Debug, Deserialize, Default)]
+pub struct ListModelsQuery {
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// One selectable model inside a [`ProviderGroupInfo`].
 #[derive(Debug, Serialize)]
-pub struct ModelProfileInfo {
-    pub key: String,
-    pub label: String,
-    pub model_name: String,
-    pub provider: Option<String>,
-    /// Declared tier (`"light"`/`"medium"`/`"heavy"`), if the profile set one.
+pub struct ProviderModelInfo {
+    /// Model name sent to the provider API.
+    pub name: String,
+    /// Declared tier (`"light"`/`"medium"`/`"heavy"`), if set.
     pub tier: Option<String>,
+    /// Whether the entry is hand-configured in `settings.json` (dynamic
+    /// catalog entries merge in as `configured: false`).
+    pub configured: bool,
+    /// Whether the (provider, model) pair is the effective selection.
     pub active: bool,
+}
+
+/// One vendor group in the v2 `GET /models` response.
+#[derive(Debug, Serialize)]
+pub struct ProviderGroupInfo {
+    /// Key in `models.providers`.
+    pub key: String,
+    /// `display_name`, falling back to the key.
+    pub display_name: String,
+    /// Forced API protocol, if any.
+    pub protocol: Option<String>,
+    /// Models sorted by name.
+    pub models: Vec<ProviderModelInfo>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ListModelsResponse {
-    pub profiles: Vec<ModelProfileInfo>,
+    pub providers: Vec<ProviderGroupInfo>,
+}
+
+/// `POST /api/v1/model/reset` — clear a session's model override so it falls
+/// back to the global default.
+#[derive(Debug, Deserialize)]
+pub struct ResetSessionModelRequest {
+    pub session_id: String,
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────────────

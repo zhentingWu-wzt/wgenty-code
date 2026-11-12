@@ -930,7 +930,7 @@ impl App {
                 self.apply_file_counts(&infos);
             }
             AppEvent::RefreshModels => {
-                // Async fetch of the switchable profile list; result lands via
+                // Async fetch of the switchable model list; result lands via
                 // ModelsReady. Failure is non-fatal: the picker shows a hint.
                 let client = self.daemon_client.clone();
                 let event_tx = self.event_tx.clone();
@@ -949,7 +949,7 @@ impl App {
             AppEvent::ModelsReady(options) => {
                 if options.is_empty() {
                     self.push_system_message(
-                        "No model profiles configured. Add a `models.profiles` map to \
+                        "No models configured. Add a `models.providers` map to \
                          ~/.wgenty-code/settings.json (see WGENTY.md) to enable switching.",
                     );
                     return;
@@ -981,7 +981,7 @@ impl App {
                 });
             }
             AppEvent::ModelSwitched {
-                profile,
+                profile: _,
                 label,
                 model_name,
                 provider,
@@ -998,7 +998,7 @@ impl App {
                 }
                 let provider_str = provider.as_deref().unwrap_or("");
                 self.push_system_message(format!(
-                    "✓ Switched to {label}  ({model_name} · {provider_str})  [profile: {profile}]"
+                    "✓ Switched to {label}  ({model_name} · {provider_str})"
                 ));
                 self.phase = crate::state::agent_phase::AgentPhase::Idle;
             }

@@ -86,9 +86,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         )
         // Graceful shutdown (`wgenty-code daemon stop`)
         .route("/api/v1/shutdown", post(handlers::shutdown))
-        // Model profiles (switchable via /model in the TUI)
+        // Models (vendor-grouped v2 catalog; switchable via /model in the TUI)
         .route("/api/v1/models", get(handlers::list_models))
         .route("/api/v1/model/switch", post(handlers::switch_model))
+        .route("/api/v1/model/reset", post(handlers::reset_session_model))
         // Chat
         .route("/api/v1/chat/stream", post(handlers::chat_stream))
         // Tools

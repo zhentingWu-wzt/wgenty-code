@@ -325,8 +325,8 @@ async fn daemon_state_saves_sessions_under_project_local_dir() {
     use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
     use crate::state::AppState;
     use crate::utils::project_sessions_dir;
-    use axum::extract::{Path, State};
     use axum::Json;
+    use axum::extract::{Path, State};
 
     let temp = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -369,9 +369,9 @@ async fn daemon_state_saves_sessions_under_project_local_dir() {
         .join("sessions")
         .join(format!("{fixed_id}.json"));
     assert!(
-            !home_sessions.is_file(),
-            "session must not be written to global ~/.wgenty-code/sessions when project dir is writable"
-        );
+        !home_sessions.is_file(),
+        "session must not be written to global ~/.wgenty-code/sessions when project dir is writable"
+    );
 }
 
 #[tokio::test]
@@ -379,8 +379,8 @@ async fn multi_project_session_routing() {
     use crate::config::Settings;
     use crate::daemon::models::CreateSessionRequest;
     use crate::state::AppState;
-    use axum::extract::{Path, State};
     use axum::Json;
+    use axum::extract::{Path, State};
 
     let main = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -410,12 +410,16 @@ async fn multi_project_session_routing() {
     let sid = created.id;
 
     // The session file lands under project B's store, not the main one.
-    assert!(crate::utils::project_sessions_dir(&b_canon)
-        .join(format!("{sid}.json"))
-        .is_file());
-    assert!(!crate::utils::project_sessions_dir(main.path())
-        .join(format!("{sid}.json"))
-        .is_file());
+    assert!(
+        crate::utils::project_sessions_dir(&b_canon)
+            .join(format!("{sid}.json"))
+            .is_file()
+    );
+    assert!(
+        !crate::utils::project_sessions_dir(main.path())
+            .join(format!("{sid}.json"))
+            .is_file()
+    );
 
     // list_sessions aggregates both projects and tags the entry.
     let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
@@ -457,8 +461,8 @@ async fn no_project_session_routes_to_scratch_workspace() {
     use crate::config::Settings;
     use crate::daemon::models::CreateSessionRequest;
     use crate::state::AppState;
-    use axum::extract::{Path, State};
     use axum::Json;
+    use axum::extract::{Path, State};
 
     let main = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -494,12 +498,16 @@ async fn no_project_session_routes_to_scratch_workspace() {
     .expect("create_session into No Project");
     let sid = created.id;
 
-    assert!(crate::utils::project_sessions_dir(&scratch_canon)
-        .join(format!("{sid}.json"))
-        .is_file());
-    assert!(!crate::utils::project_sessions_dir(main.path())
-        .join(format!("{sid}.json"))
-        .is_file());
+    assert!(
+        crate::utils::project_sessions_dir(&scratch_canon)
+            .join(format!("{sid}.json"))
+            .is_file()
+    );
+    assert!(
+        !crate::utils::project_sessions_dir(main.path())
+            .join(format!("{sid}.json"))
+            .is_file()
+    );
 
     // list_sessions aggregates it with the scratch root as project_path.
     let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
@@ -514,10 +522,12 @@ async fn no_project_session_routes_to_scratch_workspace() {
     assert_eq!(state.effective_session_root(&sid).await, scratch_canon);
 
     // The scratch workspace cannot be removed via the endpoint contract.
-    assert!(state
-        .projects
-        .remove(scratch_canon.to_str().unwrap())
-        .is_err());
+    assert!(
+        state
+            .projects
+            .remove(scratch_canon.to_str().unwrap())
+            .is_err()
+    );
 
     // delete routes to the owning store.
     let _ = delete_session(State(state.clone()), Path(sid.clone()))
@@ -531,8 +541,8 @@ async fn update_session_upsert_preserves_path_id_across_saves() {
     use crate::config::Settings;
     use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
     use crate::state::AppState;
-    use axum::extract::{Path, State};
     use axum::Json;
+    use axum::extract::{Path, State};
 
     let temp = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -593,8 +603,8 @@ async fn update_session_version_matrix() {
     use crate::config::Settings;
     use crate::daemon::models::UpdateSessionRequest;
     use crate::state::AppState;
-    use axum::extract::{Path, State};
     use axum::Json;
+    use axum::extract::{Path, State};
 
     // Keep the tempdir alive for the whole test: sessions persist under
     // `working_dir`'s project-local dir (mirrors the first test above).
@@ -622,7 +632,7 @@ async fn update_session_version_matrix() {
         .await
         .expect_err("stale expected_version conflicts");
     assert_eq!(err.0, StatusCode::CONFLICT);
-    assert_eq!(err.1 .0["current_version"], 1);
+    assert_eq!(err.1.0["current_version"], 1);
 
     // Some(1) matches → success, version advances to 2.
     let Json(r3) = update_session(State(state.clone()), Path(id.clone()), Json(body(Some(1))))
@@ -639,8 +649,8 @@ async fn update_session_version_matrix() {
 
 #[tokio::test]
 async fn agent_routes_support_recursive_generation_bound_navigation() {
-    use crate::agent::capability::CapabilityGrant;
     use crate::agent::SpawnChildRequest;
+    use crate::agent::capability::CapabilityGrant;
     use crate::config::Settings;
     use crate::daemon::models::{CreateViewerResponse, LocalAgentViewResponse};
     use crate::state::AppState;
@@ -1210,10 +1220,12 @@ async fn navigation_resolves_recursive_targets_with_canonical_hierarchy() {
         .unwrap();
     assert_eq!(root_response.self_view.agent_id, root.agent_id.as_str());
     assert_eq!(root_response.children.len(), 1);
-    assert!(!root_response
-        .children
-        .iter()
-        .any(|record| record.agent_id == grandchild.agent_id.as_str()));
+    assert!(
+        !root_response
+            .children
+            .iter()
+            .any(|record| record.agent_id == grandchild.agent_id.as_str())
+    );
 
     let child_capability = &root_response.children[0].navigation_capability;
     let child_context =
@@ -1559,8 +1571,8 @@ async fn memory_list_filters_by_scope_and_importance() {
     use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
     use crate::daemon::models::MemoryListQuery;
     use crate::state::AppState;
-    use axum::extract::{Query, State};
     use axum::Json;
+    use axum::extract::{Query, State};
     use std::sync::Arc;
 
     let temp = tempfile::tempdir().unwrap();
@@ -1651,8 +1663,8 @@ async fn memory_prune_dry_run_is_noop() {
     use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
     use crate::daemon::models::PruneRequest;
     use crate::state::AppState;
-    use axum::extract::State;
     use axum::Json;
+    use axum::extract::State;
     use std::sync::Arc;
 
     let temp = tempfile::tempdir().unwrap();
@@ -1933,8 +1945,8 @@ async fn set_permission_mode_bumps_session_version_and_keeps_messages() {
 #[tokio::test]
 #[serial_test::serial]
 async fn set_permission_mode_broadcasts_mode_changed() {
-    use axum::extract::State;
     use axum::Json;
+    use axum::extract::State;
 
     let temp = tempfile::tempdir().expect("tempdir");
     let fake_home = tempfile::tempdir().expect("fake home");
@@ -1978,64 +1990,225 @@ async fn set_permission_mode_broadcasts_mode_changed() {
     assert_eq!(assertions.3, "yolo");
 }
 
-/// `switch_model` persists to `~/.wgenty-code/settings.json`, so the test
-/// scopes a fake `$HOME` (serial, mirroring tui token-budget tests) to
-/// never touch the developer's real config.
+/// Provider-grouped settings shared by the v2 `/models` suite: two vendors
+/// (zhipu with two models, anthropic with one), global active = zhipu/glm-5.3.
+fn provider_test_settings(workdir: &std::path::Path) -> crate::config::Settings {
+    use crate::config::models::{ActiveModelRef, ModelTier, ProviderGroup, ProviderModel};
+    let mk_model = |name: &str, tier: Option<ModelTier>| ProviderModel {
+        name: name.to_string(),
+        profile_key: None,
+        tier,
+        api_key: None,
+        base_url: None,
+        context_window: None,
+        temperature: None,
+    };
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = workdir.to_path_buf();
+    settings.models.providers.insert(
+        "zhipu".to_string(),
+        ProviderGroup {
+            display_name: Some("Zhipu AI".to_string()),
+            base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            api_key: None,
+            protocol: Some("openai".to_string()),
+            models: vec![
+                mk_model("glm-5.2", None),
+                mk_model("glm-5.3", Some(ModelTier::Heavy)),
+            ],
+        },
+    );
+    settings.models.providers.insert(
+        "anthropic".to_string(),
+        ProviderGroup {
+            display_name: None,
+            base_url: "https://api.anthropic.com".to_string(),
+            api_key: None,
+            protocol: Some("anthropic".to_string()),
+            models: vec![mk_model("claude-sonnet-4-5", None)],
+        },
+    );
+    settings.models.active_model = Some(ActiveModelRef {
+        provider: "zhipu".to_string(),
+        model: "glm-5.3".to_string(),
+    });
+    settings.models.main = settings
+        .models
+        .resolve_endpoint("zhipu", "glm-5.3")
+        .expect("seed active endpoint resolves");
+    settings
+}
+
+/// Seed the on-disk `settings.json` under `fake_home` with `settings` (the
+/// handler's load-from-disk path must find the same provider catalog) and
+/// return the written bytes for later untouched-assertions.
+fn seed_settings_disk(fake_home: &std::path::Path, settings: &crate::config::Settings) -> String {
+    let cfg_dir = fake_home.join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    let raw = serde_json::to_string_pretty(settings).unwrap();
+    std::fs::write(cfg_dir.join("settings.json"), &raw).unwrap();
+    raw
+}
+
+/// v2 `GET /models`: vendor-grouped projection of `models.providers`, sorted
+/// by group key then model name, with the global `active_model` pair marked
+/// `active` (no session scope). Manual settings entries are `configured`.
+#[tokio::test]
+async fn list_models_v2_groups_and_marks_active() {
+    use axum::extract::{Query, State};
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = Arc::new(
+        DaemonState::new(crate::state::AppState::new(provider_test_settings(
+            temp.path(),
+        )))
+        .await,
+    );
+
+    let axum::Json(list) = list_models(
+        State(state.clone()),
+        Query(ListModelsQuery { session_id: None }),
+    )
+    .await;
+
+    // Groups sorted by key; display_name falls back to the key.
+    let keys: Vec<&str> = list.providers.iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(keys, vec!["anthropic", "zhipu"]);
+    assert_eq!(list.providers[0].display_name, "anthropic");
+    let zhipu = &list.providers[1];
+    assert_eq!(zhipu.display_name, "Zhipu AI");
+    assert_eq!(zhipu.protocol.as_deref(), Some("openai"));
+
+    // Models sorted by name within the group; tier serialized as a string.
+    let names: Vec<&str> = zhipu.models.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, vec!["glm-5.2", "glm-5.3"]);
+    assert!(zhipu.models.iter().all(|m| m.configured));
+    assert_eq!(zhipu.models[1].tier.as_deref(), Some("heavy"));
+
+    // Global active_model (zhipu/glm-5.3) is the only marked row.
+    assert!(zhipu.models[1].active, "global active must be marked");
+    assert!(!zhipu.models[0].active);
+    assert!(!list.providers[0].models[0].active);
+}
+
+/// `POST /model/switch` with `session_id` writes ONLY the session override:
+/// no global live-handle change, no settings.json write, and a ModelChanged
+/// broadcast carrying the session_id. `GET /models?session_id=` then marks
+/// the synthesized (override) pair active instead of the global one.
 #[tokio::test]
 #[serial_test::serial]
-async fn switch_model_broadcasts_model_changed() {
-    use axum::extract::State;
+async fn switch_model_with_session_writes_override_only() {
     use axum::Json;
+    use axum::extract::{Query, State};
 
     let temp = tempfile::tempdir().unwrap();
     let fake_home = tempfile::tempdir().unwrap();
-    let mut settings = crate::config::Settings::default();
-    settings.storage.working_dir = temp.path().to_path_buf();
-    settings.models.profiles.insert(
-        "p2".to_string(),
-        crate::config::models::ModelEndpoint {
-            name: "gpt-test".to_string(),
-            provider: Some("openai".to_string()),
-            ..Default::default()
-        },
-    );
-    // Pre-seed the on-disk settings (same profile) so the handler's
-    // load-from-disk + switch + save path succeeds under the fake home.
-    let cfg_dir = fake_home.path().join(".wgenty-code");
-    std::fs::create_dir_all(&cfg_dir).unwrap();
-    std::fs::write(
-        cfg_dir.join("settings.json"),
-        serde_json::to_string_pretty(&settings).unwrap(),
-    )
-    .unwrap();
+    let settings = provider_test_settings(temp.path());
+    let disk_before = seed_settings_disk(fake_home.path(), &settings);
 
-    // Point the config path at the fake home via WGENTY_HOME. This is the
-    // only reliable cross-platform override: dirs::home_dir() reads `HOME`
-    // on Unix but prefers the Known Folder API (COM) over USERPROFILE on
-    // Windows, so env injection through HOME/USERPROFILE is not hermetic.
     let prev_wgenty_home = std::env::var_os("WGENTY_HOME");
     std::env::set_var("WGENTY_HOME", fake_home.path());
     let run = async {
         let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+        state
+            .session_manager
+            .save(&crate::context::memory_session::Session::with_id(
+                "session-a",
+                None,
+            ))
+            .await
+            .unwrap();
         let mut rx = state.global_event_hub.subscribe();
+
         let resp = switch_model(
             State(state.clone()),
             Json(SwitchModelRequest {
-                profile: "p2".to_string(),
+                provider: "zhipu".to_string(),
+                model: "glm-5.2".to_string(),
+                session_id: Some("session-a".to_string()),
             }),
         )
         .await
-        .expect("switch_model should succeed");
+        .expect("session-scoped switch");
         assert!(resp.success);
+        assert_eq!(resp.model_name, "glm-5.2");
 
+        // Override persisted on the session record only (targeted write).
+        let saved = state
+            .session_manager
+            .load("session-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved.model_override,
+            Some(crate::config::models::ActiveModelRef {
+                provider: "zhipu".to_string(),
+                model: "glm-5.2".to_string(),
+            })
+        );
+
+        // Global live handle untouched.
+        {
+            let s = state.settings_handle.read().expect("lock poisoned");
+            assert_eq!(s.models.active_model.as_ref().unwrap().model, "glm-5.3");
+        }
+
+        // Global settings.json byte-for-byte unchanged (no disk persist).
+        assert_eq!(
+            std::fs::read_to_string(fake_home.path().join(".wgenty-code/settings.json")).unwrap(),
+            disk_before,
+            "session-scoped switch must not persist global settings"
+        );
+
+        // Broadcast carries the session scope + effective model.
         let ev = rx.recv().await.expect("model event");
         assert_eq!(
             ev.kind,
             crate::daemon::global_events::GlobalEventKind::ModelChanged
         );
-        assert_eq!(ev.data["profile"], "p2");
-        assert_eq!(ev.data["model_name"], "gpt-test");
-        assert_eq!(ev.data["provider"], "openai");
+        assert_eq!(ev.data["session_id"], "session-a");
+        assert_eq!(ev.data["provider"], "zhipu");
+        assert_eq!(ev.data["model_name"], "glm-5.2");
+
+        // Session resolution applies the override; a second session keeps
+        // the global default.
+        assert_eq!(
+            state
+                .resolve_session_model("session-a")
+                .await
+                .models
+                .main
+                .name,
+            "glm-5.2"
+        );
+
+        // ?session_id= active follows the synthesized value: the override's
+        // (provider, model) pair is the only marked row.
+        let axum::Json(list) = list_models(
+            State(state.clone()),
+            Query(ListModelsQuery {
+                session_id: Some("session-a".to_string()),
+            }),
+        )
+        .await;
+        let zhipu = list.providers.iter().find(|p| p.key == "zhipu").unwrap();
+        assert!(
+            zhipu
+                .models
+                .iter()
+                .find(|m| m.name == "glm-5.2")
+                .unwrap()
+                .active
+        );
+        assert!(
+            !zhipu
+                .models
+                .iter()
+                .find(|m| m.name == "glm-5.3")
+                .unwrap()
+                .active
+        );
     }
     .await;
     match prev_wgenty_home {
@@ -2045,99 +2218,90 @@ async fn switch_model_broadcasts_model_changed() {
     run
 }
 
-/// `/model` picker semantics post-refactor: `active` comes from the
-/// persisted `active_profile` key (not name-matching heuristics), and a
-/// switch is non-destructive — switching away and back restores the original
-/// endpoint. Persists to `~/.wgenty-code/settings.json`, so scopes a fake
-/// `$HOME` (serial), mirroring the test above.
+/// `POST /model/switch` WITHOUT session_id keeps the global semantics:
+/// `active_model` + runtime `main` updated on the live handle, persisted to
+/// settings.json, and broadcast without a session scope. Switching back
+/// restores the original endpoint (non-destructive round trip).
 #[tokio::test]
 #[serial_test::serial]
-async fn list_models_marks_active_profile_and_switch_round_trips() {
-    use axum::extract::State;
+async fn switch_model_without_session_preserves_global_path() {
     use axum::Json;
+    use axum::extract::State;
 
     let temp = tempfile::tempdir().unwrap();
     let fake_home = tempfile::tempdir().unwrap();
-    let mk = |name: &str| crate::config::models::ModelEndpoint {
-        name: name.to_string(),
-        ..Default::default()
-    };
-    let mut settings = crate::config::Settings::default();
-    settings.storage.working_dir = temp.path().to_path_buf();
-    settings
-        .models
-        .profiles
-        .insert("alpha".to_string(), mk("alpha-model"));
-    settings
-        .models
-        .profiles
-        .insert("beta".to_string(), mk("beta-model"));
-    settings.models.active_profile = Some("alpha".to_string());
-    settings.models.main = mk("alpha-model");
-
-    // Pre-seed the on-disk settings (new format: profiles + active_profile)
-    // so switch_model's load-disk → switch → save path is hermetic.
-    let cfg_dir = fake_home.path().join(".wgenty-code");
-    std::fs::create_dir_all(&cfg_dir).unwrap();
-    std::fs::write(
-        cfg_dir.join("settings.json"),
-        serde_json::to_string_pretty(&settings).unwrap(),
-    )
-    .unwrap();
+    let settings = provider_test_settings(temp.path());
+    seed_settings_disk(fake_home.path(), &settings);
 
     let prev_wgenty_home = std::env::var_os("WGENTY_HOME");
     std::env::set_var("WGENTY_HOME", fake_home.path());
     let run = async {
         let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+        let mut rx = state.global_event_hub.subscribe();
 
-        // ── list_models: active follows `active_profile` ──────────────────
-        let axum::Json(list) = list_models(State(state.clone())).await;
-        assert_eq!(list.profiles.len(), 2);
-        let alpha = list.profiles.iter().find(|p| p.key == "alpha").unwrap();
-        let beta = list.profiles.iter().find(|p| p.key == "beta").unwrap();
-        assert!(alpha.active, "active_profile=alpha must be marked");
-        assert!(!beta.active);
-
-        // ── switch to beta ────────────────────────────────────────────────
         let resp = switch_model(
             State(state.clone()),
             Json(SwitchModelRequest {
-                profile: "beta".to_string(),
+                provider: "anthropic".to_string(),
+                model: "claude-sonnet-4-5".to_string(),
+                session_id: None,
             }),
         )
         .await
-        .expect("switch to beta");
-        assert_eq!(resp.model_name, "beta-model");
+        .expect("global switch");
+        assert!(resp.success);
+        assert_eq!(resp.model_name, "claude-sonnet-4-5");
+
+        // Live handle: active_model + main runtime cache follow the switch.
         {
             let s = state.settings_handle.read().expect("lock poisoned");
-            assert_eq!(s.models.main.name, "beta-model");
-            assert_eq!(s.models.active_profile.as_deref(), Some("beta"));
+            assert_eq!(
+                s.models.active_model,
+                Some(crate::config::models::ActiveModelRef {
+                    provider: "anthropic".to_string(),
+                    model: "claude-sonnet-4-5".to_string(),
+                })
+            );
+            assert_eq!(s.models.main.name, "claude-sonnet-4-5");
         }
 
-        // ── switch back to alpha: original endpoint restored ─────────────
-        let resp = switch_model(
-            State(state.clone()),
-            Json(SwitchModelRequest {
-                profile: "alpha".to_string(),
-            }),
-        )
-        .await
-        .expect("switch back to alpha");
-        assert_eq!(resp.model_name, "alpha-model");
-        {
-            let s = state.settings_handle.read().expect("lock poisoned");
-            assert_eq!(s.models.main.name, "alpha-model");
-        }
-
-        // ── persisted disk state stays in the new format ──────────────────
+        // Persisted to disk in the new format (no legacy main).
         let disk_raw =
             std::fs::read_to_string(fake_home.path().join(".wgenty-code/settings.json")).unwrap();
         let disk: serde_json::Value = serde_json::from_str(&disk_raw).unwrap();
-        assert!(
-            disk["models"].get("main").is_none(),
-            "legacy main must not be serialized"
+        assert!(disk["models"].get("main").is_none());
+        assert_eq!(disk["models"]["active_model"]["provider"], "anthropic");
+        assert_eq!(disk["models"]["active_model"]["model"], "claude-sonnet-4-5");
+
+        // Global broadcast carries the model but no session scope.
+        let ev = rx.recv().await.expect("model event");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::ModelChanged
         );
-        assert_eq!(disk["models"]["active_profile"], "alpha");
+        assert_eq!(ev.data["provider"], "anthropic");
+        assert_eq!(ev.data["model_name"], "claude-sonnet-4-5");
+        assert!(
+            ev.data.get("session_id").is_none(),
+            "global switch is not session-scoped"
+        );
+
+        // Switch back: original endpoint restored (non-destructive).
+        let resp = switch_model(
+            State(state.clone()),
+            Json(SwitchModelRequest {
+                provider: "zhipu".to_string(),
+                model: "glm-5.3".to_string(),
+                session_id: None,
+            }),
+        )
+        .await
+        .expect("switch back");
+        assert_eq!(resp.model_name, "glm-5.3");
+        {
+            let s = state.settings_handle.read().expect("lock poisoned");
+            assert_eq!(s.models.main.name, "glm-5.3");
+        }
     }
     .await;
     match prev_wgenty_home {
@@ -2146,10 +2310,165 @@ async fn list_models_marks_active_profile_and_switch_round_trips() {
     }
     run
 }
+
+/// `POST /api/v1/model/reset` clears the session's model override: the
+/// session falls back to the global default, the version bumps (persisted
+/// write), and the ModelChanged broadcast carries the session_id so clients
+/// refresh that session's display.
+#[tokio::test]
+async fn model_reset_clears_override() {
+    use axum::Json;
+    use axum::extract::State;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = Arc::new(
+        DaemonState::new(crate::state::AppState::new(provider_test_settings(
+            temp.path(),
+        )))
+        .await,
+    );
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-a", None)
+                .with_model_override(crate::config::models::ActiveModelRef {
+                    provider: "zhipu".to_string(),
+                    model: "glm-5.2".to_string(),
+                }),
+        )
+        .await
+        .unwrap();
+    let mut rx = state.global_event_hub.subscribe();
+
+    let axum::Json(resp) = reset_session_model(
+        State(state.clone()),
+        Json(ResetSessionModelRequest {
+            session_id: "session-a".to_string(),
+        }),
+    )
+    .await
+    .expect("reset");
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["session_id"], "session-a");
+
+    // Override cleared on the persisted record; version bumped by the write.
+    let saved = state
+        .session_manager
+        .load("session-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        saved.model_override.is_none(),
+        "reset must clear the model override"
+    );
+    assert_eq!(saved.version, 1, "reset is a persisted write");
+
+    // Effective model falls back to the global default.
+    assert_eq!(
+        state
+            .resolve_session_model("session-a")
+            .await
+            .models
+            .main
+            .name,
+        "glm-5.3"
+    );
+
+    // Broadcast is session-scoped so only that session's display updates.
+    let ev = rx.recv().await.expect("model event after reset");
+    assert_eq!(
+        ev.kind,
+        crate::daemon::global_events::GlobalEventKind::ModelChanged
+    );
+    assert_eq!(ev.data["session_id"], "session-a");
+    assert_eq!(ev.data["model_name"], "glm-5.3");
+}
+
+/// Session-scoped model endpoints reject unsafe session ids at the handler
+/// entry (path traversal / absolute paths) with 400 and never touch storage —
+/// same pattern as `set_permission_mode`.
+#[tokio::test]
+async fn model_switch_and_reset_reject_unsafe_session_id() {
+    use axum::Json;
+    use axum::extract::State;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = Arc::new(
+        DaemonState::new(crate::state::AppState::new(provider_test_settings(
+            temp.path(),
+        )))
+        .await,
+    );
+    let session_id = temp.path().join("escaped").to_string_lossy().into_owned();
+
+    let result = switch_model(
+        State(state.clone()),
+        Json(SwitchModelRequest {
+            provider: "zhipu".to_string(),
+            model: "glm-5.2".to_string(),
+            session_id: Some(session_id.clone()),
+        }),
+    )
+    .await;
+    let (status, _) = result.expect_err("unsafe session id must be rejected");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let result = reset_session_model(
+        State(state.clone()),
+        Json(ResetSessionModelRequest { session_id }),
+    )
+    .await;
+    let (status, _) = result.expect_err("unsafe session id must be rejected");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    assert!(
+        !temp.path().join("escaped.json").exists(),
+        "a rejected id must not create a session file"
+    );
+}
+
+/// An unknown (provider, model) pair is a 400 whose body lists the available
+/// `provider/model` selections — actionable for the picker, on both the
+/// session-scoped and the global path.
+#[tokio::test]
+async fn switch_model_unknown_pair_returns_400_listing_models() {
+    use axum::Json;
+    use axum::extract::State;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = Arc::new(
+        DaemonState::new(crate::state::AppState::new(provider_test_settings(
+            temp.path(),
+        )))
+        .await,
+    );
+
+    for session_id in [None, Some("session-a".to_string())] {
+        let (status, body) = switch_model(
+            State(state.clone()),
+            Json(SwitchModelRequest {
+                provider: "zhipu".to_string(),
+                model: "nonexistent".to_string(),
+                session_id: session_id.clone(),
+            }),
+        )
+        .await
+        .expect_err("unknown pair must be rejected");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("anthropic/claude-sonnet-4-5")
+                && body.contains("zhipu/glm-5.3")
+                && body.contains("zhipu/glm-5.2"),
+            "error must list every available provider/model pair: {body}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn claim_task_group_broadcasts_task_group_result() {
-    use axum::extract::State;
     use axum::Json;
+    use axum::extract::State;
 
     let state = Arc::new(global_event_test_state().await);
     // Produce a ready root group through the coordinator (same path as
@@ -2331,19 +2650,23 @@ async fn background_results_are_isolated_from_foreign_and_unowned_sessions() {
     assert_eq!(session_b.len(), 1);
     assert_eq!(session_b[0].task_id, "shared-task");
     assert_eq!(session_b[0].command, "foreign command");
-    assert!(state
-        .background_results_snapshot()
-        .await
-        .iter()
-        .all(|result| result.task_id != "legacy"));
+    assert!(
+        state
+            .background_results_snapshot()
+            .await
+            .iter()
+            .all(|result| result.task_id != "legacy")
+    );
     assert!(matches!(
         rx.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
-    assert!(state
-        .background_results_snapshot_for_session("missing-session")
-        .await
-        .is_empty());
+    assert!(
+        state
+            .background_results_snapshot_for_session("missing-session")
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -2393,8 +2716,8 @@ async fn background_results_evict_oldest_beyond_capacity() {
 
 #[tokio::test]
 async fn get_background_results_returns_snapshot_without_draining() {
-    use axum::extract::State;
     use axum::Json;
+    use axum::extract::State;
 
     let state = Arc::new(global_event_test_state().await);
     state
@@ -2487,8 +2810,8 @@ async fn set_permission_mode_without_session_id_is_rejected() {
 #[tokio::test]
 #[serial_test::serial]
 async fn set_permission_mode_persists_across_daemon_restart() {
-    use axum::extract::State;
     use axum::Json;
+    use axum::extract::State;
 
     let temp = tempfile::tempdir().unwrap();
     let fake_home = tempfile::tempdir().unwrap();

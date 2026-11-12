@@ -117,96 +117,252 @@ pub async fn update_config(
     }))
 }
 
-/// GET /api/v1/models - list switchable model profiles for the `/model` picker.
-/// Always includes the currently active one (marked `active: true`). If
-/// `models.profiles` is empty, returns an empty list (picker can show a hint).
-pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListModelsResponse> {
+/// GET /api/v1/models (v2) — vendor-grouped model catalog for the `/model`
+/// picker: `models.providers` groups sorted by key, models sorted by name.
+/// Every listed entry is hand-configured (`configured: true`); dynamic
+/// catalog entries merge in with `configured: false` once the catalog
+/// service lands. With `?session_id=`, `active` follows the session's
+/// synthesized selection (`resolve_session_model`) — a resolvable override's
+/// (provider, model) pair is the only marked row; without it (or without the
+/// param) the global `models.active_model` pair is marked.
+pub async fn list_models(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<ListModelsQuery>,
+) -> Json<ListModelsResponse> {
     let s = state
         .settings_handle
         .read()
-        .expect("lock poisoned: settings");
-
-    // The active profile is the persisted `active_profile` key — the single
-    // source of truth since profiles stopped being destructively copied into
-    // `models.main`. Fall back to a name-match against the `main` runtime
-    // cache only for hand-constructed in-memory state that never passed
-    // through the load/migrate path (tests, embedders).
-    let main_name = s.models.main.name.as_str();
-    let active_key: Option<&str> = match s
-        .models
-        .active_profile
-        .as_deref()
-        .filter(|k| s.models.profiles.contains_key(*k))
-    {
-        Some(key) => Some(key),
-        None => s
-            .models
-            .profiles
-            .iter()
-            .filter(|(_, ep)| ep.name == main_name)
-            .map(|(k, _)| k.as_str())
-            .min(),
+        .expect("lock poisoned: settings")
+        .clone();
+    let active = match params.session_id.as_deref() {
+        Some(session_id) => {
+            state
+                .resolve_session_model(session_id)
+                .await
+                .models
+                .active_model
+        }
+        None => s.models.active_model,
     };
 
-    let mut profiles: Vec<ModelProfileInfo> = s
+    let mut providers: Vec<ProviderGroupInfo> = s
         .models
-        .profiles
+        .providers
         .iter()
-        .map(|(key, ep)| ModelProfileInfo {
-            key: key.clone(),
-            label: ep.display_name.clone().unwrap_or_else(|| ep.name.clone()),
-            model_name: ep.name.clone(),
-            provider: ep.provider.clone(),
-            tier: ep.tier.map(|t| {
-                match t {
-                    crate::config::models::ModelTier::Light => "light",
-                    crate::config::models::ModelTier::Medium => "medium",
-                    crate::config::models::ModelTier::Heavy => "heavy",
-                }
-                .to_string()
-            }),
-            active: active_key == Some(key.as_str()),
+        .map(|(key, group)| {
+            let mut models: Vec<ProviderModelInfo> = group
+                .models
+                .iter()
+                .map(|m| ProviderModelInfo {
+                    name: m.name.clone(),
+                    tier: tier_label(m.tier),
+                    // Manual settings entries are configured by definition.
+                    configured: true,
+                    active: active
+                        .as_ref()
+                        .is_some_and(|a| a.provider == *key && a.model == m.name),
+                })
+                .collect();
+            models.sort_by(|a, b| a.name.cmp(&b.name));
+            ProviderGroupInfo {
+                key: key.clone(),
+                display_name: group.display_name.clone().unwrap_or_else(|| key.clone()),
+                protocol: group.protocol.clone(),
+                models,
+            }
         })
         .collect();
-    // Stable, alphabetical ordering for a predictable picker.
-    profiles.sort_by(|a, b| a.key.cmp(&b.key));
-    Json(ListModelsResponse { profiles })
+    // Stable ordering for a predictable picker.
+    providers.sort_by(|a, b| a.key.cmp(&b.key));
+    Json(ListModelsResponse { providers })
 }
 
-/// POST /api/v1/model/switch - activate a named profile. Sets
-/// `models.active_profile` (the persisted source of truth), syncs the
-/// `models.main` runtime cache, and persists to disk so the next chat turn
-/// uses the new model. Non-destructive: the previously active model remains
-/// switchable as its own profile.
+/// Serialize a [`crate::config::models::ModelTier`] for the picker payload.
+fn tier_label(tier: Option<crate::config::models::ModelTier>) -> Option<String> {
+    tier.map(|t| {
+        match t {
+            crate::config::models::ModelTier::Light => "light",
+            crate::config::models::ModelTier::Medium => "medium",
+            crate::config::models::ModelTier::Heavy => "heavy",
+        }
+        .to_string()
+    })
+}
+
+/// Actionable 400 body for an unknown (provider, model) pair: lists every
+/// selectable `provider/model` in the catalog.
+fn unknown_model_message(
+    models: &crate::config::models::ModelsConfig,
+    provider: &str,
+    model: &str,
+) -> String {
+    let mut available: Vec<String> = models
+        .providers
+        .iter()
+        .flat_map(|(key, g)| g.models.iter().map(move |m| format!("{key}/{}", m.name)))
+        .collect();
+    available.sort();
+    format!(
+        "unknown model '{provider}/{model}'; available: [{}]",
+        available.join(", ")
+    )
+}
+
+/// Apply a vendor-grouped switch to `settings`: resolve the endpoint,
+/// set `active_model` (the new persisted source of truth), sync the `main`
+/// runtime cache, and drop the legacy `active_profile` pointer so the file
+/// round-trips in the new format only.
+fn apply_active_model(
+    settings: &mut crate::config::Settings,
+    provider: &str,
+    model: &str,
+) -> anyhow::Result<()> {
+    let endpoint = settings
+        .models
+        .resolve_endpoint(provider, model)
+        .ok_or_else(|| anyhow::anyhow!(unknown_model_message(&settings.models, provider, model)))?;
+    settings.models.active_model = Some(crate::config::models::ActiveModelRef {
+        provider: provider.to_string(),
+        model: model.to_string(),
+    });
+    settings.models.active_profile = None;
+    settings.models.main = endpoint;
+    Ok(())
+}
+
+/// POST /api/v1/model/switch — vendor-grouped selection.
 ///
-/// Returns 400 with an actionable message (listing available profiles) when
-/// the profile key is unknown.
+/// With `session_id`: writes ONLY that session's `model_override` (targeted
+/// in-lock update; no global live-handle change, no settings.json persist)
+/// and broadcasts a session-scoped `ModelChanged`. Without: sets the global
+/// `active_model` + `models.main`, persists to disk, and broadcasts globally
+/// (the previous global semantics).
+///
+/// Returns 400 with an actionable message (listing available models) when
+/// the (provider, model) pair is unknown.
 pub async fn switch_model(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<SwitchModelRequest>,
 ) -> Result<Json<SwitchModelResponse>, (StatusCode, String)> {
-    // 1. Read current settings, switch in a clone, validate the profile exists.
+    // ── Session-scoped path: override only, never a global write ──────────
+    if let Some(session_id) = body.session_id.as_deref() {
+        // Reject ids that could escape the sessions directory (path
+        // traversal / absolute paths) before any storage access — same
+        // pattern as `set_permission_mode`.
+        if crate::context::memory_session::validate_id(session_id).is_err() {
+            return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
+        }
+        // Validate the pair against the live catalog first so a typo is a
+        // 400, not a silent resolve failure on the next turn.
+        {
+            let s = state
+                .settings_handle
+                .read()
+                .expect("lock poisoned: settings");
+            if s.models
+                .resolve_endpoint(&body.provider, &body.model)
+                .is_none()
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    unknown_model_message(&s.models, &body.provider, &body.model),
+                ));
+            }
+        }
+
+        let model_ref = crate::config::models::ActiveModelRef {
+            provider: body.provider.clone(),
+            model: body.model.clone(),
+        };
+        // Serialize with PUT whole-record writers; the targeted record
+        // update itself mutates + persists under the manager write lock
+        // (Task 5 contract — never a bare load → save).
+        let _update_guard = state.session_update_lock.lock().await;
+        match state.resolve_session(session_id).await {
+            Some((sessions, _)) => {
+                sessions
+                    .update_session_record(session_id, |session| {
+                        session.model_override = Some(model_ref);
+                    })
+                    .await
+                    .map_err(|e| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("save session model override: {e}"),
+                        )
+                    })?;
+            }
+            None => {
+                // Session not known to any project store yet: create it in
+                // the main manager with the override applied (same shape as
+                // `set_permission_mode`); the creating write bumps version.
+                let mut session =
+                    crate::context::memory_session::Session::with_id(session_id, None)
+                        .with_model_override(model_ref);
+                session.version += 1;
+                state.session_manager.save(&session).await.map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("save session model override: {e}"),
+                    )
+                })?;
+            }
+        }
+
+        let label = {
+            let s = state
+                .settings_handle
+                .read()
+                .expect("lock poisoned: settings");
+            format!("{}/{}", group_display_name(&s, &body.provider), body.model)
+        };
+        tracing::info!(
+            session_id,
+            provider = %body.provider,
+            model = %body.model,
+            "session model override set via /model/switch"
+        );
+        state.broadcast_global(
+            crate::daemon::global_events::GlobalEventKind::ModelChanged,
+            serde_json::json!({
+                "session_id": session_id,
+                "provider": body.provider,
+                "model_name": body.model,
+            }),
+        );
+        return Ok(Json(SwitchModelResponse {
+            success: true,
+            label,
+            model_name: body.model.clone(),
+            provider: Some(body.provider.clone()),
+        }));
+    }
+
+    // ── Global path: active_model + main + persist (previous behavior) ────
+    // 1. Read current settings, switch in a clone, validate the pair exists.
     let mut settings = state
         .settings_handle
         .read()
         .expect("lock poisoned: settings")
         .clone();
-    settings
-        .switch_to_profile(&body.profile)
+    apply_active_model(&mut settings, &body.provider, &body.model)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
 
     // 2. Persist so the choice survives a restart. Use the disk-load form to
     //    avoid writing back a runtime-resolved absolute working_dir.
     let mut disk = crate::config::Settings::load_from_disk().unwrap_or_else(|_| settings.clone());
-    disk.switch_to_profile(&body.profile)
+    apply_active_model(&mut disk, &body.provider, &body.model)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     if let Err(e) = disk.save() {
         tracing::warn!(error = %e, "failed to persist settings.json after model switch");
     }
 
-    let label = settings.main_model_label();
+    let label = format!(
+        "{}/{}",
+        group_display_name(&settings, &body.provider),
+        body.model
+    );
     let model_name = settings.models.main.name.clone();
-    let provider = settings.models.main.provider.clone();
 
     // 3. Publish to the live handle — next chat_stream reads this.
     *state
@@ -215,28 +371,104 @@ pub async fn switch_model(
         .expect("lock poisoned: settings") = settings;
 
     tracing::info!(
-        profile = %body.profile,
+        provider = %body.provider,
         model = %model_name,
-        provider = ?provider,
-        "model switched via /model"
+        "model switched via /model/switch"
     );
 
     state.broadcast_global(
         crate::daemon::global_events::GlobalEventKind::ModelChanged,
         serde_json::json!({
-            "profile": body.profile,
+            "provider": body.provider,
             "model_name": model_name,
-            "provider": provider,
         }),
     );
 
     Ok(Json(SwitchModelResponse {
         success: true,
-        profile: body.profile,
         label,
         model_name,
-        provider,
+        provider: Some(body.provider.clone()),
     }))
+}
+
+/// Group `display_name` (falling back to its key) for the response label.
+fn group_display_name(settings: &crate::config::Settings, provider: &str) -> String {
+    settings
+        .models
+        .providers
+        .get(provider)
+        .and_then(|g| g.display_name.clone())
+        .unwrap_or_else(|| provider.to_string())
+}
+
+/// POST /api/v1/model/reset — clear a session's model override so subsequent
+/// turns fall back to the global default. Idempotent: an unknown session (or
+/// one without an override) still succeeds. Broadcasts a session-scoped
+/// `ModelChanged` (with `reset: true` and the default model) so clients
+/// refresh exactly that session's display.
+pub async fn reset_session_model(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<ResetSessionModelRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Reject traversal-shaped ids before any storage access (400, not 500).
+    if crate::context::memory_session::validate_id(&body.session_id).is_err() {
+        return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
+    }
+    // Serialize with PUT whole-record writers (same rationale as
+    // `set_permission_mode`); the targeted update mutates + persists under
+    // the manager write lock.
+    let _update_guard = state.session_update_lock.lock().await;
+    match state.resolve_session(&body.session_id).await {
+        Some((sessions, _)) => {
+            sessions
+                .update_session_record(&body.session_id, |session| {
+                    session.model_override = None;
+                })
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("clear session model override: {e}"),
+                    )
+                })?;
+        }
+        None => {
+            // Nothing to clear; reset stays idempotent (no record created).
+        }
+    }
+
+    // The session's effective model reverts to the global default — carry it
+    // in the broadcast so clients can refresh without a round trip.
+    let global = {
+        state
+            .settings_handle
+            .read()
+            .expect("lock poisoned: settings")
+            .clone()
+    };
+    let (model_name, provider) = match global.models.active_model.as_ref() {
+        Some(active) => (active.model.clone(), Some(active.provider.clone())),
+        None => (
+            global.models.main.name.clone(),
+            global.models.main.provider.clone(),
+        ),
+    };
+
+    tracing::info!(session_id = %body.session_id, "session model override reset");
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::ModelChanged,
+        serde_json::json!({
+            "session_id": body.session_id,
+            "provider": provider,
+            "model_name": model_name,
+            "reset": true,
+        }),
+    );
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "session_id": body.session_id,
+    })))
 }
 
 // ── Chat / Stream ────────────────────────────────────────────────────────────

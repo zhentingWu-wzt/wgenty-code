@@ -1,9 +1,10 @@
 //! Model picker popup component for the `/model` switch flow.
 //!
-//! Presents the switchable model profiles declared in `settings.json` under
-//! `models.profiles` and lets the user navigate with ↑/↓ (or j/k), confirm
-//! with Enter, or cancel with Esc.  The currently active profile (if any) is
-//! selected by default and marked `●` in the list.
+//! Presents the switchable models declared in `settings.json` under
+//! `models.providers`, flattened into single-line `vendor/model` rows, and
+//! lets the user navigate with ↑/↓ (or j/k), confirm with Enter, or cancel
+//! with Esc.  The currently active model (if any) is selected by default and
+//! marked `●` in the list.
 //!
 //! The picker holds only display state; the actual switch is performed by the
 //! App via `DaemonClient::switch_model` once the user confirms.
@@ -17,8 +18,9 @@ use ratatui::Frame;
 
 /// Mutable state backing the model picker popup.
 ///
-/// `options` is the list returned by `GET /api/v1/models`; `selected` is the
-/// 0-based index of the highlighted row.  Navigation wraps around.
+/// `options` is the flattened list returned by `GET /api/v1/models` (one
+/// `vendor/model` row per provider model); `selected` is the 0-based index
+/// of the highlighted row.  Navigation wraps around.
 #[derive(Debug, Clone)]
 pub struct ModelPickerState {
     pub options: Vec<ModelOption>,
@@ -76,7 +78,7 @@ impl ModelPickerState {
         self.open = false;
     }
 
-    /// True when there are no profiles to pick from.
+    /// True when there are no models to pick from.
     pub fn is_empty(&self) -> bool {
         self.options.is_empty()
     }
@@ -85,8 +87,8 @@ impl ModelPickerState {
 /// Render the model picker popup into `area`.
 ///
 /// The caller computes a centered `area`.  When `state.open` is `false` this is
-/// a no-op.  An empty profile list renders a hint telling the user how to
-/// declare profiles in `settings.json`.
+/// a no-op.  An empty model list renders a hint telling the user how to
+/// declare providers in `settings.json`.
 pub fn render(f: &mut Frame, state: &ModelPickerState, area: Rect) {
     if !state.open {
         return;
@@ -96,7 +98,7 @@ pub fn render(f: &mut Frame, state: &ModelPickerState, area: Rect) {
 
     let items: Vec<ListItem> = if state.options.is_empty() {
         vec![ListItem::new(
-            "No model profiles configured. Add `models.profiles` in settings.json \
+            "No models configured. Add `models.providers` in settings.json \
              to enable switching (see WGENTY.md).",
         )]
     } else {

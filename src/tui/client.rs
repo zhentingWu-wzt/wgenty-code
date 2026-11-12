@@ -50,21 +50,23 @@ pub struct CheckpointInfo {
     pub file_count: usize,
 }
 
-/// One selectable model profile returned by `GET /api/v1/models`. Drives the
-/// `/model` picker rows.
+/// One selectable model returned by `GET /api/v1/models` (v2). Drives the
+/// `/model` picker rows: vendor groups flatten into single-line
+/// `provider/model` entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelOption {
-    /// Profile key — what `POST /api/v1/model/switch` expects.
+    /// Flat picker key `provider/model` — what `POST /api/v1/model/switch`
+    /// receives (split back into `{provider, model}` on the wire).
     pub key: String,
-    /// Human-readable label (`display_name` or model name).
+    /// Vendor `display_name` (falls back to the group key).
     pub label: String,
-    /// Underlying model name (e.g. `claude-sonnet-4-5`).
+    /// Underlying model name (e.g. `glm-5.3`).
     pub model_name: String,
-    /// Forced provider, if any.
+    /// Vendor group key (e.g. `zhipu`).
     pub provider: Option<String>,
-    /// Declared tier (`"light"`/`"medium"`/`"heavy"`), if the profile set one.
+    /// Declared tier (`"light"`/`"medium"`/`"heavy"`), if the model set one.
     pub tier: Option<String>,
-    /// Whether this is the currently active profile.
+    /// Whether this is the currently effective (provider, model) pair.
     pub active: bool,
 }
 
@@ -852,9 +854,9 @@ impl DaemonClient {
         )?)
     }
 
-    /// GET /api/v1/models - list switchable model profiles for the `/model`
-    /// picker. Returns `(key, label, model_name, provider, active)` tuples in
-    /// alphabetical order by key.
+    /// GET /api/v1/models (v2) - list switchable vendor-grouped models for
+    /// the `/model` picker. Groups flatten into single-line `provider/model`
+    /// rows in server order (group key, then model name).
     pub async fn list_models(&self) -> anyhow::Result<Vec<ModelOption>> {
         let url = format!("{}/api/v1/models", self.base_url);
         let resp = self.http_tools().get(&url).send().await?;
@@ -862,55 +864,23 @@ impl DaemonClient {
             anyhow::bail!("list-models failed ({})", resp.status());
         }
         let v: serde_json::Value = resp.json().await?;
-        let arr = v
-            .get("profiles")
-            .and_then(|x| x.as_array())
-            .ok_or_else(|| anyhow::anyhow!("list-models: malformed response"))?;
-        Ok(arr
-            .iter()
-            .map(|p| ModelOption {
-                key: p
-                    .get("key")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                label: p
-                    .get("label")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                model_name: p
-                    .get("model_name")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                provider: p
-                    .get("provider")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string()),
-                tier: p
-                    .get("tier")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string()),
-                active: p.get("active").and_then(|x| x.as_bool()).unwrap_or(false),
-            })
-            .collect())
+        parse_list_models(&v)
     }
 
-    /// POST /api/v1/model/switch - activate a named profile. On success the
-    /// next chat turn uses the new model. Returns the daemon's response
-    /// (label/model_name/provider) for UI confirmation.
-    pub async fn switch_model(&self, profile: &str) -> anyhow::Result<ModelSwitchResult> {
+    /// POST /api/v1/model/switch - activate a `provider/model` selection.
+    /// On success the next chat turn uses the new model. Returns the daemon's
+    /// response (label/model_name/provider) for UI confirmation.
+    pub async fn switch_model(&self, target: &str) -> anyhow::Result<ModelSwitchResult> {
         let url = format!("{}/api/v1/model/switch", self.base_url);
         let resp = self
             .http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "profile": profile }))
+            .json(&model_switch_body(target)?)
             .send()
             .await?;
         if !resp.status().is_success() {
-            // Surface the daemon's actionable error (lists available profiles).
+            // Surface the daemon's actionable error (lists available models).
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("{body}");
         }
@@ -919,7 +889,7 @@ impl DaemonClient {
             label: v
                 .get("label")
                 .and_then(|x| x.as_str())
-                .unwrap_or(profile)
+                .unwrap_or(target)
                 .to_string(),
             model_name: v
                 .get("model_name")
@@ -1449,6 +1419,59 @@ pub struct TodoResponse {
     pub display: String,
 }
 
+/// Parse the v2 `GET /models` payload into flat picker rows: one
+/// [`ModelOption`] per (provider, model) with `key = "provider/model"` and
+/// `label` = the vendor `display_name`. Server-side ordering (group key,
+/// then model name) is preserved.
+fn parse_list_models(v: &serde_json::Value) -> anyhow::Result<Vec<ModelOption>> {
+    let groups = v
+        .get("providers")
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| anyhow::anyhow!("list-models: malformed response"))?;
+    let mut options = Vec::new();
+    for group in groups {
+        let key = group.get("key").and_then(|x| x.as_str()).unwrap_or("");
+        let label = group
+            .get("display_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let empty = Vec::new();
+        for model in group
+            .get("models")
+            .and_then(|x| x.as_array())
+            .unwrap_or(&empty)
+        {
+            let name = model.get("name").and_then(|x| x.as_str()).unwrap_or("");
+            options.push(ModelOption {
+                key: format!("{key}/{name}"),
+                label: label.to_string(),
+                model_name: name.to_string(),
+                provider: Some(key.to_string()),
+                tier: model
+                    .get("tier")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                active: model
+                    .get("active")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false),
+            });
+        }
+    }
+    Ok(options)
+}
+
+/// Build the `POST /model/switch` body from a flat `provider/model` picker
+/// key. Split on the FIRST '/' so model names containing slashes survive; a
+/// bare model name is an actionable client-side error (the daemon expects
+/// both fields).
+fn model_switch_body(target: &str) -> anyhow::Result<serde_json::Value> {
+    let (provider, model) = target.split_once('/').ok_or_else(|| {
+        anyhow::anyhow!("model must be in provider/model form (e.g. zhipu/glm-5.3)")
+    })?;
+    Ok(serde_json::json!({ "provider": provider, "model": model }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1461,6 +1484,61 @@ mod tests {
     use tokio::task::JoinHandle;
 
     const VIEWER_HEADER: &str = "X-Wgenty-Viewer-Token";
+
+    /// v2 `GET /models` parse: vendor groups flatten into `provider/model`
+    /// single-line picker rows (TUI data-source adaptation). The flat `key`
+    /// is what the picker confirm flow sends to `POST /model/switch` (split
+    /// back into `{provider, model}`).
+    #[test]
+    fn parse_list_models_v2_flattens_provider_groups() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"providers":[
+                {"key":"zhipu","display_name":"Zhipu AI","protocol":"openai","models":[
+                    {"name":"glm-5.2","tier":null,"configured":true,"active":false},
+                    {"name":"glm-5.3","tier":"heavy","configured":true,"active":true}]},
+                {"key":"anthropic","display_name":"anthropic","protocol":"anthropic","models":[
+                    {"name":"claude-sonnet-4-5","tier":null,"configured":true,"active":false}]}
+            ]}"#,
+        )
+        .unwrap();
+        let options = parse_list_models(&v).expect("v2 payload parses");
+        assert_eq!(options.len(), 3);
+        // Server-side ordering (group key, then model name) is preserved.
+        assert_eq!(options[0].key, "zhipu/glm-5.2");
+        let glm = &options[1];
+        assert_eq!(glm.key, "zhipu/glm-5.3");
+        assert_eq!(glm.label, "Zhipu AI");
+        assert_eq!(glm.model_name, "glm-5.3");
+        assert_eq!(glm.provider.as_deref(), Some("zhipu"));
+        assert_eq!(glm.tier.as_deref(), Some("heavy"));
+        assert!(glm.active);
+        assert!(!options[0].active);
+        assert_eq!(options[2].key, "anthropic/claude-sonnet-4-5");
+
+        // The legacy v1 `profiles` payload is no longer understood.
+        let v1: serde_json::Value = serde_json::from_str(r#"{"profiles":[]}"#).unwrap();
+        assert!(parse_list_models(&v1).is_err());
+    }
+
+    /// `POST /model/switch` body from a flat `provider/model` picker key:
+    /// split on the FIRST '/' so model names containing slashes survive; a
+    /// bare model name is an actionable error, not a wrong request.
+    #[test]
+    fn model_switch_body_splits_provider_model() {
+        let body = model_switch_body("zhipu/glm-5.3").expect("flat key splits");
+        assert_eq!(body["provider"], "zhipu");
+        assert_eq!(body["model"], "glm-5.3");
+
+        let body = model_switch_body("custom/gpt-4o/mini").expect("split on first slash");
+        assert_eq!(body["provider"], "custom");
+        assert_eq!(body["model"], "gpt-4o/mini");
+
+        let err = model_switch_body("glm-5.3").expect_err("bare name rejected");
+        assert!(
+            format!("{err:#}").contains("provider/model"),
+            "error should suggest the provider/model form: {err:#}"
+        );
+    }
 
     /// Wire-format regression: the daemon's `tasks::TodoItem` serializes
     /// `active_form` as `activeForm` (serde rename), which previously was
