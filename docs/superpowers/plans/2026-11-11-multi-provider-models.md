@@ -213,6 +213,8 @@ fn endpoint_for_tier_migration_preserves_choice() {
 
 ### Task 4: Session 覆盖字段 + resolve_session_model
 
+- [x] Task 4: Session 覆盖字段 + resolve_session_model
+
 **Files:**
 - Modify: `src/context/memory_session.rs`（Session struct）
 - Modify: `src/daemon/state.rs`（DaemonState 方法）
@@ -222,7 +224,7 @@ fn endpoint_for_tier_migration_preserves_choice() {
 - Produces: `Session` 增 `#[serde(default, skip_serializing_if = "Option::is_none")] pub model_override: Option<crate::config::models::ActiveModelRef>`、`#[serde(default, skip_serializing_if = "Option::is_none")] pub permission_override: Option<crate::permissions::PermissionModeEntry>`
 - Produces: `impl DaemonState { pub async fn resolve_session_model(&self, session_id: &str) -> Settings }`（无覆盖=全局 clone；有覆盖且 `resolve_endpoint` 成功→替换 `models.main`+`active_model`；解析失败→全局 clone + warn log）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```rust
 #[tokio::test]
@@ -240,13 +242,13 @@ async fn session_round_trips_override_fields() {
 }
 ```
 
-- [ ] **Step 2: 验证失败** — Run: `cargo test resolve_session_model --lib`，Expected: FAIL
+- [x] **Step 2: 验证失败** — Run: `cargo test resolve_session_model --lib`，Expected: FAIL
 
-- [ ] **Step 3: 实现** — Session 字段 + `Session::with_model_override/with_permission_override` builder；DaemonState 方法（复用 `resolve_session` 查 session）。
+- [x] **Step 3: 实现** — Session 字段 + `Session::with_model_override/with_permission_override` builder；DaemonState 方法（复用 `resolve_session` 查 session）。
 
-- [ ] **Step 4: 验证通过** — Run: `cargo test resolve_session_model session_round_trips --lib`，Expected: 2 passed
+- [x] **Step 4: 验证通过** — Run: `cargo test resolve_session_model session_round_trips --lib`，Expected: 2 passed
 
-- [ ] **Step 5: Commit** — `feat(daemon): session model_override + resolve_session_model overlay`
+- [x] **Step 5: Commit** — `feat(daemon): session model_override + resolve_session_model overlay`
 
 ---
 
