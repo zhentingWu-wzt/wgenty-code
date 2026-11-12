@@ -254,6 +254,8 @@ async fn session_round_trips_override_fields() {
 
 ### Task 5: effective_permission + handler/TaskTool 接入
 
+- [x] Task 5: effective_permission + handler/TaskTool 接入
+
 **Files:**
 - Modify: `src/daemon/state.rs`、`src/daemon/handlers/permissions.rs`、`src/daemon/run_loop.rs`（settings 来源换 `resolve_session_model`）
 - Modify: `src/tools/meta/task.rs`（`build_permission_context` 加 `session_id: &str` 参数；新增 `session_settings_resolver: Option<Arc<dyn Fn(&str) -> Settings + Send + Sync>>` 字段 + `with_session_settings_resolver` builder；`execute_with_context` 内 `self.settings()` 调用点改为 resolver 优先）
@@ -264,7 +266,7 @@ async fn session_round_trips_override_fields() {
 - Produces: `DaemonState::effective_permission(&self, session_id: &str) -> PermissionModeEntry`（session 覆盖 > permission_modes.get(root) > default）
 - Produces: TaskTool `pub fn with_session_settings_resolver(mut self, r: Arc<dyn Fn(&str) -> Settings + Send + Sync>) -> Self`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```rust
 #[test]
@@ -284,13 +286,13 @@ async fn effective_permission_session_overrides_project() {
 }
 ```
 
-- [ ] **Step 2: 验证失败** — Run: `cargo test tasktool_resolver effective_permission --lib`，Expected: FAIL
+- [x] **Step 2: 验证失败** — Run: `cargo test tasktool_resolver effective_permission --lib`，Expected: FAIL
 
-- [ ] **Step 3: 实现**（permissions handler GET/POST 改走 `effective_permission`/写 Session 覆盖——POST 带 `session_id` 时优先写 session 层；`run_session_turn` 第 3 步 `let settings = state.resolve_session_model(session_id).await;`）。Plan 归一化：写 Session 覆盖前若 `effective_mode==Plan` → 存 derived。
+- [x] **Step 3: 实现**（permissions handler GET/POST 改走 `effective_permission`/写 Session 覆盖——POST 带 `session_id` 时优先写 session 层；`run_session_turn` 第 3 步 `let settings = state.resolve_session_model(session_id).await;`）。Plan 归一化：写 Session 覆盖前若 `effective_mode==Plan` → 存 derived。
 
-- [ ] **Step 4: 验证通过 + 存量测试** — Run: `cargo test --workspace --lib 2>&1 | tail -3`，Expected: 全绿（含既有 permission/switch 测试迁移到新入口后仍过）
+- [x] **Step 4: 验证通过 + 存量测试** — Run: `cargo test --workspace --lib 2>&1 | tail -3`，Expected: 全绿（含既有 permission/switch 测试迁移到新入口后仍过）
 
-- [ ] **Step 5: Commit** — `feat(daemon,tools): session-scoped permission resolution + TaskTool settings resolver`
+- [x] **Step 5: Commit** — `feat(daemon,tools): session-scoped permission resolution + TaskTool settings resolver`
 
 ---
 
