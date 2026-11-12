@@ -698,6 +698,7 @@ pub struct DaemonState {
     /// request a graceful shutdown; the server's shutdown future listens on
     /// this alongside Ctrl-C and the thin-client idle timeout.
     pub shutdown_notify: Arc<tokio::sync::Notify>,
+    task_session_state: Arc<std::sync::RwLock<Option<std::sync::Weak<DaemonState>>>>,
 }
 
 impl DaemonState {
@@ -973,6 +974,54 @@ impl DaemonState {
             }
         };
 
+        let task_session_state: Arc<std::sync::RwLock<Option<std::sync::Weak<DaemonState>>>> =
+            Arc::new(std::sync::RwLock::new(None));
+        let session_settings_resolver = {
+            let task_session_state = task_session_state.clone();
+            let settings_handle = settings_handle.clone();
+            Arc::new(move |session_id: &str| {
+                let state = task_session_state
+                    .read()
+                    .expect("task session state lock poisoned")
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade);
+                let global = settings_handle
+                    .read()
+                    .expect("settings lock poisoned")
+                    .clone();
+                let Some(state) = state else {
+                    return global;
+                };
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle)
+                        if matches!(
+                            handle.runtime_flavor(),
+                            tokio::runtime::RuntimeFlavor::MultiThread
+                        ) =>
+                    {
+                        tokio::task::block_in_place(|| {
+                            handle.block_on(state.resolve_session_model(session_id))
+                        })
+                    }
+                    _ => {
+                        let fallback = global.clone();
+                        let session_id = session_id.to_string();
+                        std::thread::spawn(move || {
+                            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            else {
+                                return global;
+                            };
+                            runtime.block_on(state.resolve_session_model(&session_id))
+                        })
+                        .join()
+                        .unwrap_or(fallback)
+                    }
+                }
+            }) as Arc<dyn Fn(&str) -> crate::config::Settings + Send + Sync>
+        };
+
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
         // gets dropped (which would leave a dangling weak reference).
@@ -1024,6 +1073,7 @@ impl DaemonState {
                 progress_store.clone(),
                 transcript_store.clone(),
             )
+            .with_session_settings_resolver(session_settings_resolver.clone())
             .with_permission_bridge(permission_bridge.clone())
             .with_session_rules(shared_session_rules.clone())
             .with_root_mode(root_mode.clone())
@@ -1277,6 +1327,7 @@ impl DaemonState {
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             http_client,
             http_client_stream,
+            task_session_state,
         }
     }
 
@@ -1463,6 +1514,10 @@ impl DaemonState {
     /// an `Arc`. Router construction is the common production/test lifecycle
     /// seam where that ownership is available.
     pub fn start_background_continuation_scheduler(self: &Arc<Self>) {
+        *self
+            .task_session_state
+            .write()
+            .expect("task session state lock poisoned") = Some(Arc::downgrade(self));
         let receiver = self
             .background_scheduler_rx
             .lock()
@@ -2062,6 +2117,20 @@ impl DaemonState {
             }
         }
         None
+    }
+
+    /// Resolve session permission override, then project mode, then the default.
+    pub async fn effective_permission(
+        &self,
+        session_id: &str,
+    ) -> crate::permissions::PermissionModeEntry {
+        if let Some((_, session)) = self.resolve_session(session_id).await {
+            if let Some(permission) = session.permission_override {
+                return permission;
+            }
+        }
+        let root = self.effective_session_root(session_id).await;
+        self.permission_modes.get(&root)
     }
 
     /// Resolve the session's model selection without mutating global settings.

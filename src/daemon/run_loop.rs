@@ -2259,12 +2259,8 @@ async fn run_session_turn(
         }
     }
 
-    // 3. Live settings + LLM port (same wiring as the chat_stream handler).
-    let settings = state
-        .settings_handle
-        .read()
-        .expect("lock poisoned: settings")
-        .clone();
+    // 3. Session-resolved settings + LLM port (same wiring as chat_stream).
+    let settings = state.resolve_session_model(session_id).await;
     let client = ApiClient::with_clients(
         settings.clone(),
         state.http_client.clone(),

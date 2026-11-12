@@ -97,9 +97,9 @@ pub async fn resolve_interaction(
     }
 }
 
-/// POST /api/v1/permission-mode - update the root agent's runtime permission
-/// mode (Yolo/AcceptEdits/Normal) and optional sandbox effective mode (Plan).
-/// Subagents snapshot values at spawn time.
+/// POST /api/v1/permission-mode - update the session's permission mode
+/// (Yolo/AcceptEdits/Normal) and optional sandbox effective mode (Plan).
+/// Plan is normalized before the override is persisted.
 pub async fn set_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::SetPermissionModeRequest>,
@@ -112,19 +112,31 @@ pub async fn set_permission_mode(
             Json(serde_json::json!({"error": "session_id required"})),
         ));
     };
-    let session_root = state.effective_session_root(session_id).await;
     let effective = body
         .effective_mode
         .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode));
-    state
-        .permission_modes
-        .set(session_root, body.mode, effective);
-    // Best-effort persistence so the mode survives daemon restarts. In-memory
-    // state stays authoritative; a failed write only costs durability (warned
-    // here), never the current session's mode.
-    if let Err(e) = state.permission_modes.persist() {
-        tracing::warn!(error = %e, "persist permission modes failed");
-    }
+    let stored_effective = if effective == crate::sandbox::EffectiveMode::Plan {
+        crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode)
+    } else {
+        effective
+    };
+    let (sessions, mut session) = match state.resolve_session(session_id).await {
+        Some(resolved) => resolved,
+        None => (
+            state.session_manager.clone(),
+            crate::context::memory_session::Session::with_id(session_id, None),
+        ),
+    };
+    session.permission_override = Some(crate::permissions::PermissionModeEntry {
+        root_mode: body.mode,
+        effective_mode: stored_effective,
+    });
+    sessions.save(&session).await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("save session permission: {error}")})),
+        )
+    })?;
     tracing::info!(
         mode = ?body.mode,
         effective_mode = ?effective,
@@ -145,7 +157,7 @@ pub async fn set_permission_mode(
     })))
 }
 
-/// GET /api/v1/permission-mode - get the current root agent permission mode.
+/// GET /api/v1/permission-mode - get the session's effective permission mode.
 pub async fn get_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Query(params): Query<crate::daemon::models::PermissionModeQuery>,
@@ -158,8 +170,7 @@ pub async fn get_permission_mode(
             Json(serde_json::json!({"error": "session_id required"})),
         ));
     };
-    let session_root = state.effective_session_root(session_id).await;
-    let entry = state.permission_modes.get(&session_root);
+    let entry = state.effective_permission(session_id).await;
     Ok(Json(serde_json::json!({
         "mode": entry.root_mode,
         "effective_mode": entry.effective_mode,

@@ -88,11 +88,14 @@ mod tests;
 
 use transcript::build_transcript;
 
+type SessionSettingsResolver = Arc<dyn Fn(&str) -> Settings + Send + Sync>;
+
 pub struct TaskTool {
     /// Shared hot-reloadable settings. Read a fresh clone per subagent spawn
     /// via [`Self::settings()`] so `/model` switches and file-watcher reloads
     /// take effect without a daemon restart.
     settings_handle: crate::config::watcher::SettingsHandle,
+    session_settings_resolver: Option<SessionSettingsResolver>,
     tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
     /// Exclusive owner of agent spawning, concurrency, and lifecycle. The
     /// `task` tool delegates all child creation and completion to it; it never
@@ -133,6 +136,7 @@ impl TaskTool {
     ) -> Self {
         Self {
             settings_handle,
+            session_settings_resolver: None,
             tool_registry,
             coordinator,
             progress_store,
@@ -156,6 +160,21 @@ impl TaskTool {
             .read()
             .expect("lock poisoned: settings")
             .clone()
+    }
+
+    fn settings_for_session(&self, session_id: &str) -> Settings {
+        self.session_settings_resolver
+            .as_ref()
+            .map(|resolver| resolver(session_id))
+            .unwrap_or_else(|| self.settings())
+    }
+
+    pub fn with_session_settings_resolver(
+        mut self,
+        resolver: Arc<dyn Fn(&str) -> Settings + Send + Sync>,
+    ) -> Self {
+        self.session_settings_resolver = Some(resolver);
+        self
     }
 
     pub fn with_permission_bridge(mut self, bridge: Arc<PermissionBridge>) -> Self {
@@ -210,10 +229,12 @@ impl TaskTool {
     fn build_permission_context(
         &self,
         agent_id: &str,
+        session_id: &str,
         workdir: Option<&std::path::Path>,
     ) -> SubagentPermissionContext {
-        let workspace = self.settings().storage.working_dir.clone();
-        let limits = &self.settings().agent.subagent;
+        let settings = self.settings_for_session(session_id);
+        let workspace = settings.storage.working_dir.clone();
+        let limits = &settings.agent.subagent;
         let entry = match workdir {
             Some(wd) => self.permission_modes.get(wd),
             None => PermissionModeEntry::default(),
@@ -231,7 +252,7 @@ impl TaskTool {
             // Honour the user's integrations.guardian settings; the previous
             // Guardian::default() silently ignored them for subagents.
             guardian: Guardian::new(crate::runtime::guardian::GuardianConfig::from(
-                &self.settings().integrations.guardian,
+                &settings.integrations.guardian,
             )),
             agent_id: agent_id.to_string(),
             root_mode: entry.root_mode,
@@ -322,7 +343,8 @@ impl TaskTool {
             };
 
         // Structural failure does not swap the model: reuse parent's settings.
-        let api_client = ApiClient::new(self.settings().clone());
+        let settings = self.settings_for_session(context.agent.session_id.as_str());
+        let api_client = ApiClient::new(settings.clone());
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
             message: "tool registry unavailable for fallback".to_string(),
             code: Some("fallback_no_registry".to_string()),
@@ -344,11 +366,12 @@ impl TaskTool {
             .map(|t| t.name().to_string())
             .filter(|name| name != "task" && name != "delegate")
             .collect();
-        let timeout_secs = self.settings().agent.subagent.timeout_secs;
-        let workdir: Option<std::path::PathBuf> = Some(self.settings().storage.working_dir.clone());
+        let timeout_secs = settings.agent.subagent.timeout_secs;
+        let workdir: Option<std::path::PathBuf> = Some(settings.storage.working_dir.clone());
         let permission = self.build_permission_context(
             &child_agent_id_str,
-            Some(self.settings().storage.working_dir.as_path()),
+            context.agent.session_id.as_str(),
+            Some(settings.storage.working_dir.as_path()),
         );
 
         let started_at = chrono::Utc::now().timestamp_millis();
@@ -360,13 +383,13 @@ impl TaskTool {
             system_prompt,
             full_prompt,
             &allowed_tools,
-            self.settings().subagent_effective_max_rounds(),
+            settings.subagent_effective_max_rounds(),
             timeout_secs,
             None,
             None,
             workdir,
             permission,
-            Arc::new(self.settings().clone()),
+            Arc::new(settings.clone()),
             self.transcript_store.clone(),
             context.origin_turn_id.map(|s| s.to_string()),
         )
@@ -375,8 +398,8 @@ impl TaskTool {
         // Best-effort transcript save for the fallback path (the main path
         // saves via the progress-store observer; fallback has no observer).
         if let Some(ref store) = self.transcript_store {
-            let retention = if self.settings().storage.transcript.max_age_days > 0 {
-                Some(self.settings().storage.transcript.max_age_days)
+            let retention = if settings.storage.transcript.max_age_days > 0 {
+                Some(settings.storage.transcript.max_age_days)
             } else {
                 None
             };
@@ -389,7 +412,7 @@ impl TaskTool {
                 full_prompt.to_string(),
                 started_at,
                 &result,
-                self.settings().agent.subagent.trace.context_char_limit,
+                settings.agent.subagent.trace.context_char_limit,
                 retention,
                 context.workdir.map(|p| p.to_string_lossy().to_string()),
                 Some(node_type.clone()),
@@ -541,6 +564,7 @@ impl Tool for TaskTool {
         // it so the acknowledgement can report it as ignored rather than
         // silently dropping a field the model thinks it controls.
         let background_supplied = input.get("background").is_some();
+        let settings = self.settings_for_session(context.agent.session_id.as_str());
 
         // Token budget: 4-level fallback per spec §3.3a.
         // 1. explicit input.token_budget (caller-explicit; 0 = unlimited stays None)
@@ -551,15 +575,9 @@ impl Tool for TaskTool {
             .get("token_budget")
             .and_then(|v| v.as_u64())
             .filter(|&v| v != 0)
+            .or_else(|| settings.agent.subagent.token_budget_k.map(|v| v as u64))
             .or_else(|| {
-                self.settings()
-                    .agent
-                    .subagent
-                    .token_budget_k
-                    .map(|v| v as u64)
-            })
-            .or_else(|| {
-                let d = self.settings().agent.token_budget.subagent_default_k;
+                let d = settings.agent.token_budget.subagent_default_k;
                 if d > 0 {
                     Some(d as u64)
                 } else {
@@ -567,7 +585,7 @@ impl Tool for TaskTool {
                 }
             })
             .or_else(|| {
-                let m = self.settings().agent.token_budget.main_k;
+                let m = settings.agent.token_budget.main_k;
                 if m > 0 {
                     Some(m as u64)
                 } else {
@@ -673,13 +691,13 @@ impl Tool for TaskTool {
         );
 
         // ── Guard: concurrency limit — queue until slot opens ───────────
-        let _ = self.settings().agent.subagent.max_concurrent; // retained for acknowledgement metadata
-                                                               // ── Unified asynchronous path ───────────────────────────────────
-                                                               // `task` always spawns a coordinator-owned child and returns a
-                                                               // structured acknowledgement immediately. The legacy sync/background
-                                                               // split is retired: a parent observes child results through the
-                                                               // coordinator (non-root parents get a synthesis round; the persistent
-                                                               // root consumes ready groups via the daemon delivery API).
+        let _ = settings.agent.subagent.max_concurrent; // retained for acknowledgement metadata
+                                                        // ── Unified asynchronous path ───────────────────────────────────
+                                                        // `task` always spawns a coordinator-owned child and returns a
+                                                        // structured acknowledgement immediately. The legacy sync/background
+                                                        // split is retired: a parent observes child results through the
+                                                        // coordinator (non-root parents get a synthesis round; the persistent
+                                                        // root consumes ready groups via the daemon delivery API).
         let is_root_call = context.agent.parent_id.is_none();
         let group_id = if is_root_call {
             let turn_id = context.origin_turn_id.ok_or_else(|| ToolError {
@@ -743,7 +761,7 @@ impl Tool for TaskTool {
         // `use_small_model` is read as Option<bool> so we can distinguish
         // "absent" (eligible for auto-routing) from "explicitly false".
         let use_small_model_opt = input.get("use_small_model").and_then(|v| v.as_bool());
-        let models = &self.settings().models;
+        let models = &settings.models;
         let routing_cfg = &models.routing;
         let has_light = models.has_tier(crate::config::models::ModelTier::Light);
         let has_heavy = models.has_tier(crate::config::models::ModelTier::Heavy);
@@ -760,7 +778,7 @@ impl Tool for TaskTool {
             routing::ModelChoice::NeedsLlm { .. } if routing_cfg.llm_fallback => {
                 // Borderline + LLM fallback enabled: ask the small model for a
                 // sharper score. On any failure, fall back to Medium.
-                let classifier_client = ApiClient::new(self.settings().small_model_settings());
+                let classifier_client = ApiClient::new(settings.small_model_settings());
                 match crate::tools::meta::rlm::classifier::classify_complexity(
                     &classifier_client,
                     &full_prompt,
@@ -802,12 +820,12 @@ impl Tool for TaskTool {
         // endpoint, mirroring how `small_model_settings()` worked but for any
         // tier. This keeps every downstream path (subagent loop, fallback,
         // transcript) reading the correct model from `settings.models.main`.
-        let mut child_settings = self.settings().clone();
+        let mut child_settings = settings.clone();
         child_settings.models.main = tier_endpoint;
         let api_client = ApiClient::new(child_settings.clone());
 
         // ── Unified spawn: progress record + spawned child future ──────
-        let timeout_secs = self.settings().agent.subagent.timeout_secs;
+        let timeout_secs = settings.agent.subagent.timeout_secs;
         let mailbox_bg = self.mailbox.clone();
         let st_bg = _subagent_type.to_string();
         let desc_full_bg = description.to_string();
@@ -817,7 +835,7 @@ impl Tool for TaskTool {
         let prompt_bg = full_prompt.clone();
         let node_type_bg = node_type.clone();
         let transcript_store_bg = self.transcript_store.clone();
-        let retention_days = self.settings().storage.transcript.max_age_days;
+        let retention_days = settings.storage.transcript.max_age_days;
         let started_at_bg = chrono::Utc::now().timestamp_millis();
         let subagent_node_id = child_context.agent_id.as_str().to_string();
         let bg_node_id = subagent_node_id.clone();
@@ -865,8 +883,11 @@ impl Tool for TaskTool {
         // `models.main` set to the routed tier endpoint, so reuse it directly.
         let settings_bg = child_settings.clone();
         let coordinator_bg = self.coordinator.clone();
-        let permission_ctx =
-            self.build_permission_context(child_context.agent_id.as_str(), context.workdir);
+        let permission_ctx = self.build_permission_context(
+            child_context.agent_id.as_str(),
+            &session_id,
+            context.workdir,
+        );
         // Fold subagent file edits into the root turn's checkpoint snapshot.
         let origin_turn_id_bg = context.origin_turn_id.map(|s| s.to_string());
         let workdir_bg = context.workdir.map(|p| p.to_path_buf());

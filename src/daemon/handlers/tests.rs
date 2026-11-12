@@ -1733,9 +1733,135 @@ async fn apply_todos_update_broadcasts_full_snapshot() {
     assert_eq!(todos.items.len(), 1);
 }
 
-/// `set_permission_mode` persists to the user config dir, so this test (and
-/// any other that reaches the handler's persist step) scopes a fake home to
-/// never touch the developer's real `permission-modes.json` (serial).
+#[tokio::test]
+async fn effective_permission_session_overrides_project() {
+    let state = global_event_test_state().await;
+    let root = state.effective_session_root("session-a").await;
+    state.permission_modes.set(
+        root,
+        crate::config::RootPermissionMode::AcceptEdits,
+        crate::sandbox::EffectiveMode::AcceptEdits,
+    );
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-a", None)
+                .with_permission_override(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Yolo,
+                    effective_mode: crate::sandbox::EffectiveMode::Yolo,
+                }),
+        )
+        .await
+        .unwrap();
+    state
+        .session_manager
+        .save(&crate::context::memory_session::Session::with_id(
+            "session-b",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.effective_permission("session-a").await.root_mode,
+        crate::config::RootPermissionMode::Yolo
+    );
+    assert_eq!(
+        state.effective_permission("session-b").await.root_mode,
+        crate::config::RootPermissionMode::AcceptEdits
+    );
+}
+
+#[tokio::test]
+async fn set_permission_mode_scopes_override_to_session() {
+    let mut state = global_event_test_state().await;
+    state.permission_modes = crate::permissions::PermissionModeStore::new();
+    let root = state.effective_session_root("session-a").await;
+    state.permission_modes.set(
+        root,
+        crate::config::RootPermissionMode::AcceptEdits,
+        crate::sandbox::EffectiveMode::AcceptEdits,
+    );
+    for session_id in ["session-a", "session-b"] {
+        state
+            .session_manager
+            .save(&crate::context::memory_session::Session::with_id(
+                session_id, None,
+            ))
+            .await
+            .unwrap();
+    }
+    let state = Arc::new(state);
+
+    let _ = set_permission_mode(
+        State(state.clone()),
+        Json(crate::daemon::models::SetPermissionModeRequest {
+            mode: crate::config::RootPermissionMode::Yolo,
+            effective_mode: None,
+            session_id: Some("session-a".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        state.effective_permission("session-a").await.root_mode,
+        crate::config::RootPermissionMode::Yolo
+    );
+    assert_eq!(
+        state.effective_permission("session-b").await.root_mode,
+        crate::config::RootPermissionMode::AcceptEdits
+    );
+    let saved = state
+        .session_manager
+        .load("session-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        saved.permission_override.unwrap().root_mode,
+        crate::config::RootPermissionMode::Yolo
+    );
+}
+
+#[tokio::test]
+async fn set_permission_mode_normalizes_plan_before_session_save() {
+    let mut state = global_event_test_state().await;
+    state.permission_modes = crate::permissions::PermissionModeStore::new();
+    state
+        .session_manager
+        .save(&crate::context::memory_session::Session::with_id(
+            "session-a",
+            None,
+        ))
+        .await
+        .unwrap();
+    let state = Arc::new(state);
+
+    let _ = set_permission_mode(
+        State(state.clone()),
+        Json(crate::daemon::models::SetPermissionModeRequest {
+            mode: crate::config::RootPermissionMode::Normal,
+            effective_mode: Some(crate::sandbox::EffectiveMode::Plan),
+            session_id: Some("session-a".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+
+    let saved = state
+        .session_manager
+        .load("session-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        saved.permission_override.unwrap().effective_mode,
+        crate::sandbox::EffectiveMode::Normal
+    );
+}
+
+/// A fake home keeps daemon construction isolated from the developer's config.
 #[tokio::test]
 #[serial_test::serial]
 async fn set_permission_mode_broadcasts_mode_changed() {
@@ -2288,10 +2414,8 @@ async fn set_permission_mode_without_session_id_is_rejected() {
     assert_eq!(body, serde_json::json!({"error": "session_id required"}));
 }
 
-/// `set_permission_mode` persists to `~/.wgenty-code/permission-modes.json`
-/// (via `utils::config_dir`, which honours `WGENTY_HOME`), so a daemon restart
-/// reloads the same mode. Scopes a fake home (serial) to never touch the
-/// developer's real config — same isolation strategy as switch_model tests.
+/// `set_permission_mode` persists the override in the project session, so a
+/// daemon restart reloads the same mode. A fake home isolates unrelated config.
 #[tokio::test]
 #[serial_test::serial]
 async fn set_permission_mode_persists_across_daemon_restart() {
@@ -2320,23 +2444,20 @@ async fn set_permission_mode_persists_across_daemon_restart() {
         .expect("set_permission_mode succeeds");
         assert_eq!(resp["success"], true);
 
-        // File landed under the fake home with the canonical main root key.
-        let persist_path = fake_home
+        let persist_path = temp
             .path()
             .join(".wgenty-code")
-            .join("permission-modes.json");
+            .join("sessions")
+            .join("s1.json");
         let on_disk: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&persist_path).expect("persist file written"),
+            &std::fs::read_to_string(&persist_path).expect("session file written"),
         )
         .expect("valid json");
-        assert_eq!(on_disk["version"], 1);
-        let main_root = temp
-            .path()
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
-        assert_eq!(on_disk["modes"][&main_root]["root_mode"], "accept_edits");
+        assert_eq!(on_disk["permission_override"]["root_mode"], "accept_edits");
+        assert_eq!(
+            on_disk["permission_override"]["effective_mode"],
+            "accept_edits"
+        );
 
         // Second daemon lifetime (fresh DaemonState): GET returns the same mode.
         let state2 = DaemonState::new(crate::state::AppState::new(settings.clone())).await;

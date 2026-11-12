@@ -3,6 +3,35 @@ use super::*;
 use crate::config::agent::SubagentLimits;
 use crate::org_graph::{NodeContract, NodeRegistry, NodeType};
 
+#[test]
+fn tasktool_resolver_overrides_global_settings() {
+    let mut global = Settings::default();
+    global.models.main.name = "global-model".to_string();
+    let mut session = Settings::default();
+    session.models.main.name = "glm-5.3-flash".to_string();
+    let tool = task_tool_with_coordinator(4, 3)
+        .with_session_settings_resolver(Arc::new(move |_| session.clone()));
+
+    *tool.settings_handle.write().unwrap() = global;
+    assert_eq!(
+        tool.settings_for_session("session-a").models.main.name,
+        "glm-5.3-flash"
+    );
+}
+
+#[test]
+fn tasktool_without_resolver_falls_back_to_global() {
+    let mut global = Settings::default();
+    global.models.main.name = "global-model".to_string();
+    let tool = task_tool_with_coordinator(4, 3);
+    *tool.settings_handle.write().unwrap() = global;
+
+    assert_eq!(
+        tool.settings_for_session("session-a").models.main.name,
+        "global-model"
+    );
+}
+
 /// Build the builtin registry contract for `node_type` under the given
 /// `explore_readonly` setting, mirroring the production contract-build path.
 /// The coordinator and task.rs read the same registry, so no-regression tests
