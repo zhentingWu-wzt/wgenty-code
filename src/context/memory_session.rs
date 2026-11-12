@@ -26,6 +26,10 @@ pub struct Session {
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub status: SessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<crate::config::models::ActiveModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_override: Option<crate::permissions::PermissionModeEntry>,
     /// Optimistic-concurrency version, bumped on every persisted write
     /// (PUT overwrite and run saves). `#[serde(default)]` keeps pre-versioning
     /// files loadable as version 0.
@@ -64,6 +68,8 @@ impl Session {
             ui_messages: Vec::new(),
             metadata: HashMap::new(),
             status: SessionStatus::Active,
+            model_override: None,
+            permission_override: None,
             version: 0,
             lazy_message_count: None,
         }
@@ -71,6 +77,22 @@ impl Session {
 
     pub fn with_project(mut self, path: PathBuf) -> Self {
         self.project_path = Some(path);
+        self
+    }
+
+    pub fn with_model_override(
+        mut self,
+        model_override: crate::config::models::ActiveModelRef,
+    ) -> Self {
+        self.model_override = Some(model_override);
+        self
+    }
+
+    pub fn with_permission_override(
+        mut self,
+        permission_override: crate::permissions::PermissionModeEntry,
+    ) -> Self {
+        self.permission_override = Some(permission_override);
         self
     }
 
@@ -181,6 +203,49 @@ pub enum SessionStatus {
     Paused,
     Archived,
     Error,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PermissionModeEntryRepr {
+    root_mode: crate::config::RootPermissionMode,
+    effective_mode: crate::sandbox::EffectiveMode,
+}
+
+fn persistable_effective_mode(
+    root_mode: crate::config::RootPermissionMode,
+    effective_mode: crate::sandbox::EffectiveMode,
+) -> crate::sandbox::EffectiveMode {
+    if effective_mode == crate::sandbox::EffectiveMode::Plan {
+        crate::sandbox::EffectiveMode::from_root_permission_mode(root_mode)
+    } else {
+        effective_mode
+    }
+}
+
+impl Serialize for crate::permissions::PermissionModeEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        PermissionModeEntryRepr {
+            root_mode: self.root_mode,
+            effective_mode: persistable_effective_mode(self.root_mode, self.effective_mode),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for crate::permissions::PermissionModeEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let entry = PermissionModeEntryRepr::deserialize(deserializer)?;
+        Ok(Self {
+            root_mode: entry.root_mode,
+            effective_mode: persistable_effective_mode(entry.root_mode, entry.effective_mode),
+        })
+    }
 }
 
 /// A session's worktree binding (project → worktree → session, N:1), persisted
@@ -415,6 +480,8 @@ impl SessionManager {
                                 ui_messages: Vec::new(),
                                 metadata: HashMap::new(),
                                 status,
+                                model_override: None,
+                                permission_override: None,
                                 version,
                                 lazy_message_count: Some(msg_count),
                             };
@@ -1055,6 +1122,70 @@ mod tests {
         assert_eq!(
             loaded.ui_messages[1].content,
             "full user text before compact"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_round_trips_override_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        let model_override = crate::config::models::ActiveModelRef {
+            provider: "zhipu".to_string(),
+            model: "glm-5.3-flash".to_string(),
+        };
+        let permission_override = crate::permissions::PermissionModeEntry {
+            root_mode: crate::config::RootPermissionMode::AcceptEdits,
+            effective_mode: crate::sandbox::EffectiveMode::AcceptEdits,
+        };
+        let session = Session::with_id("override-round-trip", Some("overrides"))
+            .with_model_override(model_override.clone())
+            .with_permission_override(permission_override);
+
+        mgr.save(&session).await.unwrap();
+        let loaded = mgr.load("override-round-trip").await.unwrap().unwrap();
+
+        assert_eq!(loaded.model_override, Some(model_override));
+        let loaded_permission = loaded.permission_override.expect("permission override");
+        assert_eq!(
+            loaded_permission.root_mode,
+            crate::config::RootPermissionMode::AcceptEdits
+        );
+        assert_eq!(
+            loaded_permission.effective_mode,
+            crate::sandbox::EffectiveMode::AcceptEdits
+        );
+
+        let legacy = serde_json::json!({
+            "id": "legacy-overrides",
+            "name": "legacy",
+            "project_path": null,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "messages": []
+        });
+        let legacy: Session = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.model_override.is_none());
+        assert!(legacy.permission_override.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_does_not_persist_plan_permission_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        let session = Session::with_id("plan-override", None).with_permission_override(
+            crate::permissions::PermissionModeEntry {
+                root_mode: crate::config::RootPermissionMode::Normal,
+                effective_mode: crate::sandbox::EffectiveMode::Plan,
+            },
+        );
+
+        mgr.save(&session).await.unwrap();
+        let loaded = mgr.load("plan-override").await.unwrap().unwrap();
+
+        let permission = loaded.permission_override.expect("permission override");
+        assert_eq!(
+            permission.effective_mode,
+            crate::sandbox::EffectiveMode::Normal
         );
     }
 }

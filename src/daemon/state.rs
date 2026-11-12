@@ -2064,6 +2064,39 @@ impl DaemonState {
         None
     }
 
+    /// Resolve the session's model selection without mutating global settings.
+    pub async fn resolve_session_model(&self, session_id: &str) -> crate::config::Settings {
+        let global = {
+            self.settings_handle
+                .read()
+                .expect("settings lock poisoned")
+                .clone()
+        };
+        let Some((_, session)) = self.resolve_session(session_id).await else {
+            return global;
+        };
+        let Some(model_override) = session.model_override else {
+            return global;
+        };
+        let Some(endpoint) = global
+            .models
+            .resolve_endpoint(&model_override.provider, &model_override.model)
+        else {
+            tracing::warn!(
+                session_id,
+                provider = %model_override.provider,
+                model = %model_override.model,
+                "failed to resolve session model override; using global settings"
+            );
+            return global;
+        };
+
+        let mut resolved = global;
+        resolved.models.main = endpoint;
+        resolved.models.active_model = Some(model_override);
+        resolved
+    }
+
     /// The session's effective working root: bound worktree > the session's
     /// project root > the main working_dir. This is the single source of
     /// truth for tool path resolution AND permission-policy rooting — the two
@@ -2138,5 +2171,111 @@ mod tests {
             sessions_of(&map, std::path::Path::new("/repo/.worktrees/a")),
             vec!["s2".to_string()]
         );
+    }
+
+    fn session_model_settings(root: &Path) -> crate::config::Settings {
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = root.to_path_buf();
+        settings.models.main.name = "global-model".to_string();
+        settings.models.main.base_url = Some("https://global.example".to_string());
+        settings.models.providers.insert(
+            "zhipu".to_string(),
+            crate::config::models::ProviderGroup {
+                display_name: None,
+                base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+                api_key: Some("group-key".to_string()),
+                protocol: Some("openai".to_string()),
+                models: vec![crate::config::models::ProviderModel {
+                    name: "glm-5.3-flash".to_string(),
+                    profile_key: None,
+                    tier: None,
+                    api_key: Some("model-key".to_string()),
+                    base_url: None,
+                    context_window: Some(128_000),
+                    temperature: Some(0.2),
+                }],
+            },
+        );
+        settings
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn resolve_session_model_applies_override_without_global_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_home = tempfile::tempdir().unwrap();
+        let settings = session_model_settings(temp.path());
+        let previous_home = std::env::var_os("WGENTY_HOME");
+        std::env::set_var("WGENTY_HOME", fake_home.path());
+        let run = async {
+            let state = DaemonState::new(AppState::new(settings)).await;
+            let model_override = crate::config::models::ActiveModelRef {
+                provider: "zhipu".to_string(),
+                model: "glm-5.3-flash".to_string(),
+            };
+            let session = crate::context::memory_session::Session::with_id("override", None)
+                .with_model_override(model_override.clone());
+            state.session_manager.save(&session).await.unwrap();
+
+            let resolved = state.resolve_session_model("override").await;
+            assert_eq!(resolved.models.main.name, "glm-5.3-flash");
+            assert_eq!(
+                resolved.models.main.base_url.as_deref(),
+                Some("https://open.bigmodel.cn/api/paas/v4")
+            );
+            assert_eq!(resolved.models.main.api_key.as_deref(), Some("model-key"));
+            assert_eq!(resolved.models.active_model, Some(model_override));
+
+            {
+                let global = state.settings_handle.read().expect("settings lock");
+                assert_eq!(global.models.main.name, "global-model");
+                assert!(global.models.active_model.is_none());
+            }
+
+            let plain = crate::context::memory_session::Session::with_id("plain", None);
+            state.session_manager.save(&plain).await.unwrap();
+            let resolved = state.resolve_session_model("plain").await;
+            assert_eq!(resolved.models.main.name, "global-model");
+            assert_eq!(
+                resolved.models.main.base_url.as_deref(),
+                Some("https://global.example")
+            );
+            assert!(resolved.models.active_model.is_none());
+        }
+        .await;
+        match previous_home {
+            Some(value) => std::env::set_var("WGENTY_HOME", value),
+            None => std::env::remove_var("WGENTY_HOME"),
+        }
+        run
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn resolve_session_model_falls_back_for_unknown_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_home = tempfile::tempdir().unwrap();
+        let settings = session_model_settings(temp.path());
+        let previous_home = std::env::var_os("WGENTY_HOME");
+        std::env::set_var("WGENTY_HOME", fake_home.path());
+        let run = async {
+            let state = DaemonState::new(AppState::new(settings)).await;
+            let session = crate::context::memory_session::Session::with_id("invalid", None)
+                .with_model_override(crate::config::models::ActiveModelRef {
+                    provider: "zhipu".to_string(),
+                    model: "missing-model".to_string(),
+                });
+            state.session_manager.save(&session).await.unwrap();
+
+            let resolved = state.resolve_session_model("invalid").await;
+            assert_eq!(resolved.models.main.name, "global-model");
+            assert!(resolved.models.active_model.is_none());
+        }
+        .await;
+        match previous_home {
+            Some(value) => std::env::set_var("WGENTY_HOME", value),
+            None => std::env::remove_var("WGENTY_HOME"),
+        }
+        run
     }
 }
