@@ -112,6 +112,15 @@ pub async fn set_permission_mode(
             Json(serde_json::json!({"error": "session_id required"})),
         ));
     };
+    // Reject ids that could escape the sessions directory (path traversal /
+    // absolute paths) before any storage access: a hostile id is a client
+    // bug worth a 400, never a 500 from a failed write.
+    if crate::context::memory_session::validate_id(session_id).is_err() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid session_id"})),
+        ));
+    }
     let effective = body
         .effective_mode
         .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode));
@@ -120,23 +129,57 @@ pub async fn set_permission_mode(
     } else {
         effective
     };
-    let (sessions, mut session) = match state.resolve_session(session_id).await {
-        Some(resolved) => resolved,
-        None => (
-            state.session_manager.clone(),
-            crate::context::memory_session::Session::with_id(session_id, None),
-        ),
-    };
-    session.permission_override = Some(crate::permissions::PermissionModeEntry {
-        root_mode: body.mode,
-        effective_mode: stored_effective,
-    });
-    sessions.save(&session).await.map_err(|error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("save session permission: {error}")})),
-        )
-    })?;
+    // Serialize with PUT overwrites (which take the same lock around their
+    // load → version check → save sequence) so the two full-record writers
+    // cannot interleave.
+    let _update_guard = state.session_update_lock.lock().await;
+    match state.resolve_session(session_id).await {
+        Some((sessions, _)) => {
+            // Targeted in-lock update: a concurrent run save (mid-turn mode
+            // switches are allowed) can neither be clobbered by this write
+            // nor erase the override afterwards; version bumps per contract.
+            sessions
+                .update_session_record(session_id, |session| {
+                    session.permission_override = Some(crate::permissions::PermissionModeEntry {
+                        root_mode: body.mode,
+                        effective_mode: stored_effective,
+                    });
+                })
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("save session permission: {error}")
+                        })),
+                    )
+                })?;
+        }
+        None => {
+            // Session not known to any project store yet: create it in the
+            // main project's manager with the override applied (same shape
+            // the previous full-record write produced). The creating write
+            // advances the version like a PUT upsert does.
+            let mut session = crate::context::memory_session::Session::with_id(session_id, None)
+                .with_permission_override(crate::permissions::PermissionModeEntry {
+                    root_mode: body.mode,
+                    effective_mode: stored_effective,
+                });
+            session.version += 1;
+            state
+                .session_manager
+                .save(&session)
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("save session permission: {error}")
+                        })),
+                    )
+                })?;
+        }
+    }
     tracing::info!(
         mode = ?body.mode,
         effective_mode = ?effective,

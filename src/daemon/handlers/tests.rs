@@ -1861,6 +1861,74 @@ async fn set_permission_mode_normalizes_plan_before_session_save() {
     );
 }
 
+#[tokio::test]
+async fn set_permission_mode_rejects_unsafe_session_id_without_writing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+    let session_id = temp.path().join("escaped").to_string_lossy().into_owned();
+
+    let result = set_permission_mode(
+        State(state),
+        Json(crate::daemon::models::SetPermissionModeRequest {
+            mode: crate::config::RootPermissionMode::Yolo,
+            effective_mode: None,
+            session_id: Some(session_id),
+        }),
+    )
+    .await;
+
+    let (status, _) = result.expect_err("unsafe session id must be rejected");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "path-traversal ids are a client bug, not a storage failure"
+    );
+    assert!(!temp.path().join("escaped.json").exists());
+}
+
+#[tokio::test]
+async fn set_permission_mode_bumps_session_version_and_keeps_messages() {
+    let mut state = global_event_test_state().await;
+    state.permission_modes = crate::permissions::PermissionModeStore::new();
+    let mut session = crate::context::memory_session::Session::with_id("session-a", None);
+    session.add_message("user", "hello");
+    state.session_manager.save(&session).await.unwrap();
+    let state = Arc::new(state);
+
+    let _ = set_permission_mode(
+        State(state.clone()),
+        Json(crate::daemon::models::SetPermissionModeRequest {
+            mode: crate::config::RootPermissionMode::Yolo,
+            effective_mode: None,
+            session_id: Some("session-a".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+
+    let saved = state
+        .session_manager
+        .load("session-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        saved.version, 1,
+        "a permission write is a persisted write and must bump the session version"
+    );
+    assert_eq!(
+        saved.messages.len(),
+        1,
+        "the targeted override write must not drop concurrent message data"
+    );
+    assert_eq!(
+        saved.permission_override.unwrap().root_mode,
+        crate::config::RootPermissionMode::Yolo
+    );
+}
+
 /// A fake home keeps daemon construction isolated from the developer's config.
 #[tokio::test]
 #[serial_test::serial]

@@ -518,6 +518,11 @@ pub struct RootToolPort {
     /// `publish_event` dual-writes into it, same contract as
     /// [`DaemonEventSink::publish`].
     buffer: Arc<std::sync::RwLock<SessionEventBuffer>>,
+    /// Late-bound state handle for session-scoped permission resolution
+    /// (`DaemonState::effective_permission`: session override > project
+    /// store > default). Weak so the port never keeps the daemon alive;
+    /// `None` on the test constructor, which falls back to the project store.
+    state: Option<std::sync::Weak<DaemonState>>,
 }
 
 impl RootToolPort {
@@ -526,7 +531,7 @@ impl RootToolPort {
     /// tool path resolution, the permission-policy boundary, and checkpoint
     /// storage all follow it.
     pub fn new(
-        state: &DaemonState,
+        state: &Arc<DaemonState>,
         session_id: &str,
         run_id: &str,
         root: PathBuf,
@@ -549,7 +554,19 @@ impl RootToolPort {
             run_id: run_id.to_string(),
             next_seq: state.session_seq_counter(session_id),
             buffer: state.session_buffer(session_id),
+            state: Some(Arc::downgrade(state)),
         }
+    }
+
+    /// Resolve the session's effective permission entry through the session
+    /// chain (session override > project store > default). Falls back to the
+    /// project-level store when the state handle is gone (test constructor),
+    /// preserving pre-session-scoped behavior there.
+    async fn session_permission_entry(&self) -> crate::permissions::PermissionModeEntry {
+        if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+            return state.effective_permission(&self.session_id).await;
+        }
+        self.permission_modes.get(&self.root)
     }
 
     /// Test-only constructor: a full in-memory `DaemonState` is too heavy, so
@@ -586,6 +603,7 @@ impl RootToolPort {
             run_id: "test".to_string(),
             next_seq: Arc::new(AtomicU64::new(1)),
             buffer: Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
+            state: None,
         }
     }
 
@@ -623,17 +641,16 @@ impl RootToolPort {
     /// Resolve a policy `Ask`: approved rule / auto-approving mode short-
     /// circuit; otherwise escalate to the bridge and wait indefinitely (the
     /// human decides when to answer). On approval the session rule is
-    /// persisted into the shared rule set.
+    /// persisted into the shared rule set. `permission` is the caller's
+    /// session-scoped permission snapshot (session override > project store),
+    /// so auto-approval honors the session's mode, not just the project's.
     async fn resolve_ask(
         &self,
+        permission: &crate::permissions::PermissionModeEntry,
         perm: &crate::permissions::policy::PermissionRequest,
     ) -> Result<(), ToolResponse> {
         let rule_approved = self.session_rules.read().await.contains(&perm.session_rule);
-        let mode_auto = self
-            .permission_modes
-            .get(&self.root)
-            .root_mode
-            .auto_approves(&perm.tool_name);
+        let mode_auto = permission.root_mode.auto_approves(&perm.tool_name);
         if decide_ask(rule_approved, mode_auto) == AskDecision::Execute {
             return Ok(());
         }
@@ -706,6 +723,11 @@ impl RootToolPort {
 #[async_trait]
 impl ToolPort for RootToolPort {
     async fn execute(&self, req: ToolRequest) -> ToolResponse {
+        // Session-scoped permission snapshot for this tool call (session
+        // override > project store > default): both the auto-approval
+        // decision and the ToolContext effective mode come from the SAME
+        // resolution so a mid-call mode switch cannot half-apply.
+        let permission = self.session_permission_entry().await;
         // 1. Policy validation against the shared session rules.
         let decision = {
             let rules = self.session_rules.read().await;
@@ -720,8 +742,8 @@ impl ToolPort for RootToolPort {
         match decision {
             Ok(PolicyDecision::Allow) => {}
             Ok(PolicyDecision::Ask(perm)) => {
-                // 2. Ask → shared rules / root mode / indefinite bridge.
-                if let Err(resp) = self.resolve_ask(&perm).await {
+                // 2. Ask → shared rules / session mode / indefinite bridge.
+                if let Err(resp) = self.resolve_ask(&permission, &perm).await {
                     return resp;
                 }
             }
@@ -759,7 +781,7 @@ impl ToolPort for RootToolPort {
             .invocation_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let effective_mode = self.permission_modes.get(&self.root).effective_mode;
+        let effective_mode = permission.effective_mode;
         let tool_context = ToolContext {
             agent: &self.agent,
             invocation_id: ToolInvocationId::new(inv_id),
@@ -2132,21 +2154,29 @@ async fn save_session_history(
             return false;
         }
     };
-    let Some(mut session) = sessions.get(session_id).await else {
-        tracing::warn!(session_id, "run: session vanished before save");
-        return false;
-    };
-    session.messages = messages;
-    session.updated_at = chrono::Utc::now();
-    // Run saves participate in the same version sequence as PUT overwrites.
-    session.version += 1;
-    // Fully materialised write — clear any lazy index marker (mirrors update_session).
-    session.lazy_message_count = None;
-    if let Err(e) = sessions.save(&session).await {
-        tracing::warn!(error = %e, session_id, "run: session save failed");
-        return false;
+    // Atomic in-lock record update: run saves serialize with the permission
+    // POST's targeted override writes (mid-turn mode switches are allowed),
+    // so neither writer can drop the other's fields. Version bump +
+    // updated_at refresh are part of the update contract (run saves keep
+    // participating in the same version sequence as PUT overwrites).
+    match sessions
+        .update_session_record(session_id, |session| {
+            session.messages = messages;
+            // Fully materialised write — clear any lazy index marker (mirrors update_session).
+            session.lazy_message_count = None;
+        })
+        .await
+    {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            tracing::warn!(session_id, "run: session vanished before save");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, session_id, "run: session save failed");
+            false
+        }
     }
-    true
 }
 
 /// Derive a session title from the first user message: collapse whitespace,
@@ -3151,6 +3181,151 @@ mod tests {
         assert_eq!(decide_ask(true, true), AskDecision::Execute);
         assert_eq!(decide_ask(false, true), AskDecision::Execute);
         assert_eq!(decide_ask(false, false), AskDecision::Escalate);
+    }
+
+    #[tokio::test]
+    async fn root_execution_uses_each_sessions_permission_for_approval_and_mode() {
+        struct PermissionProbeTool {
+            modes: Arc<std::sync::Mutex<Vec<crate::sandbox::EffectiveMode>>>,
+        }
+
+        #[async_trait]
+        impl Tool for PermissionProbeTool {
+            fn name(&self) -> &str {
+                "permission_probe"
+            }
+
+            fn description(&self) -> &str {
+                "captures the effective execution mode"
+            }
+
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+            ) -> Result<crate::tools::ToolOutput, crate::tools::ToolError> {
+                Ok(crate::tools::ToolOutput::text("ok"))
+            }
+
+            async fn execute_with_context(
+                &self,
+                context: &ToolContext<'_>,
+                _input: serde_json::Value,
+            ) -> Result<crate::tools::ToolOutput, crate::tools::ToolError> {
+                self.modes.lock().unwrap().push(context.effective_mode);
+                Ok(crate::tools::ToolOutput::text("ok"))
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let mut state = DaemonState::new(crate::state::AppState::new(settings)).await;
+        let registry = Arc::new(ToolRegistry::with_project_root(temp.path(), 5));
+        let modes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        registry.register(Box::new(PermissionProbeTool {
+            modes: modes.clone(),
+        }));
+        state.tool_registry = registry;
+        let root = state.effective_session_root("session-a").await;
+        state.permission_modes.set(
+            root.clone(),
+            crate::config::RootPermissionMode::Yolo,
+            crate::sandbox::EffectiveMode::Yolo,
+        );
+        for (id, root_mode, effective_mode) in [
+            (
+                "session-a",
+                crate::config::RootPermissionMode::Yolo,
+                crate::sandbox::EffectiveMode::Yolo,
+            ),
+            (
+                "session-b",
+                crate::config::RootPermissionMode::Normal,
+                crate::sandbox::EffectiveMode::Normal,
+            ),
+        ] {
+            state
+                .session_manager
+                .save(
+                    &crate::context::memory_session::Session::with_id(id, None)
+                        .with_permission_override(crate::permissions::PermissionModeEntry {
+                            root_mode,
+                            effective_mode,
+                        }),
+                )
+                .await
+                .expect("save session");
+        }
+        let state = Arc::new(state);
+        let request = |session_id: &str| ToolRequest {
+            name: "permission_probe".into(),
+            arguments: serde_json::json!({}),
+            session_id: session_id.into(),
+            turn_id: None,
+            invocation_id: Some(format!("inv-{session_id}")),
+            parallel: false,
+        };
+        let port_a = RootToolPort::new(
+            &state,
+            "session-a",
+            "run-a",
+            root.clone(),
+            AgentExecutionContext::root(SessionId::new("session-a")),
+        );
+        let response =
+            tokio::time::timeout(Duration::from_secs(1), port_a.execute(request("session-a")))
+                .await
+                .expect("yolo session must auto-approve without a bridge request");
+        assert!(
+            response.success,
+            "session-a execution: {}",
+            response.content
+        );
+
+        let port_b = Arc::new(RootToolPort::new(
+            &state,
+            "session-b",
+            "run-b",
+            root,
+            AgentExecutionContext::root(SessionId::new("session-b")),
+        ));
+        let executing = {
+            let port = port_b.clone();
+            tokio::spawn(async move { port.execute(request("session-b")).await })
+        };
+        let mut request_id = None;
+        for _ in 0..100 {
+            if let Some(pending) = state.permission_bridge.pending().await.first() {
+                request_id = Some(pending.request_id.clone());
+                break;
+            }
+            if executing.is_finished() {
+                panic!("normal session inherited the project's yolo auto-approval");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let request_id = request_id.expect("normal session must request approval");
+        assert!(matches!(
+            state.permission_bridge.resolve(&request_id, true).await,
+            crate::teams::PermissionResolveOutcome::Resolved
+        ));
+        let response = executing.await.expect("session-b execution join");
+        assert!(
+            response.success,
+            "session-b execution: {}",
+            response.content
+        );
+        assert_eq!(
+            *modes.lock().unwrap(),
+            vec![
+                crate::sandbox::EffectiveMode::Yolo,
+                crate::sandbox::EffectiveMode::Normal,
+            ]
+        );
     }
 
     #[test]

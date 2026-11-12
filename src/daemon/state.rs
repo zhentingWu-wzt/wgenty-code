@@ -1021,6 +1021,56 @@ impl DaemonState {
                 }
             }) as Arc<dyn Fn(&str) -> crate::config::Settings + Send + Sync>
         };
+        // Session-scoped permission resolution for subagent snapshots: bridges
+        // async `DaemonState::effective_permission` (session override >
+        // project store > default) into TaskTool's sync permission-context
+        // build, with the same runtime bridging as the settings resolver.
+        // Falls back to the main project's store entry when the state handle
+        // is not bound yet (early spawns before router construction).
+        let session_permission_resolver = {
+            let task_session_state = task_session_state.clone();
+            let permission_modes = permission_modes.clone();
+            let main_root = app_state.settings.storage.working_dir.clone();
+            Arc::new(move |session_id: &str| {
+                let fallback = permission_modes.get(&main_root);
+                let Some(state) = task_session_state
+                    .read()
+                    .expect("task session state lock poisoned")
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                else {
+                    return fallback;
+                };
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle)
+                        if matches!(
+                            handle.runtime_flavor(),
+                            tokio::runtime::RuntimeFlavor::MultiThread
+                        ) =>
+                    {
+                        tokio::task::block_in_place(|| {
+                            handle.block_on(state.effective_permission(session_id))
+                        })
+                    }
+                    _ => {
+                        let inner_fallback = fallback.clone();
+                        let session_id = session_id.to_string();
+                        std::thread::spawn(move || {
+                            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            else {
+                                return inner_fallback;
+                            };
+                            runtime.block_on(state.effective_permission(&session_id))
+                        })
+                        .join()
+                        .unwrap_or(fallback)
+                    }
+                }
+            })
+                as Arc<dyn Fn(&str) -> crate::permissions::PermissionModeEntry + Send + Sync>
+        };
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
@@ -1074,6 +1124,7 @@ impl DaemonState {
                 transcript_store.clone(),
             )
             .with_session_settings_resolver(session_settings_resolver.clone())
+            .with_session_permission_resolver(session_permission_resolver.clone())
             .with_permission_bridge(permission_bridge.clone())
             .with_session_rules(shared_session_rules.clone())
             .with_root_mode(root_mode.clone())

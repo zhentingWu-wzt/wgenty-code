@@ -89,6 +89,8 @@ mod tests;
 use transcript::build_transcript;
 
 type SessionSettingsResolver = Arc<dyn Fn(&str) -> Settings + Send + Sync>;
+type SessionPermissionResolver =
+    Arc<dyn Fn(&str) -> crate::permissions::PermissionModeEntry + Send + Sync>;
 
 pub struct TaskTool {
     /// Shared hot-reloadable settings. Read a fresh clone per subagent spawn
@@ -124,6 +126,11 @@ pub struct TaskTool {
     /// Per-project permission modes (root + effective). Each subagent
     /// snapshots the entry for its invocation's workdir at spawn time.
     permission_modes: PermissionModeStore,
+    /// Session-scoped permission resolver (session override > project store >
+    /// default), wired by the daemon to `DaemonState::effective_permission`.
+    /// When absent (tests / headless construction), subagents snapshot the
+    /// per-project store entry as before.
+    session_permission_resolver: Option<SessionPermissionResolver>,
 }
 
 impl TaskTool {
@@ -150,6 +157,7 @@ impl TaskTool {
             )),
             root_cause_runtime: crate::exec_session::root_cause_runtime_handle(),
             permission_modes: PermissionModeStore::new(),
+            session_permission_resolver: None,
         }
     }
 
@@ -195,6 +203,20 @@ impl TaskTool {
         self
     }
 
+    /// Bind the session-scoped permission resolver (session override >
+    /// project store > default). The daemon wires this to
+    /// `DaemonState::effective_permission` so a session's permission override
+    /// reaches the subagent permission snapshot — without it, a session
+    /// overriding to Yolo under an AcceptEdits project would still spawn
+    /// subagents under the project mode (and vice versa).
+    pub fn with_session_permission_resolver(
+        mut self,
+        resolver: Arc<dyn Fn(&str) -> crate::permissions::PermissionModeEntry + Send + Sync>,
+    ) -> Self {
+        self.session_permission_resolver = Some(resolver);
+        self
+    }
+
     /// Share the daemon's root permission mode lock (Yolo/AcceptEdits/Normal).
     pub fn with_root_mode(mut self, mode: Arc<std::sync::RwLock<RootPermissionMode>>) -> Self {
         self.root_mode = mode;
@@ -224,21 +246,38 @@ impl TaskTool {
         *self.root_mode.write().unwrap() = mode;
     }
 
-    /// Build the subagent permission context, looking up the per-project mode
-    /// for `workdir` (falling back to `Normal` when unregistered).
+    /// Resolve the permission entry for a subagent spawn: the session chain
+    /// (session override > project store > default) when a resolver is bound,
+    /// otherwise the per-project entry for `workdir` (falling back to
+    /// `Normal`), preserving pre-daemon-wiring behavior.
+    fn permission_entry_for_session(
+        &self,
+        session_id: &str,
+        workdir: Option<&std::path::Path>,
+    ) -> PermissionModeEntry {
+        match self.session_permission_resolver.as_ref() {
+            Some(resolve) => resolve(session_id),
+            None => match workdir {
+                Some(wd) => self.permission_modes.get(wd),
+                None => PermissionModeEntry::default(),
+            },
+        }
+    }
+
+    /// Build the subagent permission context from the caller's settings
+    /// snapshot (`settings` is the same session-resolved snapshot used to
+    /// build the child's execution client, so one spawn can never mix two
+    /// different settings reads) and the session-scoped permission entry.
     fn build_permission_context(
         &self,
         agent_id: &str,
         session_id: &str,
+        settings: &Settings,
         workdir: Option<&std::path::Path>,
     ) -> SubagentPermissionContext {
-        let settings = self.settings_for_session(session_id);
         let workspace = settings.storage.working_dir.clone();
         let limits = &settings.agent.subagent;
-        let entry = match workdir {
-            Some(wd) => self.permission_modes.get(wd),
-            None => PermissionModeEntry::default(),
-        };
+        let entry = self.permission_entry_for_session(session_id, workdir);
         SubagentPermissionContext {
             policy: ToolPermissionPolicy::new(workspace),
             session_rules: self
@@ -371,6 +410,7 @@ impl TaskTool {
         let permission = self.build_permission_context(
             &child_agent_id_str,
             context.agent.session_id.as_str(),
+            &settings,
             Some(settings.storage.working_dir.as_path()),
         );
 
@@ -883,9 +923,14 @@ impl Tool for TaskTool {
         // `models.main` set to the routed tier endpoint, so reuse it directly.
         let settings_bg = child_settings.clone();
         let coordinator_bg = self.coordinator.clone();
+        // Reuse the spawn's session-resolved settings snapshot (resolved once
+        // above) instead of re-reading it here: one spawn must not mix two
+        // different settings reads (guardian/subagent limits could otherwise
+        // come from a hot-reloaded different file than the child's model).
         let permission_ctx = self.build_permission_context(
             child_context.agent_id.as_str(),
             &session_id,
+            &settings,
             context.workdir,
         );
         // Fold subagent file edits into the root turn's checkpoint snapshot.

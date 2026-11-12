@@ -8,6 +8,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Reject session ids that could escape the sessions directory: separators
+/// (`/`, `\`), traversal segments (`..`), dot-prefixed and empty ids. Every
+/// disk-touching `SessionManager` entry point (`load` / `persist_to_disk` /
+/// `delete`) re-validates as defense in depth; request handlers validate
+/// early so a hostile id is a 400, not a 500.
+pub(crate) fn validate_id(id: &str) -> anyhow::Result<()> {
+    if id.is_empty()
+        || id.contains('/')
+        || id.contains('\\')
+        || id.contains("..")
+        || id.starts_with('.')
+    {
+        anyhow::bail!("Invalid session ID: {id}");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -345,6 +362,7 @@ impl SessionManager {
     }
 
     pub async fn load(&self, id: &str) -> anyhow::Result<Option<Session>> {
+        validate_id(id)?;
         let path = self.sessions_dir.join(format!("{}.json", id));
 
         if !path.exists() {
@@ -529,6 +547,7 @@ impl SessionManager {
     /// Write session JSON to disk without touching the in-memory index.
     /// Used by callers that already hold `sessions` write lock (e.g. add_message).
     async fn persist_to_disk(&self, session: &Session) -> anyhow::Result<()> {
+        validate_id(&session.id)?;
         tokio::fs::create_dir_all(&self.sessions_dir).await?;
         let path = self.sessions_dir.join(format!("{}.json", session.id));
         let content = serde_json::to_string_pretty(session)?;
@@ -536,7 +555,60 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Atomically update one field-set of a session record and persist it.
+    ///
+    /// Whole-record writers (the permission-mode POST and run saves) used to
+    /// race as read-full-record → mutate → save-full-record, so two concurrent
+    /// writes each silently dropped the other's fields (a mid-turn mode switch
+    /// could erase just-saved messages, and a run save could erase a just-set
+    /// `permission_override`). This method mutates AND persists while holding
+    /// the `sessions` write lock, so every writer routed through it applies to
+    /// the latest record and lands on disk in order.
+    ///
+    /// The mutation participates in the optimistic-concurrency contract: the
+    /// version is bumped (saturating) and `updated_at` refreshed on every
+    /// persisted write, mirroring PUT overwrites and run saves.
+    ///
+    /// Returns the persisted snapshot, or `Ok(None)` when the session is not
+    /// in the store (callers decide whether to create it — this method never
+    /// fabricates a record).
+    pub async fn update_session_record<F>(
+        &self,
+        id: &str,
+        update: F,
+    ) -> anyhow::Result<Option<Session>>
+    where
+        F: FnOnce(&mut Session) + Send,
+    {
+        validate_id(id)?;
+        // Hydrate lazy-loaded index entries before mutating (mirrors add_message).
+        let needs_hydrate = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(id)
+                .map(|s| s.lazy_message_count.is_some())
+                .unwrap_or(false)
+        };
+        if needs_hydrate {
+            self.load(id).await?;
+        }
+        let mut sessions = self.sessions.write().await;
+        let Some(session) = sessions.get_mut(id) else {
+            return Ok(None);
+        };
+        update(session);
+        session.version = session.version.saturating_add(1);
+        session.updated_at = chrono::Utc::now();
+        let snapshot = session.clone();
+        // Persist BEFORE releasing the lock: a concurrent writer must not
+        // read-modify-write a record whose disk state still predates ours.
+        self.persist_to_disk(&snapshot).await?;
+        drop(sessions);
+        Ok(Some(snapshot))
+    }
+
     pub async fn delete(&self, id: &str) -> anyhow::Result<()> {
+        validate_id(id)?;
         let path = self.sessions_dir.join(format!("{}.json", id));
 
         if path.exists() {
@@ -1186,6 +1258,155 @@ mod tests {
         assert_eq!(
             permission.effective_mode,
             crate::sandbox::EffectiveMode::Normal
+        );
+    }
+
+    #[tokio::test]
+    async fn unsafe_session_ids_are_rejected_before_filesystem_access() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let mgr = SessionManager::with_dir(sessions_dir.clone());
+        let absolute_id = tmp.path().join("escaped").to_string_lossy().into_owned();
+        let unsafe_ids = [
+            absolute_id.as_str(),
+            "../escaped",
+            "nested/escaped",
+            r"nested\escaped",
+            "..",
+            ".",
+            "",
+        ];
+
+        for id in unsafe_ids {
+            let session = Session::with_id(id, None);
+            mgr.save(&session)
+                .await
+                .expect_err("unsafe session id must not save");
+            mgr.load(id)
+                .await
+                .expect_err("unsafe session id must not load");
+            mgr.delete(id)
+                .await
+                .expect_err("unsafe session id must not delete");
+        }
+
+        assert!(!tmp.path().join("escaped.json").exists());
+        assert!(!sessions_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn update_session_record_bumps_version_and_keeps_other_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        let mut session = Session::with_id("record", None);
+        session.add_message("user", "hello");
+        mgr.save(&session).await.unwrap();
+
+        let updated = mgr
+            .update_session_record("record", |s| {
+                s.permission_override = Some(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Yolo,
+                    effective_mode: crate::sandbox::EffectiveMode::Yolo,
+                });
+            })
+            .await
+            .unwrap()
+            .expect("session must exist");
+
+        assert_eq!(updated.version, 1, "persisted write must bump version");
+        assert_eq!(
+            updated.messages.len(),
+            1,
+            "targeted field update must not drop existing fields"
+        );
+        assert!(updated.permission_override.is_some());
+
+        // Disk must agree with the returned snapshot.
+        let restarted = SessionManager::with_dir(tmp.path().to_path_buf());
+        let on_disk = restarted.load("record").await.unwrap().unwrap();
+        assert_eq!(on_disk.version, 1);
+        assert!(on_disk.permission_override.is_some());
+    }
+
+    #[tokio::test]
+    async fn update_session_record_returns_none_for_missing_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        let updated = mgr
+            .update_session_record("ghost", |s| {
+                s.name = "renamed".to_string();
+            })
+            .await
+            .unwrap();
+        assert!(updated.is_none(), "missing session must not be created");
+        assert!(mgr.load("ghost").await.unwrap().is_none());
+    }
+
+    /// Whole-record writers (permission POST vs run save) previously raced as
+    /// read-full-record → mutate → save-full-record, each overwriting the
+    /// other's fields. `update_session_record` must serialize mutation AND
+    /// persistence under one lock so interleaved writers never lose data.
+    #[tokio::test]
+    async fn concurrent_record_updates_never_lose_either_writer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        mgr.save(&Session::with_id("race", None)).await.unwrap();
+
+        const N: usize = 50;
+        let saver = {
+            let mgr = mgr.clone();
+            tokio::spawn(async move {
+                for i in 0..N {
+                    mgr.update_session_record("race", |s| {
+                        s.add_message("assistant", &format!("message-{i}"));
+                    })
+                    .await
+                    .unwrap()
+                    .expect("session exists");
+                }
+            })
+        };
+        let setter = {
+            let mgr = mgr.clone();
+            tokio::spawn(async move {
+                for i in 0..N {
+                    mgr.update_session_record("race", |s| {
+                        s.permission_override = Some(crate::permissions::PermissionModeEntry {
+                            root_mode: if i % 2 == 0 {
+                                crate::config::RootPermissionMode::Yolo
+                            } else {
+                                crate::config::RootPermissionMode::Normal
+                            },
+                            effective_mode: if i % 2 == 0 {
+                                crate::sandbox::EffectiveMode::Yolo
+                            } else {
+                                crate::sandbox::EffectiveMode::Normal
+                            },
+                        });
+                    })
+                    .await
+                    .unwrap()
+                    .expect("session exists");
+                }
+            })
+        };
+        saver.await.unwrap();
+        setter.await.unwrap();
+
+        let final_session = mgr.load("race").await.unwrap().unwrap();
+        assert_eq!(
+            final_session.messages.len(),
+            N,
+            "every run-save write must survive the interleaved permission writes"
+        );
+        assert!(
+            final_session.permission_override.is_some(),
+            "the permission override must survive the interleaved message saves"
+        );
+        assert_eq!(
+            final_session.version,
+            (2 * N) as u64,
+            "each of the {N}+{N} persisted writes must have bumped the version exactly once"
         );
     }
 }

@@ -32,6 +32,95 @@ fn tasktool_without_resolver_falls_back_to_global() {
     );
 }
 
+#[test]
+fn tasktool_permission_resolver_overrides_project_store() {
+    // Session A overrides Yolo while the project store says AcceptEdits: the
+    // subagent permission snapshot must follow the session chain, not the
+    // project-level entry (spec: A executes yolo, B executes accept_edits).
+    let project_root = std::path::PathBuf::from("/projects/alpha");
+    let store = crate::permissions::PermissionModeStore::new();
+    store.set(
+        project_root.clone(),
+        crate::config::RootPermissionMode::AcceptEdits,
+        crate::sandbox::EffectiveMode::AcceptEdits,
+    );
+    let tool = task_tool_with_coordinator(4, 3)
+        .with_permission_modes(store)
+        .with_session_permission_resolver(Arc::new(|session_id: &str| {
+            if session_id == "session-a" {
+                crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Yolo,
+                    effective_mode: crate::sandbox::EffectiveMode::Yolo,
+                }
+            } else {
+                crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::AcceptEdits,
+                    effective_mode: crate::sandbox::EffectiveMode::AcceptEdits,
+                }
+            }
+        }));
+
+    let ctx_a = tool.build_permission_context(
+        "agent-a",
+        "session-a",
+        &Settings::default(),
+        Some(project_root.as_path()),
+    );
+    assert_eq!(
+        ctx_a.root_mode,
+        crate::config::RootPermissionMode::Yolo,
+        "session-a's override must win over the project store entry"
+    );
+    assert_eq!(ctx_a.effective_mode, crate::sandbox::EffectiveMode::Yolo);
+
+    let ctx_b = tool.build_permission_context(
+        "agent-b",
+        "session-b",
+        &Settings::default(),
+        Some(project_root.as_path()),
+    );
+    assert_eq!(
+        ctx_b.root_mode,
+        crate::config::RootPermissionMode::AcceptEdits
+    );
+    assert_eq!(
+        ctx_b.effective_mode,
+        crate::sandbox::EffectiveMode::AcceptEdits
+    );
+}
+
+#[test]
+fn tasktool_permission_without_resolver_falls_back_to_project_store() {
+    let project_root = std::path::PathBuf::from("/projects/alpha");
+    let store = crate::permissions::PermissionModeStore::new();
+    store.set(
+        project_root.clone(),
+        crate::config::RootPermissionMode::AcceptEdits,
+        crate::sandbox::EffectiveMode::AcceptEdits,
+    );
+    let tool = task_tool_with_coordinator(4, 3).with_permission_modes(store);
+
+    let ctx = tool.build_permission_context(
+        "agent-a",
+        "session-a",
+        &Settings::default(),
+        Some(project_root.as_path()),
+    );
+    assert_eq!(
+        ctx.root_mode,
+        crate::config::RootPermissionMode::AcceptEdits,
+        "without a resolver the per-project store entry must keep working"
+    );
+
+    let no_workdir =
+        tool.build_permission_context("agent-a", "session-a", &Settings::default(), None);
+    assert_eq!(
+        no_workdir.root_mode,
+        crate::config::RootPermissionMode::Normal,
+        "no resolver + no workdir defaults to Normal"
+    );
+}
+
 /// Build the builtin registry contract for `node_type` under the given
 /// `explore_readonly` setting, mirroring the production contract-build path.
 /// The coordinator and task.rs read the same registry, so no-regression tests
