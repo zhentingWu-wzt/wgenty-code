@@ -165,6 +165,8 @@ fn migrate_unknown_host_uses_host_as_group_name() {
 
 ### Task 3: key 解析链 + endpoint 合成 + 跨厂商 tier 归并
 
+- [x] Task 3: key 解析链 + endpoint 合成 + 跨厂商 tier 归并
+
 **Files:**
 - Modify: `src/config/models.rs`
 - Test: `src/config/tests.rs`
@@ -174,7 +176,7 @@ fn migrate_unknown_host_uses_host_as_group_name() {
 - Produces: `pub fn provider_env_key(vendor: &str) -> Option<String>`（kimi→KIMI_API_KEY、zhipu→ZHIPU_API_KEY、deepseek→DEEPSEEK_API_KEY、anthropic→ANTHROPIC_API_KEY、openai→OPENAI_API_KEY）
 - Produces: `endpoint_for_tier` 重写：遍历 providers 全部模型，`(provider_key, model_name)` 字典序取首
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```rust
 #[test]
@@ -199,13 +201,13 @@ fn endpoint_for_tier_migration_preserves_choice() {
 }
 ```
 
-- [ ] **Step 2: 验证失败** — Run: `cargo test resolve_endpoint --lib; cargo test endpoint_for_tier --lib`，Expected: FAIL
+- [x] **Step 2: 验证失败** — Run: `cargo test resolve_endpoint --lib; cargo test endpoint_for_tier --lib`，Expected: FAIL
 
-- [ ] **Step 3: 实现三个函数**（`endpoint_api_key`/`endpoint_base_url` 现有方法保留为 `main` 专用；`resolve_endpoint` 是 providers 结构的解析入口）。`endpoint_for_tier`：`(providers 与 legacy small 迁移产物) 全模型收集 → filter tier → sort by (provider_key, model) → first → resolve_endpoint`；无匹配 → `main.clone()`。
+- [x] **Step 3: 实现三个函数**（`endpoint_api_key`/`endpoint_base_url` 现有方法保留为 `main` 专用；`resolve_endpoint` 是 providers 结构的解析入口）。`endpoint_for_tier`：`(providers 与 legacy small 迁移产物) 全模型收集 → filter tier → sort by (provider_key, model) → first → resolve_endpoint`；无匹配 → `main.clone()`。
 
-- [ ] **Step 4: 验证通过** — Run: `cargo test -p wgenty-code --lib config:: 2>&1 | tail -3`，Expected: all pass
+- [x] **Step 4: 验证通过** — Run: `cargo test -p wgenty-code --lib config:: 2>&1 | tail -3`，Expected: all pass
 
-- [ ] **Step 5: Commit** — `feat(config): resolve_endpoint + env key chain + cross-provider tier routing`
+- [x] **Step 5: Commit** — `feat(config): resolve_endpoint + env key chain + cross-provider tier routing`
 
 ---
 
