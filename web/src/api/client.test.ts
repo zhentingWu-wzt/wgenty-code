@@ -87,12 +87,99 @@ describe("DaemonClient permission-mode endpoints", () => {
   });
 
   it("setPermissionMode POSTs mode + session_id", async () => {
-    const spy = mockFetch({ success: true, mode: "yolo", effective_mode: "yolo" });
+    const spy = mockFetch({
+      success: true,
+      mode: "yolo",
+      effective_mode: "yolo",
+      is_override: true,
+    });
     await client.setPermissionMode("s1", "yolo");
     const [url, init] = apiCall(spy);
     expect(url).toBe("/api/v1/permission-mode");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({ mode: "yolo", session_id: "s1" });
+  });
+
+  it("resetSessionMode POSTs reset without a dummy mode", async () => {
+    const spy = mockFetch({
+      success: true,
+      session_id: "s1",
+      mode: "normal",
+      effective_mode: "normal",
+      reset: true,
+      is_override: false,
+    });
+    await client.resetSessionMode("s1");
+    const [url, init] = apiCall(spy);
+    expect(url).toBe("/api/v1/permission-mode");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ session_id: "s1", reset: true });
+  });
+});
+
+describe("DaemonClient v2 model endpoints", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const client = new DaemonClient();
+  const response = {
+    providers: [
+      {
+        key: "zhipu",
+        display_name: "Zhipu AI",
+        protocol: "openai",
+        models: [{ name: "glm-5.3", tier: "heavy", configured: true, active: true }],
+      },
+    ],
+    is_override: false,
+  };
+
+  it("listModels GETs the global v2 catalog", async () => {
+    const spy = mockFetch(response);
+    const result = await client.listModels();
+    expect(apiCall(spy)[0]).toBe("/api/v1/models");
+    expect(result.providers[0].models[0].name).toBe("glm-5.3");
+  });
+
+  it("listModels encodes the optional session_id", async () => {
+    const spy = mockFetch({ ...response, is_override: true });
+    await client.listModels("session /1");
+    expect(apiCall(spy)[0]).toBe(`/api/v1/models?session_id=${encodeURIComponent("session /1")}`);
+  });
+
+  it("switchModel keeps global switches provider/model scoped", async () => {
+    const spy = mockFetch({
+      success: true,
+      label: "Zhipu AI/glm-5.3",
+      model_name: "glm-5.3",
+      provider: "zhipu",
+    });
+    await client.switchModel({ provider: "zhipu", model: "glm-5.3" });
+    const [url, init] = apiCall(spy);
+    expect(url).toBe("/api/v1/model/switch");
+    expect(JSON.parse(init.body as string)).toEqual({ provider: "zhipu", model: "glm-5.3" });
+  });
+
+  it("switchModel maps sessionId to the daemon session_id field", async () => {
+    const spy = mockFetch({
+      success: true,
+      label: "Zhipu AI/glm-5.3",
+      model_name: "glm-5.3",
+      provider: "zhipu",
+    });
+    await client.switchModel({ provider: "zhipu", model: "glm-5.3", sessionId: "s1" });
+    expect(JSON.parse(apiCall(spy)[1].body as string)).toEqual({
+      provider: "zhipu",
+      model: "glm-5.3",
+      session_id: "s1",
+    });
+  });
+
+  it("resetSessionModel POSTs only the target session_id", async () => {
+    const spy = mockFetch({ success: true, session_id: "s1" });
+    await client.resetSessionModel("s1");
+    const [url, init] = apiCall(spy);
+    expect(url).toBe("/api/v1/model/reset");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ session_id: "s1" });
   });
 });
 

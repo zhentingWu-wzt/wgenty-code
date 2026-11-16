@@ -1,22 +1,26 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useSessionManager } from "./sessionManager";
 
-describe("sessionManager", () => {
-  beforeEach(() => {
-    useSessionManager.setState({
-      entries: {},
-      order: [],
-      activeId: null,
-      connection: "unknown",
-      modelName: null,
-    });
+function resetManager() {
+  useSessionManager.setState({
+    entries: {},
+    order: [],
+    activeId: null,
+    connection: "unknown",
+    contextWindow: null,
   });
+}
+
+describe("sessionManager", () => {
+  beforeEach(resetManager);
 
   it("createLocalSession registers an idle entry and makes it active", () => {
     const id = useSessionManager.getState().createLocalSession("test");
     const s = useSessionManager.getState();
     expect(s.entries[id].status).toBe("idle");
     expect(s.entries[id].store).toBeDefined();
+    expect(s.entries[id].model).toBeNull();
+    expect(s.entries[id].mode).toBeNull();
     expect(s.activeId).toBe(id);
     expect(s.order).toContain(id);
   });
@@ -24,7 +28,7 @@ describe("sessionManager", () => {
   it("entries have independent stores", () => {
     const a = useSessionManager.getState().createLocalSession("a");
     const b = useSessionManager.getState().createLocalSession("b");
-    const entries = useSessionManager.getState().entries; // 重新取最新 state
+    const entries = useSessionManager.getState().entries;
     entries[a].store.getState().pushUserMessage("hi");
     expect(entries[b].store.getState().messages).toHaveLength(0);
   });
@@ -53,16 +57,100 @@ describe("sessionManager", () => {
   });
 });
 
-describe("sessionManager worktree binding", () => {
-  beforeEach(() => {
-    useSessionManager.setState({
-      entries: {},
-      order: [],
-      activeId: null,
-      connection: "unknown",
-      modelName: null,
+describe("sessionManager model and mode state", () => {
+  beforeEach(resetManager);
+
+  it("routes session events by daemon id and resets only that entry", () => {
+    const m = useSessionManager.getState();
+    const a = m.createLocalSession("a", {
+      id: "local-a",
+      daemonId: "daemon-a",
+      projectPath: "/repo",
+      activate: false,
+    });
+    const b = m.createLocalSession("b", {
+      id: "local-b",
+      daemonId: "daemon-b",
+      projectPath: "/repo",
+      activate: false,
+    });
+    m.setSessionModel(b, { provider: "kimi", model: "k2", isOverride: false });
+    m.setSessionMode(b, { mode: "normal", isOverride: false });
+
+    m.applyModelChanged({
+      session_id: "daemon-a",
+      provider: "zhipu",
+      model_name: "glm-5.3",
+    });
+    m.applyModeChanged({ session_id: "daemon-a", mode: "yolo" });
+
+    let entries = useSessionManager.getState().entries;
+    expect(entries[a].model).toEqual({ provider: "zhipu", model: "glm-5.3", isOverride: true });
+    expect(entries[a].mode).toEqual({ mode: "yolo", isOverride: true });
+    expect(entries[b].model).toEqual({ provider: "kimi", model: "k2", isOverride: false });
+    expect(entries[b].mode).toEqual({ mode: "normal", isOverride: false });
+
+    m.applyModelChanged({
+      session_id: "daemon-a",
+      provider: "kimi",
+      model_name: "k2",
+      reset: true,
+    });
+    m.applyModeChanged({
+      session_id: "daemon-a",
+      mode: "accept_edits",
+      reset: true,
+    });
+
+    entries = useSessionManager.getState().entries;
+    expect(entries[a].model).toEqual({ provider: "kimi", model: "k2", isOverride: false });
+    expect(entries[a].mode).toEqual({ mode: "accept_edits", isOverride: false });
+    expect(entries[b].model).toEqual({ provider: "kimi", model: "k2", isOverride: false });
+    expect(entries[b].mode).toEqual({ mode: "normal", isOverride: false });
+  });
+
+  it("routes events by local id before a daemon id is assigned", () => {
+    const m = useSessionManager.getState();
+    const id = m.createLocalSession("local", { id: "web-local", activate: false });
+    m.applyModelChanged({ session_id: "web-local", provider: "kimi", model_name: "k3" });
+    m.applyModeChanged({ session_id: "web-local", mode: "accept_edits" });
+    const entry = useSessionManager.getState().entries[id];
+    expect(entry.model).toEqual({ provider: "kimi", model: "k3", isOverride: true });
+    expect(entry.mode).toEqual({ mode: "accept_edits", isOverride: true });
+  });
+
+  it("updates unoverridden entries on a global model change without clearing overrides", () => {
+    const m = useSessionManager.getState();
+    const overridden = m.createLocalSession("a", { activate: false });
+    const following = m.createLocalSession("b", { activate: false });
+    m.setSessionModel(overridden, { provider: "zhipu", model: "glm-5.2", isOverride: true });
+    m.setSessionModel(following, { provider: "kimi", model: "k2", isOverride: false });
+
+    m.applyModelChanged({ provider: "anthropic", model_name: "claude-sonnet-4-5" });
+
+    const entries = useSessionManager.getState().entries;
+    expect(entries[overridden].model).toEqual({
+      provider: "zhipu",
+      model: "glm-5.2",
+      isOverride: true,
+    });
+    expect(entries[following].model).toEqual({
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      isOverride: false,
     });
   });
+
+  it("leaves unsynchronized entries unknown on a global model change", () => {
+    const m = useSessionManager.getState();
+    const id = m.createLocalSession("new", { activate: false });
+    m.applyModelChanged({ provider: "anthropic", model_name: "claude-sonnet-4-5" });
+    expect(useSessionManager.getState().entries[id].model).toBeNull();
+  });
+});
+
+describe("sessionManager worktree binding", () => {
+  beforeEach(resetManager);
 
   it("createLocalSession accepts explicit id and worktree", () => {
     const id = useSessionManager.getState().createLocalSession("bound", {

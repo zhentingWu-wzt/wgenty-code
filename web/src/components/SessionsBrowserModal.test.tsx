@@ -59,7 +59,6 @@ describe("SessionsBrowserModal", () => {
       order: [],
       activeId: null,
       connection: "unknown",
-      modelName: null,
     });
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -119,7 +118,6 @@ describe("SessionsBrowserModal archive view", () => {
       order: [],
       activeId: null,
       connection: "unknown",
-      modelName: null,
     });
   });
   afterEach(() => vi.unstubAllGlobals());

@@ -25,7 +25,8 @@ import type {
   FsEntries,
   GetTodosResponse,
   HealthResponse,
-  ListModelsResponse,
+  ProvidersResponse,
+  ResetSessionModelResponse,
   ListPendingPermissionsResponse,
   ListTasksResponse,
   LocalAgentViewResponse,
@@ -274,6 +275,16 @@ export class DaemonClient {
     );
   }
 
+  async resetSessionMode(sessionId: string): Promise<PermissionModeResponse> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/permission-mode`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, reset: true }),
+      }),
+    );
+  }
+
   // ── Tools ──────────────────────────────────────────────────────────────────
 
   async executeTool(req: ExecuteToolRequest): Promise<ExecuteToolResponse> {
@@ -337,8 +348,9 @@ export class DaemonClient {
 
   // ── Models ─────────────────────────────────────────────────────────────────
 
-  async listModels(): Promise<ListModelsResponse> {
-    return jsonOrThrow(await this.authedFetch(`${this.base}/models`));
+  async listModels(sessionId?: string): Promise<ProvidersResponse> {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return jsonOrThrow(await this.authedFetch(`${this.base}/models${query}`));
   }
 
   async switchModel(req: SwitchModelRequest): Promise<SwitchModelResponse> {
@@ -346,7 +358,21 @@ export class DaemonClient {
       await this.authedFetch(`${this.base}/model/switch`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(req),
+        body: JSON.stringify({
+          provider: req.provider,
+          model: req.model,
+          ...(req.sessionId ? { session_id: req.sessionId } : {}),
+        }),
+      }),
+    );
+  }
+
+  async resetSessionModel(sessionId: string): Promise<ResetSessionModelResponse> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/model/reset`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
       }),
     );
   }
@@ -571,7 +597,9 @@ export class DaemonClient {
    *  children, each with a fresh navigation capability). */
   async getAgentSelf(sessionId: string): Promise<LocalAgentViewResponse> {
     return jsonOrThrow(
-      await this.scopedFetch(`${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`),
+      await this.scopedFetch(
+        `${this.base}/agents/self?session_id=${encodeURIComponent(sessionId)}`,
+      ),
     );
   }
 
@@ -779,9 +807,7 @@ export class DaemonClient {
 
   /** POST /skills/reload — force a daemon-side rescan of skill directories. */
   async reloadSkills(): Promise<ReloadSkillsResponse> {
-    return jsonOrThrow(
-      await this.authedFetch(`${this.base}/skills/reload`, { method: "POST" }),
-    );
+    return jsonOrThrow(await this.authedFetch(`${this.base}/skills/reload`, { method: "POST" }));
   }
 
   // ── MCP servers ────────────────────────────────────────────────────────────

@@ -66,7 +66,6 @@ function reset() {
     order: [],
     activeId: null,
     connection: "unknown",
-    modelName: null,
   });
 }
 

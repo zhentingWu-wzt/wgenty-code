@@ -118,6 +118,10 @@ export type PermissionMode = "normal" | "accept_edits" | "yolo";
 export interface PermissionModeResponse {
   mode: PermissionMode;
   effective_mode: string;
+  is_override: boolean;
+  success?: boolean;
+  session_id?: string;
+  reset?: boolean;
 }
 
 // ── Todos / Tasks ────────────────────────────────────────────────────────────
@@ -412,29 +416,42 @@ export type PermissionDecision = "allowOnce" | "alwaysAllow" | "deny";
 
 // ── Models ───────────────────────────────────────────────────────────────────
 
-export interface ModelOption {
-  key: string;
-  label: string;
-  model_name: string;
-  provider?: string;
-  tier?: "light" | "medium" | "heavy";
+export interface ProviderModelInfo {
+  name: string;
+  tier?: "light" | "medium" | "heavy" | null;
+  configured: boolean;
   active: boolean;
 }
 
-export interface ListModelsResponse {
-  profiles: ModelOption[];
+export interface ProviderGroupInfo {
+  key: string;
+  display_name: string;
+  protocol: string | null;
+  models: ProviderModelInfo[];
 }
 
+export interface ProvidersResponse {
+  providers: ProviderGroupInfo[];
+  is_override: boolean;
+}
+
+/** Client input; DaemonClient maps `sessionId` to the wire's `session_id`. */
 export interface SwitchModelRequest {
-  profile: string;
+  provider: string;
+  model: string;
+  sessionId?: string;
 }
 
 export interface SwitchModelResponse {
   success: boolean;
-  profile: string;
   label: string;
   model_name: string;
   provider?: string;
+}
+
+export interface ResetSessionModelResponse {
+  success: boolean;
+  session_id: string;
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────────

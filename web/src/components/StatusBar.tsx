@@ -21,9 +21,12 @@ interface StatusBarProps {
  *  轮次 phase（spinner/文案/耗时）在输入框上方的 TurnStatus 条，不在这里。 */
 export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const connection = useSessionManager((s) => s.connection);
-  const modelName = useSessionManager((s) => s.modelName);
-  const permissionMode = useSessionManager((s) => s.permissionMode);
-  const setPermissionMode = useSessionManager((s) => s.setPermissionMode);
+  const modelName = useSessionManager((s) =>
+    s.activeId ? (s.entries[s.activeId]?.model?.model ?? null) : null,
+  );
+  const permissionMode = useSessionManager((s) =>
+    s.activeId ? (s.entries[s.activeId]?.mode?.mode ?? null) : null,
+  );
   const contextWindow = useSessionManager((s) => s.contextWindow);
   const activeStore = useSessionManager((s) =>
     s.activeId ? (s.entries[s.activeId]?.store ?? null) : null,
@@ -76,11 +79,12 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
     // 按活跃会话路由：已落地 daemon 的用 daemonId，否则用本地 id（daemon
     // 对未知 id 回退 main working root，等同改动前的 "default"）。
     const sm = useSessionManager.getState();
-    const sid = sm.activeId ? (sm.entries[sm.activeId]?.daemonId ?? sm.activeId) : null;
-    if (!sid) return;
+    const activeId = sm.activeId;
+    const sid = activeId ? (sm.entries[activeId]?.daemonId ?? activeId) : null;
+    if (!activeId || !sid) return;
     try {
       const res = await client.setPermissionMode(sid, m);
-      setPermissionMode(res.mode);
+      sm.setSessionMode(activeId, { mode: res.mode, isOverride: res.is_override === true });
     } catch {
       // Non-fatal: keep the previous mode.
     }

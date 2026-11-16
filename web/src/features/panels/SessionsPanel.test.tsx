@@ -59,7 +59,6 @@ function resetStores() {
     order: [],
     activeId: null,
     connection: "unknown",
-    modelName: null,
   });
   useUiStore.setState({ rightPanel: "sessions" });
 }

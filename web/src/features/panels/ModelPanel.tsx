@@ -1,17 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { DaemonClient } from "../../api/client";
-import type { ModelOption } from "../../api/types";
 import { useSessionManager } from "../../state/sessionManager";
 import { cn } from "../../lib/utils";
 
-/** Model profile picker via `GET /api/v1/models` + `POST /api/v1/model/switch`.
- *  Rendered inside the `/model` command modal. */
+interface ModelOption {
+  key: string;
+  provider: string;
+  label: string;
+  model_name: string;
+  tier?: "light" | "medium" | "heavy" | null;
+  active: boolean;
+}
+
+/** Global model picker via the v2 provider-grouped catalog. Session-scoped
+ *  selection is handled by the active-session controls, not this modal. */
 export function ModelPanel({ client }: { client: DaemonClient }) {
   const [models, setModels] = useState<ModelOption[]>([]);
-  // Distinguishes "fetch in flight" from "loaded, zero profiles declared" —
-  // an empty list must show the configure hint, not a forever "Loading".
   const [loading, setLoading] = useState(true);
-  const setModelName = useSessionManager((s) => s.setModelName);
+  const applyModelChanged = useSessionManager((s) => s.applyModelChanged);
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,7 +25,18 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
     client
       .listModels()
       .then((res) => {
-        setModels(res.profiles);
+        setModels(
+          res.providers.flatMap((group) =>
+            group.models.map((model) => ({
+              key: `${group.key}/${model.name}`,
+              provider: group.key,
+              label: group.display_name,
+              model_name: model.name,
+              tier: model.tier,
+              active: model.active,
+            })),
+          ),
+        );
         setError(null);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
@@ -28,13 +45,15 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
 
   useEffect(refresh, [refresh]);
 
-  const onSwitch = async (key: string) => {
-    setSwitching(key);
+  const onSwitch = async (option: ModelOption) => {
+    setSwitching(option.key);
     setError(null);
     try {
-      const res = await client.switchModel({ profile: key });
-      setModelName(res.model_name);
-      // Refresh so the `active` marker updates.
+      const res = await client.switchModel({
+        provider: option.provider,
+        model: option.model_name,
+      });
+      applyModelChanged({ provider: res.provider ?? option.provider, model_name: res.model_name });
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -50,21 +69,20 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
     if (loading) {
       return <div className="p-2 text-[12px] text-muted-foreground">Loading models…</div>;
     }
-    // Loaded but `models.profiles` is empty — mirror the TUI picker's hint so
-    // the modal explains itself instead of spinning forever.
     return (
       <div className="flex flex-col gap-2 p-2 text-[12px] text-muted-foreground">
         <div>
-          No model profiles configured. Add{" "}
-          <span className="font-mono text-foreground">models.profiles</span> in{" "}
+          No models configured. Add{" "}
+          <span className="font-mono text-foreground">models.providers</span> in{" "}
           <span className="font-mono text-foreground">~/.wgenty-code/settings.json</span> to enable
           switching, e.g.:
         </div>
         <pre className="overflow-x-auto rounded-md border border-border bg-background p-2 font-mono text-[11px] text-foreground">{`"models": {
-  "profiles": {
-    "glm":  { "name": "glm-5.3",  "display_name": "GLM 5.3",
-              "base_url": "https://…", "provider": "openai" },
-    "fast": { "name": "deepseek-chat", "tier": "light" }
+  "providers": {
+    "zhipu": {
+      "base_url": "https://…",
+      "models": [{ "name": "glm-5.3" }]
+    }
   }
 }`}</pre>
       </div>
@@ -86,7 +104,7 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
             <button
               type="button"
               className="flex w-full flex-col gap-0.5 bg-background px-2.5 py-1.5 text-left hover:enabled:bg-accent disabled:opacity-85"
-              onClick={() => onSwitch(m.key)}
+              onClick={() => onSwitch(m)}
               disabled={m.active || switching !== null}
             >
               <span className="flex items-center gap-1.5 text-[13px] font-medium">

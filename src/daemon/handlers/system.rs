@@ -167,9 +167,19 @@ pub async fn list_models(
             models,
         });
     }
+    let is_override = match params.session_id.as_deref() {
+        Some(session_id) => state
+            .resolve_session(session_id)
+            .await
+            .is_some_and(|(_, session)| session.model_override.is_some()),
+        None => false,
+    };
     // Stable ordering for a predictable picker.
     providers.sort_by(|a, b| a.key.cmp(&b.key));
-    Json(ListModelsResponse { providers })
+    Json(ListModelsResponse {
+        providers,
+        is_override,
+    })
 }
 
 /// Serialize a [`crate::config::models::ModelTier`] for the picker payload.

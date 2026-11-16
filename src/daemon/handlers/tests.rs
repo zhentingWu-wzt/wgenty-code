@@ -1808,8 +1808,9 @@ async fn set_permission_mode_scopes_override_to_session() {
     let _ = set_permission_mode(
         State(state.clone()),
         Json(crate::daemon::models::SetPermissionModeRequest {
-            mode: crate::config::RootPermissionMode::Yolo,
+            mode: Some(crate::config::RootPermissionMode::Yolo),
             effective_mode: None,
+            reset: false,
             session_id: Some("session-a".to_string()),
         }),
     )
@@ -1853,8 +1854,9 @@ async fn set_permission_mode_normalizes_plan_before_session_save() {
     let _ = set_permission_mode(
         State(state.clone()),
         Json(crate::daemon::models::SetPermissionModeRequest {
-            mode: crate::config::RootPermissionMode::Normal,
+            mode: Some(crate::config::RootPermissionMode::Normal),
             effective_mode: Some(crate::sandbox::EffectiveMode::Plan),
+            reset: false,
             session_id: Some("session-a".to_string()),
         }),
     )
@@ -1884,8 +1886,9 @@ async fn set_permission_mode_rejects_unsafe_session_id_without_writing() {
     let result = set_permission_mode(
         State(state),
         Json(crate::daemon::models::SetPermissionModeRequest {
-            mode: crate::config::RootPermissionMode::Yolo,
+            mode: Some(crate::config::RootPermissionMode::Yolo),
             effective_mode: None,
+            reset: false,
             session_id: Some(session_id),
         }),
     )
@@ -1912,8 +1915,9 @@ async fn set_permission_mode_bumps_session_version_and_keeps_messages() {
     let _ = set_permission_mode(
         State(state.clone()),
         Json(crate::daemon::models::SetPermissionModeRequest {
-            mode: crate::config::RootPermissionMode::Yolo,
+            mode: Some(crate::config::RootPermissionMode::Yolo),
             effective_mode: None,
+            reset: false,
             session_id: Some("session-a".to_string()),
         }),
     )
@@ -1960,8 +1964,9 @@ async fn set_permission_mode_broadcasts_mode_changed() {
     let Json(resp) = set_permission_mode(
         State(state.clone()),
         Json(crate::daemon::models::SetPermissionModeRequest {
-            mode: crate::config::agent::RootPermissionMode::Yolo,
+            mode: Some(crate::config::agent::RootPermissionMode::Yolo),
             effective_mode: None,
+            reset: false,
             session_id: Some("s1".to_string()),
         }),
     )
@@ -1988,6 +1993,242 @@ async fn set_permission_mode_broadcasts_mode_changed() {
     assert_eq!(assertions.1, "s1");
     assert_eq!(assertions.2, "yolo");
     assert_eq!(assertions.3, "yolo");
+}
+
+fn permission_request_from_json(
+    value: serde_json::Value,
+) -> crate::daemon::models::SetPermissionModeRequest {
+    let parsed = serde_json::from_value(value);
+    assert!(
+        parsed.is_ok(),
+        "permission request must deserialize: {:?}",
+        parsed.err()
+    );
+    parsed.unwrap()
+}
+
+#[tokio::test]
+async fn permission_mode_reset_restores_fallback_without_touching_other_sessions() {
+    let mut state = global_event_test_state().await;
+    state.permission_modes = crate::permissions::PermissionModeStore::new();
+    let root = state.effective_session_root("session-a").await;
+    state.permission_modes.set(
+        root.clone(),
+        crate::config::RootPermissionMode::AcceptEdits,
+        crate::sandbox::EffectiveMode::AcceptEdits,
+    );
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-a", None)
+                .with_permission_override(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Yolo,
+                    effective_mode: crate::sandbox::EffectiveMode::Yolo,
+                }),
+        )
+        .await
+        .unwrap();
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-b", None)
+                .with_permission_override(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Normal,
+                    effective_mode: crate::sandbox::EffectiveMode::Normal,
+                }),
+        )
+        .await
+        .unwrap();
+    let state = Arc::new(state);
+    let mut rx = state.global_event_hub.subscribe();
+
+    let axum::Json(response) = set_permission_mode(
+        State(state.clone()),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": "session-a",
+            "reset": true,
+        }))),
+    )
+    .await
+    .expect("reset without a dummy mode succeeds");
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["session_id"], "session-a");
+    assert_eq!(response["mode"], "accept_edits");
+    assert_eq!(response["effective_mode"], "accept_edits");
+    assert_eq!(response["reset"], true);
+    let event = rx.recv().await.expect("mode reset event");
+    assert_eq!(
+        event.kind,
+        crate::daemon::global_events::GlobalEventKind::ModeChanged
+    );
+    assert_eq!(event.data["session_id"], "session-a");
+    assert_eq!(event.data["mode"], "accept_edits");
+    assert_eq!(event.data["effective_mode"], "accept_edits");
+    assert_eq!(event.data["reset"], true);
+
+    let session_a = state
+        .session_manager
+        .load("session-a")
+        .await
+        .unwrap()
+        .unwrap();
+    let session_b = state
+        .session_manager
+        .load("session-b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(session_a.permission_override.is_none());
+    assert_eq!(
+        session_b.permission_override.unwrap().root_mode,
+        crate::config::RootPermissionMode::Normal
+    );
+    assert_eq!(
+        state.permission_modes.get(&root).root_mode,
+        crate::config::RootPermissionMode::AcceptEdits
+    );
+
+    let axum::Json(second) = set_permission_mode(
+        State(state.clone()),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": "session-a",
+            "reset": true,
+        }))),
+    )
+    .await
+    .expect("repeated reset is idempotent");
+    assert_eq!(second["mode"], "accept_edits");
+    assert!(state
+        .session_manager
+        .load("session-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .permission_override
+        .is_none());
+
+    let _ = set_permission_mode(
+        State(state.clone()),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": "unknown-session",
+            "reset": true,
+        }))),
+    )
+    .await
+    .expect("unknown session reset succeeds without creating a record");
+    assert!(state.resolve_session("unknown-session").await.is_none());
+}
+
+#[tokio::test]
+async fn permission_mode_set_still_requires_mode_when_reset_is_absent() {
+    let state = Arc::new(global_event_test_state().await);
+    let result = set_permission_mode(
+        State(state),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": "session-a",
+        }))),
+    )
+    .await;
+    let (status, body) = result.expect_err("a non-reset request requires mode");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body.0, serde_json::json!({"error": "mode required"}));
+}
+
+#[tokio::test]
+async fn permission_mode_reset_rejects_unsafe_session_id_without_writing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+    let session_id = temp.path().join("escaped").to_string_lossy().into_owned();
+
+    let result = set_permission_mode(
+        State(state),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": session_id,
+            "reset": true,
+        }))),
+    )
+    .await;
+    let (status, _) = result.expect_err("unsafe reset session id must be rejected");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!temp.path().join("escaped.json").exists());
+}
+
+#[tokio::test]
+async fn override_metadata_distinguishes_equal_values_from_no_override() {
+    use axum::extract::Query;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = Arc::new(
+        DaemonState::new(crate::state::AppState::new(provider_test_settings(
+            temp.path(),
+        )))
+        .await,
+    );
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-a", None)
+                .with_model_override(crate::config::models::ActiveModelRef {
+                    provider: "zhipu".to_string(),
+                    model: "glm-5.3".to_string(),
+                })
+                .with_permission_override(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Normal,
+                    effective_mode: crate::sandbox::EffectiveMode::Normal,
+                }),
+        )
+        .await
+        .unwrap();
+    state
+        .session_manager
+        .save(&crate::context::memory_session::Session::with_id(
+            "session-b",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    let mut model_flags = Vec::new();
+    for session_id in [None, Some("session-a"), Some("session-b")] {
+        let response = list_models(
+            State(state.clone()),
+            Query(ListModelsQuery {
+                session_id: session_id.map(str::to_string),
+            }),
+        )
+        .await;
+        model_flags.push(serde_json::to_value(response.0).unwrap()["is_override"].clone());
+    }
+    let mut permission_flags = Vec::new();
+    for session_id in ["session-a", "session-b"] {
+        let axum::Json(response) = get_permission_mode(
+            State(state.clone()),
+            Query(crate::daemon::models::PermissionModeQuery {
+                session_id: Some(session_id.to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+        permission_flags.push(response["is_override"].clone());
+    }
+
+    assert_eq!(
+        model_flags,
+        vec![
+            serde_json::json!(false),
+            serde_json::json!(true),
+            serde_json::json!(false)
+        ],
+        "model override metadata must come from the session record, not value equality"
+    );
+    assert_eq!(
+        permission_flags,
+        vec![serde_json::json!(true), serde_json::json!(false)],
+        "permission override metadata must come from the session record, not value equality"
+    );
 }
 
 /// Provider-grouped settings shared by the v2 `/models` suite: two vendors
@@ -2940,8 +3181,9 @@ async fn set_permission_mode_without_session_id_is_rejected() {
     let result = set_permission_mode(
         State(state),
         Json(crate::daemon::models::SetPermissionModeRequest {
-            mode: crate::config::agent::RootPermissionMode::Normal,
+            mode: Some(crate::config::agent::RootPermissionMode::Normal),
             effective_mode: None,
+            reset: false,
             session_id: None,
         }),
     )
@@ -2974,8 +3216,9 @@ async fn set_permission_mode_persists_across_daemon_restart() {
         let Json(resp) = set_permission_mode(
             State(state),
             Json(crate::daemon::models::SetPermissionModeRequest {
-                mode: crate::config::agent::RootPermissionMode::AcceptEdits,
+                mode: Some(crate::config::agent::RootPermissionMode::AcceptEdits),
                 effective_mode: None,
+                reset: false,
                 session_id: Some("s1".to_string()),
             }),
         )

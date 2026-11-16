@@ -58,7 +58,6 @@ export function App() {
   const [client] = useState(() => new DaemonClient());
 
   const setConnection = useSessionManager((s) => s.setConnection);
-  const setModelName = useSessionManager((s) => s.setModelName);
   const setContextWindow = useSessionManager((s) => s.setContextWindow);
   const activeId = useSessionManager((s) => s.activeId);
   const theme = useUiStore((s) => s.theme);
@@ -239,25 +238,23 @@ export function App() {
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
   usePermissionTrace(client);
 
-  // Keep the StatusBar's permission-mode label aligned with daemon truth:
-  // per-session on tab switch, re-fetch on daemon restart recovery, and live
-  // adoption of `mode_changed` broadcasts (TUI / other tabs).
+  // Keep each session's effective model/mode aligned with daemon truth on
+  // activation, reconnect, and targeted change broadcasts.
   usePermissionModeSync(client);
 
   // Observe daemon-initiated runs (subagent synthesis continuations) live —
   // otherwise web only renders turns it started itself.
   useContinuationObserver(client);
 
-  // A `/model` switch (from ANY client — web modal, TUI, CLI) can change the
-  // context window along with the name, so re-read /config on the broadcast
-  // instead of trusting the first-load snapshot forever.
+  // Model events update only their routed entry. A global switch can also
+  // change the context window, so refresh that app-level config value.
   useEffect(() => {
     return wsChannel.subscribeGlobal((ev) => {
       if (ev.kind !== "model_changed") return;
+      useSessionManager.getState().applyModelChanged(ev.data);
       client
         .getConfig()
         .then((cfg) => {
-          useSessionManager.getState().setModelName(cfg.model);
           useSessionManager.getState().setContextWindow(cfg.context_window);
         })
         .catch(() => {
@@ -274,8 +271,8 @@ export function App() {
   // ── Daemon health heartbeat (design D7.1) ──────────────────────────────────
   // Poll /health on a slow cadence so the status bar reflects daemon
   // death/recovery (was: one-shot probe that lied forever after a restart).
-  // Model name is read once on first connect.
-  const modelLoadedRef = useRef(false);
+  // The global context window is read once on first connect.
+  const configLoadedRef = useRef(false);
   // Dedupes the "Daemon disconnected" toast — the poll runs every 10s and
   // would otherwise re-toast on every failed tick while the daemon is down.
   const disconnectToastedRef = useRef(false);
@@ -285,10 +282,9 @@ export function App() {
         await client.health();
         setConnection("connected");
         disconnectToastedRef.current = false;
-        if (!modelLoadedRef.current) {
-          modelLoadedRef.current = true;
+        if (!configLoadedRef.current) {
+          configLoadedRef.current = true;
           const cfg = await client.getConfig();
-          setModelName(cfg.model);
           setContextWindow(cfg.context_window);
         }
       } catch {

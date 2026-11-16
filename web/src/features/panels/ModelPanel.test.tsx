@@ -8,42 +8,43 @@ import { useSessionManager } from "../../state/sessionManager";
 const client = new DaemonClient();
 
 interface ModelRouteOptions {
-  /** Profiles as key → model_name. */
-  profiles: Record<string, string>;
-  /** Which profile key is active ("" = none). Mutated on successful switch. */
-  active: { key: string };
-  /** When set, POST /model/switch responds 400 with this text. */
+  providers: Record<string, string[]>;
+  active: { provider: string; model: string };
   switchError?: string;
 }
 
-/** Stubbed global fetch: 404s `/__daemon-info` (so authedFetch falls back to
- *  the plain same-origin path) and serves `/api/v1/models` + `/model/switch`,
- *  mirroring the daemon's behavior. */
 function stubModelsFetch(opts: ModelRouteOptions) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/__daemon-info") return new Response("not found", { status: 404 });
     if (url === "/api/v1/models") {
-      const payload = Object.entries(opts.profiles).map(([key, name]) => ({
-        key,
-        label: key.toUpperCase(),
-        model_name: name,
-        active: key === opts.active.key,
-      }));
-      return Response.json({ profiles: payload });
+      return Response.json({
+        providers: Object.entries(opts.providers).map(([key, models]) => ({
+          key,
+          display_name: key.toUpperCase(),
+          protocol: "openai",
+          models: models.map((name) => ({
+            name,
+            tier: null,
+            configured: true,
+            active: key === opts.active.provider && name === opts.active.model,
+          })),
+        })),
+        is_override: false,
+      });
     }
     if (url === "/api/v1/model/switch" && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { profile: string };
+      const body = JSON.parse(String(init.body)) as { provider: string; model: string };
       if (opts.switchError) return new Response(opts.switchError, { status: 400 });
-      if (!(body.profile in opts.profiles)) {
-        return new Response(`unknown model profile '${body.profile}'`, { status: 400 });
+      if (!opts.providers[body.provider]?.includes(body.model)) {
+        return new Response(`unknown model '${body.provider}/${body.model}'`, { status: 400 });
       }
-      opts.active.key = body.profile;
+      opts.active = { provider: body.provider, model: body.model };
       return Response.json({
         success: true,
-        profile: body.profile,
-        label: body.profile.toUpperCase(),
-        model_name: opts.profiles[body.profile],
+        label: `${body.provider.toUpperCase()}/${body.model}`,
+        model_name: body.model,
+        provider: body.provider,
       });
     }
     return new Response("not found", { status: 404 });
@@ -56,59 +57,88 @@ function resetStores() {
     order: [],
     activeId: null,
     connection: "unknown",
-    modelName: null,
+    contextWindow: null,
   });
+}
+
+function createActiveEntry() {
+  const id = useSessionManager.getState().createLocalSession("active");
+  useSessionManager.setState((state) => ({
+    entries: {
+      ...state.entries,
+      [id]: {
+        ...state.entries[id],
+        model: { provider: "zhipu", model: "glm-5.3", isOverride: false },
+      },
+    },
+  }));
+  return id;
 }
 
 describe("ModelPanel", () => {
   beforeEach(resetStores);
   afterEach(() => vi.unstubAllGlobals());
 
-  it("shows a configure hint (not a forever-loading state) when no profiles are declared", async () => {
-    vi.stubGlobal("fetch", stubModelsFetch({ profiles: {}, active: { key: "" } }));
+  it("shows a configure hint when no provider models are declared", async () => {
+    vi.stubGlobal("fetch", stubModelsFetch({ providers: {}, active: { provider: "", model: "" } }));
     render(<ModelPanel client={client} />);
 
-    expect(await screen.findByText(/No model profiles configured/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No models configured/i)).toBeInTheDocument();
     expect(screen.queryByText(/Loading models/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/models\.profiles/)).toBeInTheDocument();
+    expect(screen.getByText(/models\.providers/)).toBeInTheDocument();
   });
 
-  it("switches to a clicked profile and moves the active marker", async () => {
-    const opts = { profiles: { glm: "glm-5.3", fast: "deepseek-chat" }, active: { key: "glm" } };
+  it("uses provider/model for a global switch and updates unoverridden active state", async () => {
+    const id = createActiveEntry();
+    const opts = {
+      providers: { zhipu: ["glm-5.3"], deepseek: ["deepseek-chat"] },
+      active: { provider: "zhipu", model: "glm-5.3" },
+    };
     const spy = stubModelsFetch(opts);
     vi.stubGlobal("fetch", spy);
     render(<ModelPanel client={client} />);
 
-    await userEvent.setup().click(await screen.findByRole("button", { name: /FAST/ }));
+    await userEvent.setup().click(await screen.findByRole("button", { name: /DEEPSEEK/ }));
 
     const post = spy.mock.calls.find(
       (c) => String(c[0]) === "/api/v1/model/switch" && c[1]?.method === "POST",
     );
-    expect(JSON.parse(String(post![1]!.body))).toEqual({ profile: "fast" });
-    // Store updated for the status bar…
-    await waitFor(() => expect(useSessionManager.getState().modelName).toBe("deepseek-chat"));
-    // …and the refreshed list re-marks the switched profile as active.
+    expect(JSON.parse(String(post![1]!.body))).toEqual({
+      provider: "deepseek",
+      model: "deepseek-chat",
+    });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /FAST/ })).toHaveAttribute("disabled"),
+      expect(useSessionManager.getState().entries[id].model).toEqual({
+        provider: "deepseek",
+        model: "deepseek-chat",
+        isOverride: false,
+      }),
     );
-    expect(screen.getByRole("button", { name: /GLM/ })).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /DEEPSEEK/ })).toHaveAttribute("disabled"),
+    );
+    expect(screen.getByRole("button", { name: /ZHIPU/ })).toBeEnabled();
   });
 
-  it("surfaces the daemon's error when a switch fails", async () => {
+  it("surfaces the daemon error without changing session model state", async () => {
+    const id = createActiveEntry();
     vi.stubGlobal(
       "fetch",
       stubModelsFetch({
-        profiles: { glm: "glm-5.3", fast: "deepseek-chat" },
-        active: { key: "glm" },
-        switchError: "unknown model profile 'gone'",
+        providers: { zhipu: ["glm-5.3"], deepseek: ["deepseek-chat"] },
+        active: { provider: "zhipu", model: "glm-5.3" },
+        switchError: "unknown model 'deepseek/gone'",
       }),
     );
     render(<ModelPanel client={client} />);
 
-    await userEvent.setup().click(await screen.findByRole("button", { name: /FAST/ }));
+    await userEvent.setup().click(await screen.findByRole("button", { name: /DEEPSEEK/ }));
 
-    expect(await screen.findByText(/unknown model profile 'gone'/)).toBeInTheDocument();
-    // Failed switch must not touch the store.
-    expect(useSessionManager.getState().modelName).toBeNull();
+    expect(await screen.findByText(/unknown model 'deepseek\/gone'/)).toBeInTheDocument();
+    expect(useSessionManager.getState().entries[id].model).toEqual({
+      provider: "zhipu",
+      model: "glm-5.3",
+      isOverride: false,
+    });
   });
 });

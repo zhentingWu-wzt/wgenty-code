@@ -88,7 +88,6 @@ function reset() {
     order: [],
     activeId: null,
     connection: "unknown",
-    modelName: null,
   });
   wsTest.sessionHandlers.clear();
   wsTest.status = "open";

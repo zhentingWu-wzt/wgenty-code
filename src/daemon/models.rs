@@ -147,7 +147,9 @@ pub struct ResolveSubagentPermissionRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct SetPermissionModeRequest {
-    pub mode: RootPermissionMode,
+    /// Required unless `reset` clears the session override.
+    #[serde(default)]
+    pub mode: Option<RootPermissionMode>,
     /// Sandbox effective mode including Plan. When omitted, derived from `mode`.
     #[serde(default)]
     pub effective_mode: Option<crate::sandbox::EffectiveMode>,
@@ -155,6 +157,9 @@ pub struct SetPermissionModeRequest {
     /// server-side handler rejects requests without it (400, design §4).
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Clear only this session's override and return its resolved fallback.
+    #[serde(default)]
+    pub reset: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,6 +239,8 @@ pub struct ProviderGroupInfo {
 #[derive(Debug, Serialize)]
 pub struct ListModelsResponse {
     pub providers: Vec<ProviderGroupInfo>,
+    /// Whether the requested session has an explicit model override.
+    pub is_override: bool,
 }
 
 /// `POST /api/v1/model/reset` — clear a session's model override so it falls

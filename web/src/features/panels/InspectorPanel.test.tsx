@@ -38,7 +38,6 @@ describe("InspectorPanel TokensTab", () => {
       order: [],
       activeId: null,
       connection: "unknown",
-      modelName: null,
     });
   });
 

@@ -1,17 +1,25 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonClient } from "./api/client";
+import type { GlobalEvent } from "./api/types";
 import { useSessionManager } from "./state/sessionManager";
 import { useUiStore } from "./state/uiStore";
+
+const wsTest = vi.hoisted(() => ({
+  globalHandlers: new Set<(ev: GlobalEvent) => void>(),
+}));
 
 vi.mock("./api/wsChannel", () => ({
   wsChannel: {
     connect: () => {},
     status: () => "idle" as const,
     subscribeTrace: () => () => {},
-    subscribeGlobal: () => () => {},
+    subscribeGlobal: (handler: (ev: GlobalEvent) => void) => {
+      wsTest.globalHandlers.add(handler);
+      return () => wsTest.globalHandlers.delete(handler);
+    },
     subscribeSession: () => ({ unsubscribe: () => {} }),
     onReconnected: () => () => {},
   },
@@ -23,9 +31,7 @@ function resetStores() {
     order: [],
     activeId: null,
     connection: "unknown",
-    modelName: null,
     contextWindow: null,
-    permissionMode: null,
   });
   useUiStore.setState({
     openTabs: [],
@@ -34,6 +40,7 @@ function resetStores() {
     previewTabs: {},
     diffTabs: {},
   });
+  wsTest.globalHandlers.clear();
 }
 
 describe("App welcome screen", () => {
@@ -41,6 +48,14 @@ describe("App welcome screen", () => {
     vi.restoreAllMocks();
     resetStores();
     vi.spyOn(DaemonClient.prototype, "health").mockRejectedValue(new Error("offline"));
+    vi.spyOn(DaemonClient.prototype, "getConfig").mockResolvedValue({
+      model: "global-model",
+      api_base: "http://localhost",
+      max_tokens: 1000,
+      timeout: 60,
+      streaming: true,
+      context_window: 128000,
+    });
     vi.spyOn(DaemonClient.prototype, "traceReplay").mockRejectedValue(new Error("offline"));
     vi.spyOn(DaemonClient.prototype, "listPendingPermissions").mockRejectedValue(
       new Error("offline"),
@@ -147,5 +162,33 @@ describe("App welcome screen", () => {
         ["main-1", "main-2", "main-3", "main-4", "main-5", "docs-1", "docs-2"].sort(),
       );
     });
+  });
+
+  it("routes model_changed broadcasts to the matching session entry", async () => {
+    const m = useSessionManager.getState();
+    const a = m.createLocalSession("a", { id: "daemon-a", daemonId: "daemon-a" });
+    const b = m.createLocalSession("b", {
+      id: "daemon-b",
+      daemonId: "daemon-b",
+      activate: false,
+    });
+    m.setSessionModel(a, { provider: "kimi", model: "k2", isOverride: false });
+    m.setSessionModel(b, { provider: "kimi", model: "k2", isOverride: false });
+    render(<App />);
+    await waitFor(() => expect(wsTest.globalHandlers.size).toBeGreaterThan(0));
+
+    act(() => {
+      for (const handler of wsTest.globalHandlers) {
+        handler({
+          seq: 1,
+          kind: "model_changed",
+          data: { session_id: "daemon-a", provider: "zhipu", model_name: "glm-5.3" },
+        });
+      }
+    });
+
+    const entries = useSessionManager.getState().entries;
+    expect(entries[a].model).toEqual({ provider: "zhipu", model: "glm-5.3", isOverride: true });
+    expect(entries[b].model).toEqual({ provider: "kimi", model: "k2", isOverride: false });
   });
 });

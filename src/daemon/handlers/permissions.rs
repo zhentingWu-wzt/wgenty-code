@@ -121,11 +121,56 @@ pub async fn set_permission_mode(
             Json(serde_json::json!({"error": "invalid session_id"})),
         ));
     }
+
+    if body.reset {
+        let _update_guard = state.session_update_lock.lock().await;
+        if let Some((sessions, _)) = state.resolve_session(session_id).await {
+            sessions
+                .update_session_record(session_id, |session| {
+                    session.permission_override = None;
+                })
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("clear session permission: {error}")
+                        })),
+                    )
+                })?;
+        }
+        let entry = state.effective_permission(session_id).await;
+        state.broadcast_global(
+            crate::daemon::global_events::GlobalEventKind::ModeChanged,
+            serde_json::json!({
+                "session_id": session_id,
+                "mode": entry.root_mode,
+                "effective_mode": entry.effective_mode,
+                "reset": true,
+                "is_override": false,
+            }),
+        );
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "session_id": session_id,
+            "mode": entry.root_mode,
+            "effective_mode": entry.effective_mode,
+            "reset": true,
+            "is_override": false,
+        })));
+    }
+
+    let Some(mode) = body.mode else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "mode required"})),
+        ));
+    };
     let effective = body
         .effective_mode
-        .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode));
+        .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(mode));
     let stored_effective = if effective == crate::sandbox::EffectiveMode::Plan {
-        crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode)
+        crate::sandbox::EffectiveMode::from_root_permission_mode(mode)
     } else {
         effective
     };
@@ -141,7 +186,7 @@ pub async fn set_permission_mode(
             sessions
                 .update_session_record(session_id, |session| {
                     session.permission_override = Some(crate::permissions::PermissionModeEntry {
-                        root_mode: body.mode,
+                        root_mode: mode,
                         effective_mode: stored_effective,
                     });
                 })
@@ -162,7 +207,7 @@ pub async fn set_permission_mode(
             // advances the version like a PUT upsert does.
             let mut session = crate::context::memory_session::Session::with_id(session_id, None)
                 .with_permission_override(crate::permissions::PermissionModeEntry {
-                    root_mode: body.mode,
+                    root_mode: mode,
                     effective_mode: stored_effective,
                 });
             session.version += 1;
@@ -181,7 +226,7 @@ pub async fn set_permission_mode(
         }
     }
     tracing::info!(
-        mode = ?body.mode,
+        mode = ?mode,
         effective_mode = ?effective,
         "root permission / effective mode updated"
     );
@@ -189,14 +234,16 @@ pub async fn set_permission_mode(
         crate::daemon::global_events::GlobalEventKind::ModeChanged,
         serde_json::json!({
             "session_id": session_id,
-            "mode": body.mode,
+            "mode": mode,
             "effective_mode": effective,
+            "is_override": true,
         }),
     );
     Ok(Json(serde_json::json!({
         "success": true,
-        "mode": body.mode,
+        "mode": mode,
         "effective_mode": effective,
+        "is_override": true,
     })))
 }
 
@@ -214,9 +261,14 @@ pub async fn get_permission_mode(
         ));
     };
     let entry = state.effective_permission(session_id).await;
+    let is_override = state
+        .resolve_session(session_id)
+        .await
+        .is_some_and(|(_, session)| session.permission_override.is_some());
     Ok(Json(serde_json::json!({
         "mode": entry.root_mode,
         "effective_mode": entry.effective_mode,
+        "is_override": is_override,
     })))
 }
 
