@@ -83,11 +83,11 @@ export function usePermissionModeSync(client: DaemonClient | null): void {
   useEffect(() => {
     return wsChannel.onReconnected(() => {
       const manager = useSessionManager.getState();
+      manager.resetModelModeEventSeq();
       const id = manager.activeId;
       if (!id) return;
       const entry = manager.entries[id];
       if (!entry) return;
-      manager.resetModelModeEventSeq();
       refresh(id, entry.daemonId ?? id);
     });
   }, [refresh]);

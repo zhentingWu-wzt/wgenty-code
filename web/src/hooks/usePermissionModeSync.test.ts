@@ -262,6 +262,90 @@ describe("usePermissionModeSync", () => {
     expect(entry.mode?.mode).toBe("accept_edits");
   });
 
+  it("resets all entry cursors on reconnect without an active session", async () => {
+    const manager = useSessionManager.getState();
+    const a = manager.createLocalSession("a", {
+      id: "local-a",
+      daemonId: "daemon-a",
+      activate: false,
+    });
+    const b = manager.createLocalSession("b", {
+      id: "local-b",
+      daemonId: "daemon-b",
+      activate: false,
+    });
+    for (const daemonId of ["daemon-a", "daemon-b"]) {
+      manager.applyModelChanged({
+        seq: 50,
+        kind: "model_changed",
+        data: { session_id: daemonId, provider: "kimi", model_name: "old-boot-model" },
+      });
+      manager.applyModeChanged({
+        seq: 50,
+        kind: "mode_changed",
+        data: { session_id: daemonId, mode: "yolo" },
+      });
+    }
+    useSessionManager.setState({ connection: "disconnected" });
+    const client = {
+      listModels: vi.fn().mockResolvedValue(modelsResponse("kimi", "health-snapshot", false)),
+      getPermissionMode: vi.fn().mockResolvedValue({
+        mode: "normal",
+        effective_mode: "normal",
+        is_override: false,
+      }),
+    } as unknown as DaemonClient;
+    renderHook(() => usePermissionModeSync(client));
+
+    expect(useSessionManager.getState().activeId).toBeNull();
+    for (const entry of Object.values(useSessionManager.getState().entries)) {
+      expect(entry).toMatchObject({ modelSeq: 50, modeSeq: 50 });
+    }
+    act(() => {
+      for (const handler of wsTest.reconnectedHandlers) handler();
+    });
+
+    expect(client.listModels).not.toHaveBeenCalled();
+    expect(client.getPermissionMode).not.toHaveBeenCalled();
+    for (const entry of Object.values(useSessionManager.getState().entries)) {
+      expect(entry).toMatchObject({ modelSeq: 0, modeSeq: 0 });
+    }
+
+    act(() => {
+      useSessionManager.getState().setActive(a);
+      useSessionManager.getState().setConnection("connected");
+    });
+    await waitFor(() => {
+      expect(useSessionManager.getState().entries[a].model?.model).toBe("health-snapshot");
+      expect(useSessionManager.getState().entries[a].mode?.mode).toBe("normal");
+    });
+    expect(client.listModels).toHaveBeenCalledTimes(1);
+    expect(client.getPermissionMode).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useSessionManager.getState().applyModelChanged({
+        seq: 1,
+        kind: "model_changed",
+        data: { session_id: "daemon-a", provider: "kimi", model_name: "new-boot-model" },
+      });
+      for (const handler of wsTest.globalHandlers) {
+        handler({
+          seq: 1,
+          kind: "mode_changed",
+          data: { session_id: "daemon-a", mode: "accept_edits" },
+        });
+      }
+    });
+
+    const entries = useSessionManager.getState().entries;
+    expect(entries[a].model?.model).toBe("new-boot-model");
+    expect(entries[a].mode?.mode).toBe("accept_edits");
+    expect(entries[a].modelSeq).toBe(1);
+    expect(entries[a].modeSeq).toBe(1);
+    expect(entries[b].modelSeq).toBe(0);
+    expect(entries[b].modeSeq).toBe(0);
+  });
+
   it("does not let an old model GET overwrite a newer event for the same entry", async () => {
     const id = useSessionManager.getState().createLocalSession("a", {
       id: "local-a",
