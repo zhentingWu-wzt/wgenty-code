@@ -2136,6 +2136,47 @@ async fn permission_mode_set_still_requires_mode_when_reset_is_absent() {
 }
 
 #[tokio::test]
+async fn permission_mode_reset_rejects_mode_fields_without_breaking_reset_or_set() {
+    let state = Arc::new(global_event_test_state().await);
+    let result = set_permission_mode(
+        State(state.clone()),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": "session-a",
+            "reset": true,
+            "mode": "yolo",
+            "effective_mode": "plan",
+        }))),
+    )
+    .await;
+    let (status, body) = result.expect_err("reset must reject ambiguous mode fields");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body.0,
+        serde_json::json!({"error": "reset cannot be combined with mode or effective_mode"})
+    );
+
+    let reset = set_permission_mode(
+        State(state.clone()),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": "session-a",
+            "reset": true,
+        }))),
+    )
+    .await;
+    assert!(reset.is_ok(), "an ordinary reset remains valid");
+
+    let set = set_permission_mode(
+        State(state),
+        Json(permission_request_from_json(serde_json::json!({
+            "session_id": "session-a",
+            "mode": "yolo",
+        }))),
+    )
+    .await;
+    assert!(set.is_ok(), "the legacy set request remains valid");
+}
+
+#[tokio::test]
 async fn permission_mode_reset_rejects_unsafe_session_id_without_writing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut settings = crate::config::Settings::default();
@@ -2228,6 +2269,82 @@ async fn override_metadata_distinguishes_equal_values_from_no_override() {
         permission_flags,
         vec![serde_json::json!(true), serde_json::json!(false)],
         "permission override metadata must come from the session record, not value equality"
+    );
+}
+
+#[tokio::test]
+async fn list_models_effective_and_override_share_session_snapshot() {
+    use axum::extract::Query;
+
+    let server = crate::daemon::catalog::test_support::MockCatalogServer::start_with_delay(
+        200,
+        &[],
+        std::time::Duration::from_secs(2),
+    )
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let mut settings = provider_test_settings(temp.path());
+    {
+        let zhipu = settings.models.providers.get_mut("zhipu").unwrap();
+        zhipu.base_url = server.base_url.clone();
+        zhipu.api_key = Some("snapshot-test-key".to_string());
+    }
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-a", None)
+                .with_model_override(crate::config::models::ActiveModelRef {
+                    provider: "zhipu".to_string(),
+                    model: "glm-5.2".to_string(),
+                }),
+        )
+        .await
+        .unwrap();
+
+    let get_state = state.clone();
+    let get = tokio::spawn(async move {
+        list_models(
+            State(get_state),
+            Query(ListModelsQuery {
+                session_id: Some("session-a".to_string()),
+            }),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while server.hits() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("models GET reached the delayed catalog read");
+    state
+        .session_manager
+        .update_session_record("session-a", |session| {
+            session.model_override = None;
+        })
+        .await
+        .expect("reset during catalog read");
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(4), get)
+        .await
+        .expect("models GET completes")
+        .expect("models GET task")
+        .0;
+    let active_model = response
+        .providers
+        .iter()
+        .flat_map(|provider| provider.models.iter())
+        .find(|model| model.active)
+        .map(|model| model.name.as_str());
+    assert!(
+        matches!(
+            (active_model, response.is_override),
+            (Some("glm-5.2"), true) | (Some("glm-5.3"), false)
+        ),
+        "effective model and override flag must describe one Session snapshot: active={active_model:?}, is_override={}",
+        response.is_override
     );
 }
 
@@ -2770,6 +2887,33 @@ async fn model_reset_clears_override() {
     );
     assert_eq!(ev.data["session_id"], "session-a");
     assert_eq!(ev.data["model_name"], "glm-5.3");
+}
+
+#[tokio::test]
+async fn model_reset_broadcasts_legacy_fallback_with_null_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    settings.models.active_model = None;
+    settings.models.main.name = "legacy-main".to_string();
+    settings.models.main.provider = None;
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+    let mut rx = state.global_event_hub.subscribe();
+
+    let _ = reset_session_model(
+        State(state),
+        Json(ResetSessionModelRequest {
+            session_id: "legacy-session".to_string(),
+        }),
+    )
+    .await
+    .expect("legacy reset succeeds");
+
+    let event = rx.recv().await.expect("model reset event");
+    assert_eq!(event.data["session_id"], "legacy-session");
+    assert_eq!(event.data["provider"], serde_json::Value::Null);
+    assert_eq!(event.data["model_name"], "legacy-main");
+    assert_eq!(event.data["reset"], true);
 }
 
 /// Session-scoped model endpoints reject unsafe session ids at the handler

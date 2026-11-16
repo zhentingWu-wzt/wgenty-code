@@ -22,49 +22,60 @@ export function usePermissionModeSync(client: DaemonClient | null): void {
     if (!client || !activeId || !routedId || connection !== "connected") return;
     let cancelled = false;
 
-    client
-      .listModels(routedId)
-      .then((response) => {
-        if (cancelled) return;
-        for (const provider of response.providers) {
-          const model = provider.models.find((candidate) => candidate.active);
-          if (model) {
-            useSessionManager.getState().setSessionModel(activeId, {
-              provider: provider.key,
-              model: model.name,
-              isOverride: response.is_override === true,
-            });
-            return;
+    const refresh = () => {
+      const manager = useSessionManager.getState();
+      const modelRevision = manager.getSessionModelRevision(activeId);
+      const modeRevision = manager.getSessionModeRevision(activeId);
+      client
+        .listModels(routedId)
+        .then((response) => {
+          if (cancelled) return;
+          for (const provider of response.providers) {
+            const model = provider.models.find((candidate) => candidate.active);
+            if (model) {
+              useSessionManager.getState().setSessionModelIfRevision(activeId, modelRevision, {
+                provider: provider.key,
+                model: model.name,
+                isOverride: response.is_override === true,
+              });
+              return;
+            }
           }
-        }
-        useSessionManager.getState().setSessionModel(activeId, null);
-      })
-      .catch(() => {
-        // Non-fatal: retain the last known value until the next activation.
-      });
+          useSessionManager.getState().setSessionModelIfRevision(activeId, modelRevision, null);
+        })
+        .catch(() => {
+          // Non-fatal: retain the last known value until the next activation.
+        });
 
-    client
-      .getPermissionMode(routedId)
-      .then((pm) => {
-        if (!cancelled && pm.mode) {
-          useSessionManager.getState().setSessionMode(activeId, {
-            mode: pm.mode,
-            isOverride: pm.is_override === true,
-          });
-        }
-      })
-      .catch(() => {
-        // Non-fatal: retain the last known value until the next activation.
-      });
+      client
+        .getPermissionMode(routedId)
+        .then((pm) => {
+          if (!cancelled && pm.mode) {
+            useSessionManager.getState().setSessionModeIfRevision(activeId, modeRevision, {
+              mode: pm.mode,
+              isOverride: pm.is_override === true,
+            });
+          }
+        })
+        .catch(() => {
+          // Non-fatal: retain the last known value until the next activation.
+        });
+    };
+    refresh();
+    const unsubscribe = wsChannel.onReconnected(() => {
+      useSessionManager.getState().resetModelModeEventSeq();
+      refresh();
+    });
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [client, activeId, routedId, connection]);
 
   useEffect(() => {
     return wsChannel.subscribeGlobal((ev) => {
       if (ev.kind === "mode_changed") {
-        useSessionManager.getState().applyModeChanged(ev.data);
+        useSessionManager.getState().applyModeChanged(ev);
       }
     });
   }, []);

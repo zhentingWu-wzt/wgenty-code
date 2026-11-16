@@ -78,11 +78,15 @@ describe("sessionManager model and mode state", () => {
     m.setSessionMode(b, { mode: "normal", isOverride: false });
 
     m.applyModelChanged({
-      session_id: "daemon-a",
-      provider: "zhipu",
-      model_name: "glm-5.3",
+      seq: 1,
+      kind: "model_changed",
+      data: { session_id: "daemon-a", provider: "zhipu", model_name: "glm-5.3" },
     });
-    m.applyModeChanged({ session_id: "daemon-a", mode: "yolo" });
+    m.applyModeChanged({
+      seq: 1,
+      kind: "mode_changed",
+      data: { session_id: "daemon-a", mode: "yolo" },
+    });
 
     let entries = useSessionManager.getState().entries;
     expect(entries[a].model).toEqual({ provider: "zhipu", model: "glm-5.3", isOverride: true });
@@ -91,15 +95,14 @@ describe("sessionManager model and mode state", () => {
     expect(entries[b].mode).toEqual({ mode: "normal", isOverride: false });
 
     m.applyModelChanged({
-      session_id: "daemon-a",
-      provider: "kimi",
-      model_name: "k2",
-      reset: true,
+      seq: 2,
+      kind: "model_changed",
+      data: { session_id: "daemon-a", provider: "kimi", model_name: "k2", reset: true },
     });
     m.applyModeChanged({
-      session_id: "daemon-a",
-      mode: "accept_edits",
-      reset: true,
+      seq: 2,
+      kind: "mode_changed",
+      data: { session_id: "daemon-a", mode: "accept_edits", reset: true },
     });
 
     entries = useSessionManager.getState().entries;
@@ -109,14 +112,140 @@ describe("sessionManager model and mode state", () => {
     expect(entries[b].mode).toEqual({ mode: "normal", isOverride: false });
   });
 
+  it("clears an override and shows the legacy fallback when reset has a null provider", () => {
+    const m = useSessionManager.getState();
+    const id = m.createLocalSession("a", {
+      id: "local-a",
+      daemonId: "daemon-a",
+      activate: false,
+    });
+    m.setSessionModel(id, { provider: "zhipu", model: "old-override", isOverride: true });
+
+    m.applyModelChanged({
+      seq: 1,
+      kind: "model_changed",
+      data: {
+        session_id: "daemon-a",
+        provider: null,
+        model_name: "legacy-main",
+        reset: true,
+      },
+    });
+
+    expect(useSessionManager.getState().entries[id].model).toEqual({
+      provider: null,
+      model: "legacy-main",
+      isOverride: false,
+    });
+  });
+
   it("routes events by local id before a daemon id is assigned", () => {
     const m = useSessionManager.getState();
     const id = m.createLocalSession("local", { id: "web-local", activate: false });
-    m.applyModelChanged({ session_id: "web-local", provider: "kimi", model_name: "k3" });
-    m.applyModeChanged({ session_id: "web-local", mode: "accept_edits" });
+    m.applyModelChanged({
+      seq: 1,
+      kind: "model_changed",
+      data: { session_id: "web-local", provider: "kimi", model_name: "k3" },
+    });
+    m.applyModeChanged({
+      seq: 1,
+      kind: "mode_changed",
+      data: { session_id: "web-local", mode: "accept_edits" },
+    });
     const entry = useSessionManager.getState().entries[id];
     expect(entry.model).toEqual({ provider: "kimi", model: "k3", isOverride: true });
     expect(entry.mode).toEqual({ mode: "accept_edits", isOverride: true });
+  });
+
+  it("rejects out-of-order and duplicate session model and mode envelopes", () => {
+    const m = useSessionManager.getState();
+    const id = m.createLocalSession("a", {
+      id: "local-a",
+      daemonId: "daemon-a",
+      activate: false,
+    });
+
+    m.applyModelChanged({
+      seq: 2,
+      kind: "model_changed",
+      data: { session_id: "daemon-a", provider: "kimi", model_name: "new-model" },
+    });
+    m.applyModelChanged({
+      seq: 1,
+      kind: "model_changed",
+      data: { session_id: "daemon-a", provider: "zhipu", model_name: "old-model" },
+    });
+    m.applyModelChanged({
+      seq: 2,
+      kind: "model_changed",
+      data: { session_id: "daemon-a", provider: "zhipu", model_name: "duplicate-model" },
+    });
+    m.applyModeChanged({
+      seq: 4,
+      kind: "mode_changed",
+      data: { session_id: "daemon-a", mode: "yolo" },
+    });
+    m.applyModeChanged({
+      seq: 3,
+      kind: "mode_changed",
+      data: { session_id: "daemon-a", mode: "normal" },
+    });
+
+    const entry = useSessionManager.getState().entries[id];
+    expect(entry.model).toEqual({ provider: "kimi", model: "new-model", isOverride: true });
+    expect(entry.mode).toEqual({ mode: "yolo", isOverride: true });
+  });
+
+  it("uses the same per-entry seq cursor for global defaults and targeted resets", () => {
+    const m = useSessionManager.getState();
+    const id = m.createLocalSession("a", {
+      id: "local-a",
+      daemonId: "daemon-a",
+      activate: false,
+    });
+    m.setSessionModel(id, { provider: "kimi", model: "initial", isOverride: false });
+
+    m.applyModelChanged({
+      seq: 20,
+      kind: "model_changed",
+      data: { provider: "anthropic", model_name: "new-global" },
+    });
+    m.applyModelChanged({
+      seq: 19,
+      kind: "model_changed",
+      data: {
+        session_id: "daemon-a",
+        provider: "zhipu",
+        model_name: "stale-targeted-reset",
+        reset: true,
+      },
+    });
+    expect(useSessionManager.getState().entries[id].model).toEqual({
+      provider: "anthropic",
+      model: "new-global",
+      isOverride: false,
+    });
+
+    m.applyModelChanged({
+      seq: 21,
+      kind: "model_changed",
+      data: {
+        session_id: "daemon-a",
+        provider: null,
+        model_name: "new-targeted-reset",
+        reset: true,
+      },
+    });
+    m.applyModelChanged({
+      seq: 20,
+      kind: "model_changed",
+      data: { provider: "zhipu", model_name: "stale-global" },
+    });
+    expect(useSessionManager.getState().entries[id].model).toEqual({
+      provider: null,
+      model: "new-targeted-reset",
+      isOverride: false,
+    });
   });
 
   it("updates unoverridden entries on a global model change without clearing overrides", () => {
@@ -126,7 +255,11 @@ describe("sessionManager model and mode state", () => {
     m.setSessionModel(overridden, { provider: "zhipu", model: "glm-5.2", isOverride: true });
     m.setSessionModel(following, { provider: "kimi", model: "k2", isOverride: false });
 
-    m.applyModelChanged({ provider: "anthropic", model_name: "claude-sonnet-4-5" });
+    m.applyModelChanged({
+      seq: 1,
+      kind: "model_changed",
+      data: { provider: "anthropic", model_name: "claude-sonnet-4-5" },
+    });
 
     const entries = useSessionManager.getState().entries;
     expect(entries[overridden].model).toEqual({
@@ -144,7 +277,11 @@ describe("sessionManager model and mode state", () => {
   it("leaves unsynchronized entries unknown on a global model change", () => {
     const m = useSessionManager.getState();
     const id = m.createLocalSession("new", { activate: false });
-    m.applyModelChanged({ provider: "anthropic", model_name: "claude-sonnet-4-5" });
+    m.applyModelChanged({
+      seq: 1,
+      kind: "model_changed",
+      data: { provider: "anthropic", model_name: "claude-sonnet-4-5" },
+    });
     expect(useSessionManager.getState().entries[id].model).toBeNull();
   });
 });

@@ -133,15 +133,15 @@ pub async fn list_models(
         .read()
         .expect("lock poisoned: settings")
         .clone();
-    let active = match params.session_id.as_deref() {
+    let (active, is_override) = match params.session_id.as_deref() {
         Some(session_id) => {
-            state
-                .resolve_session_model(session_id)
+            let session = state
+                .resolve_session(session_id)
                 .await
-                .models
-                .active_model
+                .map(|(_, session)| session);
+            resolve_session_model_snapshot(&state, &s, session_id, session).await
         }
-        None => s.models.active_model.clone(),
+        None => (s.models.active_model.clone(), false),
     };
 
     let mut providers = Vec::with_capacity(s.models.providers.len());
@@ -167,19 +167,38 @@ pub async fn list_models(
             models,
         });
     }
-    let is_override = match params.session_id.as_deref() {
-        Some(session_id) => state
-            .resolve_session(session_id)
-            .await
-            .is_some_and(|(_, session)| session.model_override.is_some()),
-        None => false,
-    };
     // Stable ordering for a predictable picker.
     providers.sort_by(|a, b| a.key.cmp(&b.key));
     Json(ListModelsResponse {
         providers,
         is_override,
     })
+}
+
+async fn resolve_session_model_snapshot(
+    state: &DaemonState,
+    settings: &crate::config::Settings,
+    session_id: &str,
+    session: Option<crate::context::memory_session::Session>,
+) -> (Option<crate::config::models::ActiveModelRef>, bool) {
+    let Some(model_override) = session.and_then(|session| session.model_override) else {
+        return (settings.models.active_model.clone(), false);
+    };
+    if state
+        .catalog
+        .resolve_endpoint(settings, &model_override.provider, &model_override.model)
+        .await
+        .is_none()
+    {
+        tracing::warn!(
+            session_id,
+            provider = %model_override.provider,
+            model = %model_override.model,
+            "failed to resolve session model override; using global settings"
+        );
+        return (settings.models.active_model.clone(), true);
+    }
+    (Some(model_override), true)
 }
 
 /// Serialize a [`crate::config::models::ModelTier`] for the picker payload.

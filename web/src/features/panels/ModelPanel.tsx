@@ -17,7 +17,7 @@ interface ModelOption {
 export function ModelPanel({ client }: { client: DaemonClient }) {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const applyModelChanged = useSessionManager((s) => s.applyModelChanged);
+  const applyLocalModelChanged = useSessionManager((s) => s.applyLocalModelChanged);
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +53,10 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
         provider: option.provider,
         model: option.model_name,
       });
-      applyModelChanged({ provider: res.provider ?? option.provider, model_name: res.model_name });
+      applyLocalModelChanged({
+        provider: res.provider ?? option.provider,
+        model_name: res.model_name,
+      });
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

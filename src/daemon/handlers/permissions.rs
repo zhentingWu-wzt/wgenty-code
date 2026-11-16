@@ -122,6 +122,15 @@ pub async fn set_permission_mode(
         ));
     }
 
+    if body.reset && (body.mode.is_some() || body.effective_mode.is_some()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "reset cannot be combined with mode or effective_mode"
+            })),
+        ));
+    }
+
     if body.reset {
         let _update_guard = state.session_update_lock.lock().await;
         if let Some((sessions, _)) = state.resolve_session(session_id).await {
@@ -260,16 +269,37 @@ pub async fn get_permission_mode(
             Json(serde_json::json!({"error": "session_id required"})),
         ));
     };
-    let entry = state.effective_permission(session_id).await;
-    let is_override = state
+    let session = state
         .resolve_session(session_id)
         .await
-        .is_some_and(|(_, session)| session.permission_override.is_some());
+        .map(|(_, session)| session);
+    let (entry, is_override) = permission_mode_snapshot(&state, session_id, session);
     Ok(Json(serde_json::json!({
         "mode": entry.root_mode,
         "effective_mode": entry.effective_mode,
         "is_override": is_override,
     })))
+}
+
+fn permission_mode_snapshot(
+    state: &DaemonState,
+    session_id: &str,
+    session: Option<crate::context::memory_session::Session>,
+) -> (crate::permissions::PermissionModeEntry, bool) {
+    let root = match session {
+        Some(session) => {
+            if let Some(permission) = session.permission_override {
+                return (permission, true);
+            }
+            state
+                .session_workdir(session_id)
+                .unwrap_or_else(|| state.session_project_root(&session))
+        }
+        None => state
+            .session_workdir(session_id)
+            .unwrap_or_else(|| state.projects.main_root()),
+    };
+    (state.permission_modes.get(&root), false)
 }
 
 // ── Tasks ────────────────────────────────────────────────────────────────────

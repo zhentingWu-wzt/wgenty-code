@@ -251,7 +251,7 @@ export function App() {
   useEffect(() => {
     return wsChannel.subscribeGlobal((ev) => {
       if (ev.kind !== "model_changed") return;
-      useSessionManager.getState().applyModelChanged(ev.data);
+      useSessionManager.getState().applyModelChanged(ev);
       client
         .getConfig()
         .then((cfg) => {
