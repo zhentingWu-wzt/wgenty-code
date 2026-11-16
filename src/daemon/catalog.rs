@@ -1,7 +1,10 @@
+use crate::api::provider::resolve_provider;
 use crate::config::models::ModelTier;
 use crate::config::Settings;
 use serde::Deserialize;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -30,8 +33,32 @@ pub struct MergedModel {
     pub configured: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct CatalogIdentity {
+    base_url: String,
+    protocol: String,
+    credential_fingerprint: u64,
+}
+
+impl CatalogIdentity {
+    fn new(base_url: &str, protocol: &str, api_key: &str) -> Self {
+        let mut hasher = DefaultHasher::new();
+        api_key.hash(&mut hasher);
+        Self {
+            base_url: normalize_base_url(base_url),
+            protocol: protocol.to_string(),
+            credential_fingerprint: hasher.finish(),
+        }
+    }
+}
+
+fn normalize_base_url(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_string()
+}
+
 #[derive(Clone)]
 struct CatalogEntry {
+    identity: CatalogIdentity,
     fetched: Option<Vec<String>>,
     at: Instant,
 }
@@ -115,29 +142,24 @@ impl ModelCatalogService {
         Some(endpoint)
     }
 
-    fn fresh(&self, provider_key: &str) -> Option<Option<Vec<String>>> {
+    fn fresh(&self, provider_key: &str, identity: &CatalogIdentity) -> Option<Option<Vec<String>>> {
         self.cache
             .read()
             .expect("catalog cache lock poisoned")
             .get(provider_key)
-            .filter(|entry| entry.at.elapsed() < CATALOG_TTL)
+            .filter(|entry| entry.identity == *identity && entry.at.elapsed() < CATALOG_TTL)
             .map(|entry| entry.fetched.clone())
     }
 
     async fn fetched(&self, settings: &Settings, provider_key: &str) -> Option<Vec<String>> {
         let group = settings.models.providers.get(provider_key)?;
-        let openai_compatible = match group.protocol.as_deref() {
-            Some(protocol) => matches!(
-                protocol.to_ascii_lowercase().as_str(),
-                "openai" | "deepseek"
-            ),
-            None => !group.base_url.to_ascii_lowercase().contains("anthropic"),
-        };
-        if !openai_compatible || group.base_url.trim().is_empty() {
+        let provider = resolve_provider(&group.base_url, group.protocol.as_deref());
+        if !provider.is_openai_compat() || group.base_url.trim().is_empty() {
             return None;
         }
         let api_key = settings.models.resolve_provider_api_key(provider_key)?;
-        if let Some(fresh) = self.fresh(provider_key) {
+        let identity = CatalogIdentity::new(&group.base_url, provider.name(), &api_key);
+        if let Some(fresh) = self.fresh(provider_key, &identity) {
             return fresh;
         }
 
@@ -152,7 +174,7 @@ impl ModelCatalogService {
                 .clone()
         };
         let _guard = provider_lock.lock().await;
-        if let Some(fresh) = self.fresh(provider_key) {
+        if let Some(fresh) = self.fresh(provider_key, &identity) {
             return fresh;
         }
 
@@ -161,11 +183,13 @@ impl ModelCatalogService {
             .read()
             .expect("catalog cache lock poisoned")
             .get(provider_key)
+            .filter(|entry| entry.identity == identity)
             .cloned();
         let fetched = self
-            .fetch_models(&group.base_url, &api_key, provider_key)
+            .fetch_models(&identity.base_url, &api_key, provider_key)
             .await;
         let entry = CatalogEntry {
+            identity,
             fetched: fetched.or_else(|| previous.and_then(|entry| entry.fetched)),
             at: Instant::now(),
         };
@@ -493,6 +517,84 @@ mod tests {
         }
         assert!(!merged.iter().any(|model| model.name == "new-model"));
         assert_eq!(server.hits(), 0);
+    }
+
+    #[tokio::test]
+    async fn catalog_openai_compat_alias_fetches_models() {
+        let server = super::test_support::MockCatalogServer::start(200, &["alias-model"]).await;
+        let settings = settings("zhipu", &server.base_url, "openai-compat", Some("test-key"));
+        let service = ModelCatalogService::new(reqwest::Client::new());
+
+        let merged = service.merged(&settings, "zhipu").await;
+
+        assert!(merged.iter().any(|model| model.name == "alias-model"));
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn catalog_openai_compatible_alias_fetches_models() {
+        let server = super::test_support::MockCatalogServer::start(200, &["alias-model"]).await;
+        let settings = settings(
+            "zhipu",
+            &server.base_url,
+            "openai_compatible",
+            Some("test-key"),
+        );
+        let service = ModelCatalogService::new(reqwest::Client::new());
+
+        let merged = service.merged(&settings, "zhipu").await;
+
+        assert!(merged.iter().any(|model| model.name == "alias-model"));
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn catalog_unknown_protocol_uses_url_fallback() {
+        let server = super::test_support::MockCatalogServer::start(200, &["fallback-model"]).await;
+        let settings = settings(
+            "zhipu",
+            &server.base_url,
+            "unknown-protocol",
+            Some("test-key"),
+        );
+        let service = ModelCatalogService::new(reqwest::Client::new());
+
+        let merged = service.merged(&settings, "zhipu").await;
+
+        assert!(merged.iter().any(|model| model.name == "fallback-model"));
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn catalog_different_url_misses_cache_and_drops_stale_models() {
+        let server_a = super::test_support::MockCatalogServer::start(200, &["a-only-model"]).await;
+        let server_b = super::test_support::MockCatalogServer::start(500, &[]).await;
+        let settings_a = settings("zhipu", &server_a.base_url, "openai", Some("key-a"));
+        let settings_b = settings("zhipu", &server_b.base_url, "openai", Some("key-b"));
+        let service = ModelCatalogService::new(reqwest::Client::new());
+
+        let first = service.merged(&settings_a, "zhipu").await;
+        assert!(first.iter().any(|model| model.name == "a-only-model"));
+        let second = service.merged(&settings_b, "zhipu").await;
+
+        assert_eq!(server_b.hits(), 1, "a new URL must not reuse A's cache");
+        assert!(!second.iter().any(|model| model.name == "a-only-model"));
+    }
+
+    #[tokio::test]
+    async fn catalog_different_key_misses_cache_and_drops_stale_models() {
+        let server = super::test_support::MockCatalogServer::start(200, &["a-only-model"]).await;
+        let settings_a = settings("zhipu", &server.base_url, "openai", Some("key-a"));
+        let settings_b = settings("zhipu", &server.base_url, "openai", Some("key-b"));
+        let service = ModelCatalogService::new(reqwest::Client::new());
+
+        let first = service.merged(&settings_a, "zhipu").await;
+        assert!(first.iter().any(|model| model.name == "a-only-model"));
+        server.set_reply(500, &[]);
+        let second = service.merged(&settings_b, "zhipu").await;
+
+        assert_eq!(server.hits(), 2, "a new key must not reuse A's cache");
+        assert!(!second.iter().any(|model| model.name == "a-only-model"));
     }
 
     #[tokio::test]

@@ -184,8 +184,8 @@ fn tier_label(tier: Option<crate::config::models::ModelTier>) -> Option<String> 
     })
 }
 
-/// Actionable 400 body for an unknown (provider, model) pair: lists every
-/// selectable `provider/model` in the catalog.
+/// Actionable 400 body for an unknown (provider, model) pair: lists configured
+/// `provider/model` entries without fetching the dynamic catalog.
 fn unknown_model_message(
     models: &crate::config::models::ModelsConfig,
     provider: &str,
@@ -198,7 +198,7 @@ fn unknown_model_message(
         .collect();
     available.sort();
     format!(
-        "unknown model '{provider}/{model}'; available: [{}]",
+        "unknown model '{provider}/{model}'; available configured models: [{}]",
         available.join(", ")
     )
 }
@@ -248,7 +248,7 @@ async fn apply_active_model(
 /// `active_model` + `models.main`, persists to disk, and broadcasts globally
 /// (the previous global semantics).
 ///
-/// Returns 400 with an actionable message (listing available models) when
+/// Returns 400 with an actionable message (listing configured models) when
 /// the (provider, model) pair is unknown.
 pub async fn switch_model(
     State(state): State<Arc<DaemonState>>,
