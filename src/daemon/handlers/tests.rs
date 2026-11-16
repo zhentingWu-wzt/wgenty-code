@@ -2009,7 +2009,7 @@ fn provider_test_settings(workdir: &std::path::Path) -> crate::config::Settings 
         "zhipu".to_string(),
         ProviderGroup {
             display_name: Some("Zhipu AI".to_string()),
-            base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            base_url: "http://127.0.0.1:9".to_string(),
             api_key: None,
             protocol: Some("openai".to_string()),
             models: vec![
@@ -2079,10 +2079,14 @@ async fn list_models_v2_groups_and_marks_active() {
     assert_eq!(zhipu.display_name, "Zhipu AI");
     assert_eq!(zhipu.protocol.as_deref(), Some("openai"));
 
-    // Models sorted by name within the group; tier serialized as a string.
+    // Manual and built-in rows merge by name; only manual rows are configured.
     let names: Vec<&str> = zhipu.models.iter().map(|m| m.name.as_str()).collect();
-    assert_eq!(names, vec!["glm-5.2", "glm-5.3"]);
-    assert!(zhipu.models.iter().all(|m| m.configured));
+    assert_eq!(
+        names,
+        vec!["glm-5.2", "glm-5.3", "glm-5.3-air", "glm-5.3-flash"]
+    );
+    assert!(zhipu.models[0].configured && zhipu.models[1].configured);
+    assert!(!zhipu.models[2].configured && !zhipu.models[3].configured);
     assert_eq!(zhipu.models[1].tier.as_deref(), Some("heavy"));
 
     // Global active_model (zhipu/glm-5.3) is the only marked row.
@@ -3090,4 +3094,162 @@ async fn cancel_child_without_session_id_is_rejected() {
         matches!(result, Err(StatusCode::BAD_REQUEST)),
         "missing session_id must be rejected with 400"
     );
+}
+
+/// A fetched, not-manually-configured row is genuinely selectable for one
+/// session: the override resolves later without changing global live/disk state.
+#[tokio::test]
+#[serial_test::serial]
+async fn catalog_entry_session_switch_resolves_without_global_write() {
+    use axum::extract::{Query, State};
+    use axum::Json;
+
+    let server =
+        crate::daemon::catalog::test_support::MockCatalogServer::start(200, &["new-model"]).await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let mut settings = provider_test_settings(temp.path());
+    {
+        let zhipu = settings.models.providers.get_mut("zhipu").unwrap();
+        zhipu.base_url = server.base_url.clone();
+        zhipu.api_key = Some("catalog-test-key".to_string());
+    }
+    let disk_before = seed_settings_disk(fake_home.path(), &settings);
+    let previous_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+    let run = async {
+        let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+
+        let axum::Json(list) = list_models(
+            State(state.clone()),
+            Query(ListModelsQuery { session_id: None }),
+        )
+        .await;
+        let dynamic = list
+            .providers
+            .iter()
+            .find(|provider| provider.key == "zhipu")
+            .unwrap()
+            .models
+            .iter()
+            .find(|model| model.name == "new-model")
+            .expect("fetched row is listed");
+        assert!(!dynamic.configured);
+
+        let response = switch_model(
+            State(state.clone()),
+            Json(SwitchModelRequest {
+                provider: "zhipu".to_string(),
+                model: "new-model".to_string(),
+                profile: None,
+                session_id: Some("catalog-session".to_string()),
+            }),
+        )
+        .await
+        .expect("catalog row can be selected for a session");
+        assert!(response.success);
+
+        let resolved = state.resolve_session_model("catalog-session").await;
+        assert_eq!(resolved.models.main.name, "new-model");
+        assert_eq!(
+            resolved.models.main.base_url.as_deref(),
+            Some(server.base_url.as_str())
+        );
+        assert_eq!(
+            resolved.models.main.api_key.as_deref(),
+            Some("catalog-test-key")
+        );
+        assert_eq!(
+            resolved.models.active_model,
+            Some(crate::config::models::ActiveModelRef {
+                provider: "zhipu".to_string(),
+                model: "new-model".to_string(),
+            })
+        );
+        {
+            let global = state.settings_handle.read().expect("settings lock");
+            assert_eq!(
+                global.models.active_model.as_ref().unwrap().model,
+                "glm-5.3"
+            );
+            assert!(
+                !global.models.providers["zhipu"]
+                    .models
+                    .iter()
+                    .any(|model| model.name == "new-model"),
+                "session selection must not materialize a global provider model"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(fake_home.path().join(".wgenty-code/settings.json")).unwrap(),
+            disk_before,
+            "session catalog selection must not write global settings"
+        );
+    }
+    .await;
+    match previous_home {
+        Some(value) => std::env::set_var("WGENTY_HOME", value),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    run
+}
+
+/// Global selection of the same dynamic row uses the existing global switch
+/// semantics and persists enough model data to resolve after a restart.
+#[tokio::test]
+#[serial_test::serial]
+async fn catalog_entry_global_switch_persists_resolvable_model() {
+    use axum::extract::State;
+    use axum::Json;
+
+    let server =
+        crate::daemon::catalog::test_support::MockCatalogServer::start(200, &["new-model"]).await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let mut settings = provider_test_settings(temp.path());
+    {
+        let zhipu = settings.models.providers.get_mut("zhipu").unwrap();
+        zhipu.base_url = server.base_url.clone();
+        zhipu.api_key = Some("catalog-test-key".to_string());
+    }
+    seed_settings_disk(fake_home.path(), &settings);
+    let previous_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+    let run = async {
+        let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+        let response = switch_model(
+            State(state.clone()),
+            Json(SwitchModelRequest {
+                provider: "zhipu".to_string(),
+                model: "new-model".to_string(),
+                profile: None,
+                session_id: None,
+            }),
+        )
+        .await
+        .expect("catalog row can be selected globally");
+        assert_eq!(response.model_name, "new-model");
+        {
+            let global = state.settings_handle.read().expect("settings lock");
+            assert_eq!(global.models.main.name, "new-model");
+            assert_eq!(
+                global.models.active_model.as_ref().unwrap().model,
+                "new-model"
+            );
+        }
+
+        let disk = crate::config::Settings::load_from_disk().expect("reload switched settings");
+        let endpoint = disk
+            .models
+            .resolve_endpoint("zhipu", "new-model")
+            .expect("persisted catalog selection resolves after reload");
+        assert_eq!(endpoint.base_url.as_deref(), Some(server.base_url.as_str()));
+        assert_eq!(endpoint.api_key.as_deref(), Some("catalog-test-key"));
+    }
+    .await;
+    match previous_home {
+        Some(value) => std::env::set_var("WGENTY_HOME", value),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    run
 }

@@ -537,6 +537,9 @@ pub struct DaemonState {
     /// daemon lifetime.
     pub http_client: Arc<reqwest::Client>,
     pub http_client_stream: Arc<reqwest::Client>,
+    /// Lazy merged model catalogs shared by listing, switching, and session
+    /// override resolution.
+    pub catalog: crate::daemon::catalog::ModelCatalogService,
     pub tool_registry: Arc<ToolRegistry>,
     pub tool_executor: ToolExecutor,
     pub checkpoint_manager: Arc<CheckpointManager>,
@@ -1376,6 +1379,7 @@ impl DaemonState {
             workflow_router: std::sync::OnceLock::new(),
             active_clients: Arc::new(ActiveClientTracker::new()),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            catalog: crate::daemon::catalog::ModelCatalogService::new(http_client.as_ref().clone()),
             http_client,
             http_client_stream,
             task_session_state,
@@ -2198,9 +2202,10 @@ impl DaemonState {
         let Some(model_override) = session.model_override else {
             return global;
         };
-        let Some(endpoint) = global
-            .models
-            .resolve_endpoint(&model_override.provider, &model_override.model)
+        let Some(endpoint) = self
+            .catalog
+            .resolve_endpoint(&global, &model_override.provider, &model_override.model)
+            .await
         else {
             tracing::warn!(
                 session_id,

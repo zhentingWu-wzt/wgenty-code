@@ -564,17 +564,47 @@ impl ModelsConfig {
             api_key: model
                 .api_key
                 .clone()
-                .or_else(|| group.api_key.clone())
-                .or_else(|| provider_env_key(provider).and_then(|key| std::env::var(key).ok()))
-                .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
-                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-                .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok()),
+                .or_else(|| self.resolve_provider_api_key(provider)),
             appkey: None,
             provider: group.protocol.clone(),
             context_window: model.context_window,
             temperature: model.temperature,
             display_name: None,
             tier: model.tier,
+            pricing: None,
+        })
+    }
+
+    /// Resolve group credentials without requiring a manually configured model.
+    pub(crate) fn resolve_provider_api_key(&self, provider: &str) -> Option<String> {
+        let group = self.providers.get(provider)?;
+        group
+            .api_key
+            .clone()
+            .or_else(|| provider_env_key(provider).and_then(|key| std::env::var(key).ok()))
+            .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+            .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
+    }
+
+    /// Build an endpoint for a name already validated against a dynamic catalog.
+    /// Callers must not use this to bypass catalog membership validation.
+    pub(crate) fn resolve_unconfigured_endpoint(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Option<ModelEndpoint> {
+        let group = self.providers.get(provider)?;
+        Some(ModelEndpoint {
+            name: model.to_string(),
+            base_url: Some(group.base_url.clone()),
+            api_key: self.resolve_provider_api_key(provider),
+            appkey: None,
+            provider: group.protocol.clone(),
+            context_window: None,
+            temperature: None,
+            display_name: None,
+            tier: None,
             pricing: None,
         })
     }

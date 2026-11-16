@@ -11,6 +11,7 @@
 pub const DEFAULT_PORT: u16 = 8371;
 
 pub mod auth;
+pub mod catalog;
 pub(crate) mod fs;
 pub mod global_events;
 pub mod handlers;

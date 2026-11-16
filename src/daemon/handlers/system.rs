@@ -119,9 +119,8 @@ pub async fn update_config(
 
 /// GET /api/v1/models (v2) — vendor-grouped model catalog for the `/model`
 /// picker: `models.providers` groups sorted by key, models sorted by name.
-/// Every listed entry is hand-configured (`configured: true`); dynamic
-/// catalog entries merge in with `configured: false` once the catalog
-/// service lands. With `?session_id=`, `active` follows the session's
+/// Manual, fetched, and built-in entries are deduplicated; only manual entries
+/// are `configured`. With `?session_id=`, `active` follows the session's
 /// synthesized selection (`resolve_session_model`) — a resolvable override's
 /// (provider, model) pair is the only marked row; without it (or without the
 /// param) the global `models.active_model` pair is marked.
@@ -142,36 +141,32 @@ pub async fn list_models(
                 .models
                 .active_model
         }
-        None => s.models.active_model,
+        None => s.models.active_model.clone(),
     };
 
-    let mut providers: Vec<ProviderGroupInfo> = s
-        .models
-        .providers
-        .iter()
-        .map(|(key, group)| {
-            let mut models: Vec<ProviderModelInfo> = group
-                .models
-                .iter()
-                .map(|m| ProviderModelInfo {
-                    name: m.name.clone(),
-                    tier: tier_label(m.tier),
-                    // Manual settings entries are configured by definition.
-                    configured: true,
-                    active: active
-                        .as_ref()
-                        .is_some_and(|a| a.provider == *key && a.model == m.name),
-                })
-                .collect();
-            models.sort_by(|a, b| a.name.cmp(&b.name));
-            ProviderGroupInfo {
-                key: key.clone(),
-                display_name: group.display_name.clone().unwrap_or_else(|| key.clone()),
-                protocol: group.protocol.clone(),
-                models,
-            }
-        })
-        .collect();
+    let mut providers = Vec::with_capacity(s.models.providers.len());
+    for (key, group) in &s.models.providers {
+        let models = state
+            .catalog
+            .merged(&s, key)
+            .await
+            .into_iter()
+            .map(|model| ProviderModelInfo {
+                name: model.name.clone(),
+                tier: tier_label(model.tier),
+                configured: model.configured,
+                active: active
+                    .as_ref()
+                    .is_some_and(|active| active.provider == *key && active.model == model.name),
+            })
+            .collect();
+        providers.push(ProviderGroupInfo {
+            key: key.clone(),
+            display_name: group.display_name.clone().unwrap_or_else(|| key.clone()),
+            protocol: group.protocol.clone(),
+            models,
+        });
+    }
     // Stable ordering for a predictable picker.
     providers.sort_by(|a, b| a.key.cmp(&b.key));
     Json(ListModelsResponse { providers })
@@ -208,19 +203,32 @@ fn unknown_model_message(
     )
 }
 
-/// Apply a vendor-grouped switch to `settings`: resolve the endpoint,
-/// set `active_model` (the new persisted source of truth), sync the `main`
-/// runtime cache, and drop the legacy `active_profile` pointer so the file
-/// round-trips in the new format only.
-fn apply_active_model(
+/// Apply a global vendor-grouped switch to `settings`. A dynamic selection is
+/// materialized as a provider model so the persisted active pair remains
+/// resolvable after restart; session-scoped switches never call this function.
+async fn apply_active_model(
     settings: &mut crate::config::Settings,
+    catalog: &crate::daemon::catalog::ModelCatalogService,
     provider: &str,
     model: &str,
 ) -> anyhow::Result<()> {
-    let endpoint = settings
-        .models
-        .resolve_endpoint(provider, model)
+    let endpoint = catalog
+        .resolve_endpoint(settings, provider, model)
+        .await
         .ok_or_else(|| anyhow::anyhow!(unknown_model_message(&settings.models, provider, model)))?;
+    if let Some(group) = settings.models.providers.get_mut(provider) {
+        if !group.models.iter().any(|entry| entry.name == model) {
+            group.models.push(crate::config::models::ProviderModel {
+                name: model.to_string(),
+                profile_key: None,
+                tier: endpoint.tier,
+                api_key: None,
+                base_url: None,
+                context_window: None,
+                temperature: None,
+            });
+        }
+    }
     settings.models.active_model = Some(crate::config::models::ActiveModelRef {
         provider: provider.to_string(),
         model: model.to_string(),
@@ -281,22 +289,23 @@ pub async fn switch_model(
         if crate::context::memory_session::validate_id(session_id).is_err() {
             return Err((StatusCode::BAD_REQUEST, "invalid session_id".into()));
         }
-        // Validate the pair against the live catalog first so a typo is a
-        // 400, not a silent resolve failure on the next turn.
+        // Validate against the same merged catalog used by listing and later
+        // session resolution. Clone first so no settings lock spans the fetch.
+        let settings = state
+            .settings_handle
+            .read()
+            .expect("lock poisoned: settings")
+            .clone();
+        if state
+            .catalog
+            .resolve_endpoint(&settings, &body.provider, &body.model)
+            .await
+            .is_none()
         {
-            let s = state
-                .settings_handle
-                .read()
-                .expect("lock poisoned: settings");
-            if s.models
-                .resolve_endpoint(&body.provider, &body.model)
-                .is_none()
-            {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    unknown_model_message(&s.models, &body.provider, &body.model),
-                ));
-            }
+            return Err((
+                StatusCode::BAD_REQUEST,
+                unknown_model_message(&settings.models, &body.provider, &body.model),
+            ));
         }
 
         let model_ref = crate::config::models::ActiveModelRef {
@@ -374,13 +383,15 @@ pub async fn switch_model(
         .read()
         .expect("lock poisoned: settings")
         .clone();
-    apply_active_model(&mut settings, &body.provider, &body.model)
+    apply_active_model(&mut settings, &state.catalog, &body.provider, &body.model)
+        .await
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
 
     // 2. Persist so the choice survives a restart. Use the disk-load form to
     //    avoid writing back a runtime-resolved absolute working_dir.
     let mut disk = crate::config::Settings::load_from_disk().unwrap_or_else(|_| settings.clone());
-    apply_active_model(&mut disk, &body.provider, &body.model)
+    apply_active_model(&mut disk, &state.catalog, &body.provider, &body.model)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     if let Err(e) = disk.save() {
         tracing::warn!(error = %e, "failed to persist settings.json after model switch");
