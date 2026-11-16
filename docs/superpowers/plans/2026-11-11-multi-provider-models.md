@@ -384,20 +384,22 @@ async fn catalog_failure_falls_back_and_caches() {
 
 ### Task 8: web sessionManager per-session 状态 + API client
 
+- [x] Task 8: web sessionManager per-session 状态 + API client
+
 **Files:**
 - Modify: `web/src/state/sessionManager.ts`、`web/src/api/client.ts`、`web/src/api/types.ts`
 - Test: `web/src/state/sessionManager.test.ts`（新增/扩展）
 
 **Interfaces:**
 - Produces: `SessionEntry` 增 `model: {provider, model, isOverride} | null`、`mode: {mode: PermissionMode, isOverride} | null`
-- Produces: client `listModels(sessionId?)`（v2 类型 `ProvidersResponse`）、`switchModel({provider, model, sessionId?})`、`resetSessionModel(sessionId)`
+- Produces: client `listModels(sessionId?)`（v2 类型 `ProvidersResponse`）、`switchModel({provider, model, sessionId?})`、`resetSessionModel(sessionId)`、`resetSessionMode(sessionId)`
 - 事件：`ModelChanged`/`ModeChanged` payload 按 `session_id` 写对应 entry
 
-- [ ] **Step 1: 写失败测试**（vitest：事件定向更新 entry、顶层单值字段删除后无消费者崩溃）
-- [ ] **Step 2: 验证失败** — Run: `cd web && npx vitest run src/state/sessionManager.test.ts 2>&1 | tail -5`，Expected: FAIL
-- [ ] **Step 3: 实现** — types + client + sessionManager（`modelName`/`permissionMode` 顶层字段与 setter 删除，消费点本 task 先改为 `activeEntry?.model`，UI 组件下一 task 处理）
-- [ ] **Step 4: 验证通过** — Run: `cd web && npx vitest run 2>&1 | tail -4`，Expected: 全绿
-- [ ] **Step 5: Commit** — `feat(web): per-session model/mode state + v2 model API client`
+- [x] **Step 1: 写失败测试**（vitest：事件定向更新 entry、顶层单值字段删除后无消费者崩溃）
+- [x] **Step 2: 验证失败** — Run: `cd web && npx vitest run src/state/sessionManager.test.ts 2>&1 | tail -5`，Expected: FAIL
+- [x] **Step 3: 实现** — types + client + sessionManager（`modelName`/`permissionMode` 顶层字段与 setter 删除，消费点本 task 先改为 `activeEntry?.model`，UI 组件下一 task 处理）；补 permission reset、override metadata、事件 seq 与请求代次防护
+- [x] **Step 4: 验证通过** — Run: `cd web && npx vitest run 2>&1 | tail -4`，Expected: 全绿（最终 275 passed）
+- [x] **Step 5: Commit** — `feat(web): per-session model and mode state` + 三轮经授权/scoped review 的 freshness/reconnect 修复
 
 ---
 
