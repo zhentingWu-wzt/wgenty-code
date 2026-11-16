@@ -15,6 +15,7 @@ import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { SessionTabBar } from "./components/layout/SessionTabBar";
 import { ChatView } from "./features/chat/ChatView";
 import { Composer } from "./features/chat/Composer";
+import { ModelModeChips } from "./features/chat/ModelModeChips";
 import { PermissionModal } from "./features/permissions/PermissionModal";
 import { QuestionModal } from "./features/permissions/QuestionModal";
 import { CommandModal } from "./features/panels/CommandModal";
@@ -389,11 +390,11 @@ export function App() {
                   不遮挡任何内容。仅活跃会话有待处理项时占位。 */}
               {!showWelcome && <PermissionModal client={client} />}
               {!showWelcome && <QuestionModal client={client} />}
-              {/* 轮次状态条：仅 turn phase（spinner/文案/耗时），紧贴输入框
-                  上方提高可见性；连接/模型/模式等常驻信息仍在底部 StatusBar。 */}
+              {/* 轮次状态条仅显示 turn phase；会话级模型/模式 chips 紧贴输入框上方。 */}
               {!showWelcome && (
                 <>
                   <TurnStatus />
+                  <ModelModeChips client={client} />
                   <Composer
                     onSend={(text) => {
                       if (!activeId || !activeStore) return;
@@ -418,12 +419,7 @@ export function App() {
           </SessionStoreContext.Provider>
           <RightRail client={client} />
         </div>
-        <StatusBar
-          client={client}
-          onSwitchModel={() =>
-            setOpenCommand({ name: "/model", description: "Switch model profile" })
-          }
-        />
+        <StatusBar client={client} />
         {openCommand?.name === "/model" && (
           <CommandModal title="Switch model" onClose={closeCommand}>
             <ModelPanel client={client} />

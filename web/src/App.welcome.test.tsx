@@ -69,13 +69,19 @@ describe("App welcome screen", () => {
     render(<App />);
     // Bootstrap resolves (daemon offline) → welcome screen.
     expect(await screen.findByText("Wgenty Code", { selector: "h1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Session model:/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Permission mode:/ })).not.toBeInTheDocument();
 
     // Open a session from the welcome screen.
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /new session/i }));
     await waitFor(() => expect(useSessionManager.getState().activeId).not.toBeNull());
-    // Welcome is replaced by the chat shell.
+    // Welcome is replaced by the chat shell with session-scoped chips above Composer.
     expect(screen.queryByText("Wgenty Code", { selector: "h1" })).not.toBeInTheDocument();
+    const modelChip = screen.getByRole("button", { name: "Session model: -" });
+    const composer = screen.getByRole("textbox");
+    expect(modelChip.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.getByRole("button", { name: "Permission mode: -" })).toBeInTheDocument();
 
     // Close the only tab → back to the welcome screen (no crash / blank).
     const closeBtn = await screen.findAllByRole("button", { name: /^Close /i });

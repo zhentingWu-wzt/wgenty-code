@@ -5,9 +5,9 @@ import { deriveTurnVisual, formatDuration, phaseLabel, SPINNER, SPINNER_MS } fro
 /**
  * Turn-status strip — the phase segment ONLY (spinner + label + elapsed,
  * awaiting-decision / error variants), pinned directly above the input box
- * where the user's eyes already are. The persistent facts (connection,
- * workspace root, context bar, permission mode, model) stay in the bottom
- * StatusBar; this strip carries the live turn state, mirrored by the
+ * where the user's eyes already are. Connection, workspace root, and context
+ * usage stay in the bottom StatusBar; model and permission controls sit in
+ * the chip row below this strip. This strip carries the live turn state, mirrored by the
  * Composer's tinted frame. Renders the same labels as
  * src/tui/components/status.rs so both frontends read identically.
  */
