@@ -343,6 +343,8 @@ async fn model_reset_clears_override() { /* ... */ }
 
 ### Task 7: ModelCatalogService（懒加载单飞 + 三级合并）
 
+- [x] Task 7: ModelCatalogService（懒加载单飞 + 三级合并）
+
 **Files:**
 - Create: `src/daemon/catalog.rs`
 - Modify: `src/daemon/mod.rs`（`pub mod catalog;`）、`src/daemon/state.rs`（DaemonState 持有 `catalog: ModelCatalogService`）、`src/daemon/handlers/system.rs`（list_models 注入合并结果）
@@ -353,7 +355,7 @@ async fn model_reset_clears_override() { /* ... */ }
 - Produces: `pub struct MergedModel { pub name: String, pub tier: Option<ModelTier>, pub configured: bool }`
 - Produces: `pub const BUILTIN_CATALOGS: &[(&str, &[&str])]`（kimi/zhipu/deepseek/openai/anthropic 各 3-6 个）
 
-- [ ] **Step 1: 写失败测试**（四场景：成功合并/失败回退/TTL 缓存命中/anthropic+无 key 跳过）
+- [x] **Step 1: 写失败测试**（四场景：成功合并/失败回退/TTL 缓存命中/anthropic+无 key 跳过）
 
 ```rust
 #[tokio::test]
@@ -370,13 +372,13 @@ async fn catalog_failure_falls_back_and_caches() {
 }
 ```
 
-- [ ] **Step 2: 验证失败** — Run: `cargo test catalog_ --lib`，Expected: FAIL
+- [x] **Step 2: 验证失败** — Run: `cargo test catalog_ --lib`，Expected: FAIL
 
-- [ ] **Step 3: 实现**（`DashMap<String, CatalogEntry{fetched: Option<Vec<String>>, at: Instant}>` + `tokio::sync::Mutex` 单飞 per provider；`GET {base}/models` Bearer key；非 openai 协议或 key 未解析 → 跳过；TTL 300s；错误只 warn status）。
+- [x] **Step 3: 实现**（`std::sync::RwLock<HashMap<String, CatalogEntry>>` + `tokio::sync::Mutex` 单飞 per provider；缓存绑定 base_url/有效协议/凭证指纹；`GET {base}/models` Bearer key；非 OpenAI 兼容协议或 key 未解析 → 跳过；TTL 300s；错误只 warn status）。
 
-- [ ] **Step 4: 验证通过** — Run: `cargo test catalog_ --lib`，Expected: 4+ passed
+- [x] **Step 4: 验证通过** — Run: `cargo test catalog_ --lib`，Expected: 4+ passed（最终 12 passed）
 
-- [ ] **Step 5: Commit** — `feat(daemon): ModelCatalogService lazy singleflight 3-way merge`
+- [x] **Step 5: Commit** — `feat(daemon): add merged provider model catalog` + `fix(daemon): align catalog protocol and cache identity`
 
 ---
 

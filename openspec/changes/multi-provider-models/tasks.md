@@ -20,9 +20,9 @@
 
 ## 3. 动态模型目录
 
-- [ ] 3.1 `ModelCatalogService`：OpenAI 兼容 `GET /models` 拉取、内置目录静态表、手工条目合并去重（configured 标记）、TTL 5min 缓存、失败回退
-- [ ] 3.2 `GET /api/v1/providers`（组列表 + 每组合并目录）；Anthropic 协议组跳过拉取
-- [ ] 3.3 目录服务测试（mock 端点：成功合并/失败回退/缓存命中/跳过协议）
+- [x] 3.1 `ModelCatalogService`：OpenAI 兼容 `GET /models` 拉取、内置目录静态表、手工条目合并去重（configured 标记）、TTL 5min 缓存、失败回退
+- [x] 3.2 `GET /api/v1/models` 原地合并（组列表 + 每组合并目录，不新增 `/providers`）；Anthropic 协议组跳过拉取
+- [x] 3.3 目录服务测试（mock 端点：成功合并/失败回退/缓存命中/跳过协议）
 
 ## 4. Web：两级 chip 与 session 状态
 
