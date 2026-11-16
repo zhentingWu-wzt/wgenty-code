@@ -204,6 +204,64 @@ describe("usePermissionModeSync", () => {
     expect(entry.mode?.mode).toBe("accept_edits");
   });
 
+  it("resets old boot cursors when websocket reconnects while health is disconnected", async () => {
+    const id = useSessionManager.getState().createLocalSession("a", {
+      id: "local-a",
+      daemonId: "daemon-a",
+    });
+    const client = {
+      listModels: vi.fn().mockResolvedValue(modelsResponse("kimi", "health-snapshot", false)),
+      getPermissionMode: vi.fn().mockResolvedValue({
+        mode: "normal",
+        effective_mode: "normal",
+        is_override: false,
+      }),
+    } as unknown as DaemonClient;
+    useSessionManager.getState().applyModelChanged({
+      seq: 50,
+      kind: "model_changed",
+      data: { session_id: "daemon-a", provider: "kimi", model_name: "old-boot-model" },
+    });
+    useSessionManager.getState().applyModeChanged({
+      seq: 50,
+      kind: "mode_changed",
+      data: { session_id: "daemon-a", mode: "yolo" },
+    });
+    act(() => {
+      useSessionManager.setState({ connection: "disconnected" });
+    });
+    renderHook(() => usePermissionModeSync(client));
+
+    act(() => {
+      for (const handler of wsTest.reconnectedHandlers) handler();
+    });
+    act(() => {
+      useSessionManager.getState().setConnection("connected");
+    });
+    await waitFor(() => {
+      expect(useSessionManager.getState().entries[id].model?.model).toBe("health-snapshot");
+    });
+
+    act(() => {
+      useSessionManager.getState().applyModelChanged({
+        seq: 1,
+        kind: "model_changed",
+        data: { session_id: "daemon-a", provider: "kimi", model_name: "new-boot-model" },
+      });
+      for (const handler of wsTest.globalHandlers) {
+        handler({
+          seq: 1,
+          kind: "mode_changed",
+          data: { session_id: "daemon-a", mode: "accept_edits" },
+        });
+      }
+    });
+
+    const entry = useSessionManager.getState().entries[id];
+    expect(entry.model?.model).toBe("new-boot-model");
+    expect(entry.mode?.mode).toBe("accept_edits");
+  });
+
   it("does not let an old model GET overwrite a newer event for the same entry", async () => {
     const id = useSessionManager.getState().createLocalSession("a", {
       id: "local-a",
@@ -272,6 +330,133 @@ describe("usePermissionModeSync", () => {
       isOverride: true,
     });
   });
+
+  it("invalidates a pending GET when a global model event reaches an unknown entry", async () => {
+    const id = useSessionManager.getState().createLocalSession("a", {
+      id: "local-a",
+      daemonId: "daemon-a",
+    });
+    const models = deferred<ProvidersResponse>();
+    const client = {
+      listModels: vi.fn().mockReturnValue(models.promise),
+      getPermissionMode: vi.fn().mockResolvedValue({
+        mode: "normal",
+        effective_mode: "normal",
+        is_override: false,
+      }),
+    } as unknown as DaemonClient;
+    renderHook(() => usePermissionModeSync(client));
+    await waitFor(() => expect(client.listModels).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      useSessionManager.getState().applyModelChanged({
+        seq: 1,
+        kind: "model_changed",
+        data: { provider: "kimi", model_name: "new-global" },
+      });
+    });
+    await act(async () => {
+      models.resolve(modelsResponse("zhipu", "stale-get", false));
+      await models.promise;
+    });
+
+    const entry = useSessionManager.getState().entries[id];
+    expect(entry.model).toBeNull();
+    expect(entry.modelSeq).toBe(1);
+  });
+
+  it.each(["old-first", "old-last"] as const)(
+    "keeps the newest model refresh when the older request resolves %s",
+    async (order) => {
+      const id = useSessionManager.getState().createLocalSession("a", {
+        id: "local-a",
+        daemonId: "daemon-a",
+      });
+      const initial = deferred<ProvidersResponse>();
+      const reconnect = deferred<ProvidersResponse>();
+      const client = {
+        listModels: vi
+          .fn()
+          .mockReturnValueOnce(initial.promise)
+          .mockReturnValueOnce(reconnect.promise),
+        getPermissionMode: vi.fn().mockResolvedValue({
+          mode: "normal",
+          effective_mode: "normal",
+          is_override: false,
+        }),
+      } as unknown as DaemonClient;
+      renderHook(() => usePermissionModeSync(client));
+      await waitFor(() => expect(client.listModels).toHaveBeenCalledTimes(1));
+      act(() => {
+        for (const handler of wsTest.reconnectedHandlers) handler();
+      });
+      await waitFor(() => expect(client.listModels).toHaveBeenCalledTimes(2));
+
+      await act(async () => {
+        if (order === "old-first") {
+          initial.resolve(modelsResponse("zhipu", "initial-old", true));
+          await initial.promise;
+          reconnect.resolve(modelsResponse("kimi", "reconnect-new", false));
+          await reconnect.promise;
+        } else {
+          reconnect.resolve(modelsResponse("kimi", "reconnect-new", false));
+          await reconnect.promise;
+          initial.resolve(modelsResponse("zhipu", "initial-old", true));
+          await initial.promise;
+        }
+      });
+
+      expect(useSessionManager.getState().entries[id].model).toEqual({
+        provider: "kimi",
+        model: "reconnect-new",
+        isOverride: false,
+      });
+    },
+  );
+
+  it.each(["old-first", "old-last"] as const)(
+    "keeps the newest mode refresh when the older request resolves %s",
+    async (order) => {
+      const id = useSessionManager.getState().createLocalSession("a", {
+        id: "local-a",
+        daemonId: "daemon-a",
+      });
+      const initial = deferred<{ mode: "normal"; effective_mode: string; is_override: boolean }>();
+      const reconnect = deferred<{ mode: "yolo"; effective_mode: string; is_override: boolean }>();
+      const client = {
+        listModels: vi.fn().mockResolvedValue(modelsResponse("kimi", "k3", false)),
+        getPermissionMode: vi
+          .fn()
+          .mockReturnValueOnce(initial.promise)
+          .mockReturnValueOnce(reconnect.promise),
+      } as unknown as DaemonClient;
+      renderHook(() => usePermissionModeSync(client));
+      await waitFor(() => expect(client.getPermissionMode).toHaveBeenCalledTimes(1));
+      act(() => {
+        for (const handler of wsTest.reconnectedHandlers) handler();
+      });
+      await waitFor(() => expect(client.getPermissionMode).toHaveBeenCalledTimes(2));
+
+      await act(async () => {
+        if (order === "old-first") {
+          initial.resolve({ mode: "normal", effective_mode: "normal", is_override: true });
+          await initial.promise;
+          reconnect.resolve({ mode: "yolo", effective_mode: "yolo", is_override: false });
+          await reconnect.promise;
+        } else {
+          reconnect.resolve({ mode: "yolo", effective_mode: "yolo", is_override: false });
+          await reconnect.promise;
+          initial.resolve({ mode: "normal", effective_mode: "normal", is_override: true });
+          await initial.promise;
+        }
+      });
+
+      expect(useSessionManager.getState().entries[id].mode).toEqual({
+        mode: "yolo",
+        isOverride: false,
+      });
+    },
+  );
 
   it("discards late responses from the previously active session", async () => {
     const m = useSessionManager.getState();

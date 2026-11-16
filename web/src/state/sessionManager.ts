@@ -270,7 +270,18 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
       const entries = Object.fromEntries(
         Object.entries(s.entries).map(([id, entry]) => {
           if (seq <= entry.modelSeq) return [id, entry];
-          if (entry.model?.isOverride !== false) {
+          if (entry.model === null) {
+            return [
+              id,
+              {
+                ...entry,
+                modelRevision: entry.modelRevision + 1,
+                modelSeq: seq,
+                updatedAt: Date.now(),
+              },
+            ];
+          }
+          if (entry.model.isOverride) {
             return [id, { ...entry, modelSeq: seq }];
           }
           return [

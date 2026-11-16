@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { DaemonClient } from "../api/client";
 import { wsChannel } from "../api/wsChannel";
 import { useSessionManager } from "../state/sessionManager";
@@ -18,22 +18,26 @@ export function usePermissionModeSync(client: DaemonClient | null): void {
   // which is also where not-yet-created sessions run).
   const routedId = daemonId ?? activeId;
 
-  useEffect(() => {
-    if (!client || !activeId || !routedId || connection !== "connected") return;
-    let cancelled = false;
-
-    const refresh = () => {
+  const requestGenerations = useRef(new Map<string, { model: number; mode: number }>());
+  const refresh = useCallback(
+    (id: string, route: string) => {
+      if (!client) return;
       const manager = useSessionManager.getState();
-      const modelRevision = manager.getSessionModelRevision(activeId);
-      const modeRevision = manager.getSessionModeRevision(activeId);
+      const modelRevision = manager.getSessionModelRevision(id);
+      const modeRevision = manager.getSessionModeRevision(id);
+      const generations = requestGenerations.current.get(id) ?? { model: 0, mode: 0 };
+      requestGenerations.current.set(id, generations);
+      const modelGeneration = ++generations.model;
+      const modeGeneration = ++generations.mode;
+
       client
-        .listModels(routedId)
+        .listModels(route)
         .then((response) => {
-          if (cancelled) return;
+          if (requestGenerations.current.get(id)?.model !== modelGeneration) return;
           for (const provider of response.providers) {
             const model = provider.models.find((candidate) => candidate.active);
             if (model) {
-              useSessionManager.getState().setSessionModelIfRevision(activeId, modelRevision, {
+              useSessionManager.getState().setSessionModelIfRevision(id, modelRevision, {
                 provider: provider.key,
                 model: model.name,
                 isOverride: response.is_override === true,
@@ -41,36 +45,52 @@ export function usePermissionModeSync(client: DaemonClient | null): void {
               return;
             }
           }
-          useSessionManager.getState().setSessionModelIfRevision(activeId, modelRevision, null);
+          useSessionManager.getState().setSessionModelIfRevision(id, modelRevision, null);
         })
         .catch(() => {
           // Non-fatal: retain the last known value until the next activation.
         });
 
       client
-        .getPermissionMode(routedId)
+        .getPermissionMode(route)
         .then((pm) => {
-          if (!cancelled && pm.mode) {
-            useSessionManager.getState().setSessionModeIfRevision(activeId, modeRevision, {
-              mode: pm.mode,
-              isOverride: pm.is_override === true,
-            });
-          }
+          if (requestGenerations.current.get(id)?.mode !== modeGeneration || !pm.mode) return;
+          useSessionManager.getState().setSessionModeIfRevision(id, modeRevision, {
+            mode: pm.mode,
+            isOverride: pm.is_override === true,
+          });
         })
         .catch(() => {
           // Non-fatal: retain the last known value until the next activation.
         });
-    };
-    refresh();
-    const unsubscribe = wsChannel.onReconnected(() => {
-      useSessionManager.getState().resetModelModeEventSeq();
-      refresh();
-    });
+    },
+    [client],
+  );
+
+  useEffect(() => {
+    if (!activeId || !routedId || connection !== "connected") return;
+    refresh(activeId, routedId);
+    const generationsById = requestGenerations.current;
     return () => {
-      cancelled = true;
-      unsubscribe();
+      const generations = generationsById.get(activeId);
+      if (generations) {
+        generations.model += 1;
+        generations.mode += 1;
+      }
     };
-  }, [client, activeId, routedId, connection]);
+  }, [activeId, routedId, connection, refresh]);
+
+  useEffect(() => {
+    return wsChannel.onReconnected(() => {
+      const manager = useSessionManager.getState();
+      const id = manager.activeId;
+      if (!id) return;
+      const entry = manager.entries[id];
+      if (!entry) return;
+      manager.resetModelModeEventSeq();
+      refresh(id, entry.daemonId ?? id);
+    });
+  }, [refresh]);
 
   useEffect(() => {
     return wsChannel.subscribeGlobal((ev) => {
