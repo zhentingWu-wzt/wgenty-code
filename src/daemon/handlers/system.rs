@@ -230,7 +230,9 @@ fn apply_active_model(
     Ok(())
 }
 
-/// POST /api/v1/model/switch — vendor-grouped selection.
+/// POST /api/v1/model/switch — vendor-grouped selection. A legacy `profile`
+/// is first resolved by an exact migrated `profile_key` match, never by model
+/// name, then follows the same canonical provider/model path.
 ///
 /// With `session_id`: writes ONLY that session's `model_override` (targeted
 /// in-lock update; no global live-handle change, no settings.json persist)
@@ -244,6 +246,33 @@ pub async fn switch_model(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<SwitchModelRequest>,
 ) -> Result<Json<SwitchModelResponse>, (StatusCode, String)> {
+    let body = if let Some(profile) = body.profile.as_deref() {
+        let resolved = {
+            let settings = state
+                .settings_handle
+                .read()
+                .expect("lock poisoned: settings");
+            settings
+                .models
+                .find_provider_model_by_key(profile)
+                .map(|(provider, model)| (provider, model.name.clone()))
+        };
+        let (provider, model) = resolved.ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("unknown legacy profile '{profile}'"),
+            )
+        })?;
+        SwitchModelRequest {
+            provider,
+            model,
+            profile: None,
+            session_id: body.session_id,
+        }
+    } else {
+        body
+    };
+
     // ── Session-scoped path: override only, never a global write ──────────
     if let Some(session_id) = body.session_id.as_deref() {
         // Reject ids that could escape the sessions directory (path

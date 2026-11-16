@@ -165,15 +165,21 @@ pub struct PermissionModeQuery {
 
 // ── Model Switch ─────────────────────────────────────────────────────────────
 
-/// `POST /api/v1/model/switch` — vendor-grouped selection. With `session_id`
-/// the switch writes only that session's `model_override` (never global
-/// settings); without it the global `active_model` is set and persisted.
+/// `POST /api/v1/model/switch` — vendor-grouped selection, or a migrated
+/// legacy `profile` key. With `session_id` the switch writes only that
+/// session's `model_override` (never global settings); without it the global
+/// `active_model` is set and persisted.
 #[derive(Debug, Deserialize)]
 pub struct SwitchModelRequest {
     /// Key in `models.providers`.
+    #[serde(default)]
     pub provider: String,
     /// `ProviderModel::name` inside that group.
+    #[serde(default)]
     pub model: String,
+    /// Original legacy profile key, resolved only through `profile_key`.
+    #[serde(default)]
+    pub profile: Option<String>,
     /// Session whose model override to set. `None` = global switch.
     #[serde(default)]
     pub session_id: Option<String>,

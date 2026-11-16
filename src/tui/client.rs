@@ -867,8 +867,9 @@ impl DaemonClient {
         parse_list_models(&v)
     }
 
-    /// POST /api/v1/model/switch - activate a `provider/model` selection.
-    /// On success the next chat turn uses the new model. Returns the daemon's
+    /// POST /api/v1/model/switch - activate a `provider/model` selection or
+    /// a migrated legacy profile key. On success the next chat turn uses the
+    /// new model. Returns the daemon's
     /// response (label/model_name/provider) for UI confirmation.
     pub async fn switch_model(&self, target: &str) -> anyhow::Result<ModelSwitchResult> {
         let url = format!("{}/api/v1/model/switch", self.base_url);
@@ -1462,14 +1463,14 @@ fn parse_list_models(v: &serde_json::Value) -> anyhow::Result<Vec<ModelOption>> 
 }
 
 /// Build the `POST /model/switch` body from a flat `provider/model` picker
-/// key. Split on the FIRST '/' so model names containing slashes survive; a
-/// bare model name is an actionable client-side error (the daemon expects
-/// both fields).
+/// key or a legacy profile key. Split picker keys on the FIRST '/' so model
+/// names containing slashes survive; bare keys use the legacy `profile` field
+/// and are validated by the daemon against migrated `profile_key` values.
 fn model_switch_body(target: &str) -> anyhow::Result<serde_json::Value> {
-    let (provider, model) = target.split_once('/').ok_or_else(|| {
-        anyhow::anyhow!("model must be in provider/model form (e.g. zhipu/glm-5.3)")
-    })?;
-    Ok(serde_json::json!({ "provider": provider, "model": model }))
+    Ok(match target.split_once('/') {
+        Some((provider, model)) => serde_json::json!({ "provider": provider, "model": model }),
+        None => serde_json::json!({ "profile": target }),
+    })
 }
 
 #[cfg(test)]
@@ -1521,23 +1522,26 @@ mod tests {
     }
 
     /// `POST /model/switch` body from a flat `provider/model` picker key:
-    /// split on the FIRST '/' so model names containing slashes survive; a
-    /// bare model name is an actionable error, not a wrong request.
+    /// split on the FIRST '/' so model names containing slashes survive.
     #[test]
     fn model_switch_body_splits_provider_model() {
         let body = model_switch_body("zhipu/glm-5.3").expect("flat key splits");
-        assert_eq!(body["provider"], "zhipu");
-        assert_eq!(body["model"], "glm-5.3");
+        assert_eq!(
+            body,
+            serde_json::json!({ "provider": "zhipu", "model": "glm-5.3" })
+        );
 
         let body = model_switch_body("custom/gpt-4o/mini").expect("split on first slash");
-        assert_eq!(body["provider"], "custom");
-        assert_eq!(body["model"], "gpt-4o/mini");
-
-        let err = model_switch_body("glm-5.3").expect_err("bare name rejected");
-        assert!(
-            format!("{err:#}").contains("provider/model"),
-            "error should suggest the provider/model form: {err:#}"
+        assert_eq!(
+            body,
+            serde_json::json!({ "provider": "custom", "model": "gpt-4o/mini" })
         );
+    }
+
+    #[test]
+    fn model_switch_body_preserves_legacy_profile_key() {
+        let body = model_switch_body("legacy-glm").expect("legacy profile key is accepted");
+        assert_eq!(body, serde_json::json!({ "profile": "legacy-glm" }));
     }
 
     /// Wire-format regression: the daemon's `tasks::TodoItem` serializes

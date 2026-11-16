@@ -2125,6 +2125,7 @@ async fn switch_model_with_session_writes_override_only() {
             Json(SwitchModelRequest {
                 provider: "zhipu".to_string(),
                 model: "glm-5.2".to_string(),
+                profile: None,
                 session_id: Some("session-a".to_string()),
             }),
         )
@@ -2244,6 +2245,7 @@ async fn switch_model_without_session_preserves_global_path() {
             Json(SwitchModelRequest {
                 provider: "anthropic".to_string(),
                 model: "claude-sonnet-4-5".to_string(),
+                profile: None,
                 session_id: None,
             }),
         )
@@ -2292,6 +2294,7 @@ async fn switch_model_without_session_preserves_global_path() {
             Json(SwitchModelRequest {
                 provider: "zhipu".to_string(),
                 model: "glm-5.3".to_string(),
+                profile: None,
                 session_id: None,
             }),
         )
@@ -2309,6 +2312,145 @@ async fn switch_model_without_session_preserves_global_path() {
         None => std::env::remove_var("WGENTY_HOME"),
     }
     run
+}
+
+fn legacy_switch_request(profile: &str, session_id: Option<&str>) -> SwitchModelRequest {
+    serde_json::from_value(serde_json::json!({
+        "profile": profile,
+        "session_id": session_id,
+    }))
+    .expect("legacy switch request deserializes")
+}
+
+/// A migrated legacy profile key resolves to its canonical provider/model
+/// pair on both switch paths, without changing their session/global scope.
+#[tokio::test]
+#[serial_test::serial]
+async fn switch_model_legacy_profile_key_preserves_switch_scope() {
+    use axum::extract::State;
+    use axum::Json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let mut settings = provider_test_settings(temp.path());
+    settings
+        .models
+        .providers
+        .get_mut("zhipu")
+        .unwrap()
+        .models
+        .iter_mut()
+        .find(|model| model.name == "glm-5.2")
+        .unwrap()
+        .profile_key = Some("legacy-glm".to_string());
+    let disk_before = seed_settings_disk(fake_home.path(), &settings);
+
+    let prev_wgenty_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+    let run = async {
+        let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+        state
+            .session_manager
+            .save(&crate::context::memory_session::Session::with_id(
+                "session-a",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let resp = switch_model(
+            State(state.clone()),
+            Json(legacy_switch_request("legacy-glm", Some("session-a"))),
+        )
+        .await
+        .expect("legacy session-scoped switch");
+        assert_eq!(resp.provider.as_deref(), Some("zhipu"));
+        assert_eq!(resp.model_name, "glm-5.2");
+        let saved = state
+            .session_manager
+            .load("session-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            saved.model_override,
+            Some(crate::config::models::ActiveModelRef {
+                provider: "zhipu".to_string(),
+                model: "glm-5.2".to_string(),
+            })
+        );
+        assert_eq!(
+            state
+                .settings_handle
+                .read()
+                .expect("lock poisoned")
+                .models
+                .active_model
+                .as_ref()
+                .unwrap()
+                .model,
+            "glm-5.3"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fake_home.path().join(".wgenty-code/settings.json")).unwrap(),
+            disk_before,
+            "legacy session switch must not persist global settings"
+        );
+
+        let resp = switch_model(
+            State(state.clone()),
+            Json(legacy_switch_request("legacy-glm", None)),
+        )
+        .await
+        .expect("legacy global switch");
+        assert_eq!(resp.provider.as_deref(), Some("zhipu"));
+        assert_eq!(resp.model_name, "glm-5.2");
+        assert_eq!(
+            state
+                .settings_handle
+                .read()
+                .expect("lock poisoned")
+                .models
+                .active_model,
+            Some(crate::config::models::ActiveModelRef {
+                provider: "zhipu".to_string(),
+                model: "glm-5.2".to_string(),
+            })
+        );
+        let disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fake_home.path().join(".wgenty-code/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(disk["models"]["active_model"]["provider"], "zhipu");
+        assert_eq!(disk["models"]["active_model"]["model"], "glm-5.2");
+    }
+    .await;
+    match prev_wgenty_home {
+        Some(v) => std::env::set_var("WGENTY_HOME", v),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    run
+}
+
+/// Legacy compatibility is keyed only by the preserved profile key; a bare
+/// model name must not trigger cross-provider name guessing.
+#[tokio::test]
+async fn switch_model_legacy_profile_does_not_guess_bare_model_name() {
+    use axum::extract::State;
+    use axum::Json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = Arc::new(
+        DaemonState::new(crate::state::AppState::new(provider_test_settings(
+            temp.path(),
+        )))
+        .await,
+    );
+
+    let (status, _) = switch_model(State(state), Json(legacy_switch_request("glm-5.2", None)))
+        .await
+        .expect_err("a bare model name is not a legacy profile key");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 /// `POST /api/v1/model/reset` clears the session's model override: the
@@ -2407,6 +2549,7 @@ async fn model_switch_and_reset_reject_unsafe_session_id() {
         Json(SwitchModelRequest {
             provider: "zhipu".to_string(),
             model: "glm-5.2".to_string(),
+            profile: None,
             session_id: Some(session_id.clone()),
         }),
     )
@@ -2450,6 +2593,7 @@ async fn switch_model_unknown_pair_returns_400_listing_models() {
             Json(SwitchModelRequest {
                 provider: "zhipu".to_string(),
                 model: "nonexistent".to_string(),
+                profile: None,
                 session_id: session_id.clone(),
             }),
         )
