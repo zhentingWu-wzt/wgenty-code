@@ -298,6 +298,8 @@ async fn effective_permission_session_overrides_project() {
 
 ### Task 6: GET /models v2 + /model/switch 扩展 + 事件 session_id
 
+- [x] Task 6: GET /models v2 + /model/switch 扩展 + 事件 session_id
+
 **Files:**
 - Modify: `src/daemon/handlers/system.rs`（list_models/switch_model）
 - Modify: `src/daemon/models.rs`（请求/响应类型：`SwitchModelRequest{provider, model, session_id?}`；`ListModelsResponse` v2）
@@ -309,7 +311,7 @@ async fn effective_permission_session_overrides_project() {
 - Produces: `POST /model/switch` 带 session_id → 只写 Session.model_override + 广播（payload 含 session_id），不落盘全局；不带 → 设 active_model + models.main + 落盘（现行为）
 - Produces: 重置 `POST /api/v1/model/reset` body `{session_id}` → 清 model_override
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```rust
 #[tokio::test]
@@ -329,13 +331,13 @@ async fn switch_model_without_session_preserves_global_path() { /* 现行为回�
 async fn model_reset_clears_override() { /* ... */ }
 ```
 
-- [ ] **Step 2: 验证失败** — Run: `cargo test list_models_v2 switch_model_with_session model_reset --lib`，Expected: FAIL
+- [x] **Step 2: 验证失败** — Run: `cargo test list_models_v2 switch_model_with_session model_reset --lib`，Expected: FAIL
 
-- [ ] **Step 3: 实现**（list_models 数据源：providers（+目录合并，目录服务下一 task 注入，本 task 先手工+内置占位）→ 排序组按 key、模型按 name；TUI `ModelOption` 平铺：`format!("{}/{}", provider_key, model_name)`，label 用 display_name）。
+- [x] **Step 3: 实现**（list_models 数据源：providers（+目录合并，目录服务下一 task 注入，本 task 先手工+内置占位）→ 排序组按 key、模型按 name；TUI `ModelOption` 平铺：`format!("{}/{}", provider_key, model_name)`，label 用 display_name）。
 
-- [ ] **Step 4: 验证通过 + TUI 编译** — Run: `cargo test --workspace --lib 2>&1 | tail -3 && cargo build 2>&1 | tail -2`，Expected: 全绿
+- [x] **Step 4: 验证通过 + TUI 编译** — Run: `cargo test --workspace --lib 2>&1 | tail -3 && cargo build 2>&1 | tail -2`，Expected: 全绿
 
-- [ ] **Step 5: Commit** — `feat(daemon,tui): GET /models v2 vendor-grouped + session-scoped switch/reset + broadcast session_id`
+- [x] **Step 5: Commit** — `feat(daemon,tui): GET /models v2 vendor-grouped + session-scoped switch/reset + broadcast session_id`
 
 ---
 
