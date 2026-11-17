@@ -123,7 +123,7 @@ fn legacy_profiles_json() -> String {
 #[test]
 fn migrate_profiles_groups_by_host() {
     let mut cfg: ModelsConfig = serde_json::from_str(&legacy_profiles_json()).unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     assert_eq!(cfg.providers.len(), 2, "kimi + zhipu");
     let zg = cfg.providers.get("zhipu").expect("zhipu group");
     assert_eq!(zg.models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["glm-5.3", "glm-5.3-flash"]);
@@ -136,9 +136,9 @@ fn migrate_profiles_groups_by_host() {
 #[test]
 fn migrate_is_idempotent() {
     let mut cfg: ModelsConfig = serde_json::from_str(&legacy_profiles_json()).unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     let once = serde_json::to_string(&cfg.providers).unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     let twice = serde_json::to_string(&cfg.providers).unwrap();
     assert_eq!(once, twice);
 }
@@ -148,14 +148,14 @@ fn migrate_unknown_host_uses_host_as_group_name() {
     let mut cfg: ModelsConfig = serde_json::from_str(
         r#"{"profiles": {"x": {"name": "m", "base_url": "https://llm.internal.io/v1"}}}"#,
     ).unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     assert!(cfg.providers.contains_key("llm.internal.io"));
 }
 ```
 
 - [x] **Step 2: 验证失败** — Run: `cargo test migrate_ --lib 2>&1 | tail -3`，Expected: FAIL
 
-- [x] **Step 3: 实现 `migrate_providers`** — 逻辑：`profiles` 空→no-op；非空且 `providers` 已存在→把 profile 按同规则合入现有组（同名 (group,model) 跳过）；否则新建组。分组：url parse host（失败用 "custom"），host 经 `vendor_for_host` 映射，未知用 host。每 profile → `ProviderModel{name, tier, api_key, base_url, context_window, temperature}`（仅当与组 base_url/key 不同的才下沉为 override：同值置 None）。组 `api_key` 取组内第一个 profile 的 key。`active_profile` 有值→查其在哪个组哪个模型→写 `active_model`，并同步 `models.main`（用现有字段拼 `ModelEndpoint`）。完成后 `profiles.clear()`、`small`/`planner` 已由现有 `migrate_legacy` 处理（保持其顺序：先 legacy 后 providers）。`Settings::load_from_disk`：检测到迁移发生（`profiles` 非空→空变化）且目标文件存在时，`std::fs::copy(settings_path, settings_path.with_extension(format!("json.bak-{}", date)))`（已存在同日 bak 不覆盖），再 `save()`。
+- [x] **Step 3: 实现 `migrate_providers`** — 逻辑：`profiles` 空→no-op；非空且 `providers` 已存在→把 profile 按同规则合入现有组（同名 (group,model) 语义相同则跳过，端点/身份冲突则返回错误且保留旧文件）；否则新建组。分组：url parse host（失败用 "custom"），host 经 `vendor_for_host` 映射，未知用 host。每 profile → `ProviderModel{name, tier, api_key, base_url, context_window, temperature}`（仅当与组 base_url/key 不同的才下沉为 override：同值置 None）。组 `api_key` 取组内第一个 profile 的 key。`active_profile` 有值→查其在哪个组哪个模型→写 `active_model`，并同步 `models.main`（用现有字段拼 `ModelEndpoint`）。完成后 `profiles.clear()`、`small`/`planner` 已由现有 `migrate_legacy` 处理（保持其顺序：先 legacy 后 providers）。`Settings::load_from_disk`：检测到迁移发生（`profiles` 非空→空变化）且目标文件存在时，`std::fs::copy(settings_path, settings_path.with_extension(format!("json.bak-{}", date)))`（已存在同日 bak 不覆盖），再 `save()`。
 
 - [x] **Step 4: 验证通过** — Run: `cargo test migrate_ --lib 2>&1 | tail -3`，Expected: 3 passed
 

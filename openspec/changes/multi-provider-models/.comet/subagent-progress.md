@@ -5,12 +5,14 @@
 - Mode: subagent-driven-development / tdd
 - Review mode: standard
 
-## Current Task: Final whole-branch review
+## Current Task: Build guard → Verify
 
 - Task 10: complete，standard 1 fix round scoped 复查通过
-- 自动化验收: Rust 2272 passed；Web 293 passed；fmt/clippy/tsc/ESLint 全绿
+- Final review: C1/I1-I9 集中修复完成（3a617d8e..9eabb17a），scoped 复查全部 ADDRESSED
+- 最终自动化验收: Rust 2284 passed / 4 ignored；Web 293 passed；fmt/clippy/tsc/ESLint 全绿
 - 可选手动 daemon 冒烟: not-run
-- 下一步: 全分支轻量 final review，triaged deferred findings
+- 测试可靠性顾虑: 主会话首次 workspace 复验出现一次迁移冲突测试失败，后续定向/单线程/默认并行及最终 workspace 均通过，根因未证实，未改源码
+- 下一步: 记录真实检查并运行 comet guard build --apply
 
 ## Completed Tasks
 
