@@ -781,19 +781,17 @@ impl SessionManager {
         key: &str,
         value: Option<serde_json::Value>,
     ) -> anyhow::Result<bool> {
-        let Some(mut session) = self.get(id).await else {
-            return Ok(false);
-        };
-        match value {
-            Some(v) => {
-                session.metadata.insert(key.to_string(), v);
-            }
-            None => {
-                session.metadata.remove(key);
-            }
-        }
-        self.save(&session).await?;
-        Ok(true)
+        let updated = self
+            .update_session_record(id, |session| match value {
+                Some(v) => {
+                    session.metadata.insert(key.to_string(), v);
+                }
+                None => {
+                    session.metadata.remove(key);
+                }
+            })
+            .await?;
+        Ok(updated.is_some())
     }
 
     pub async fn search(&self, query: &str) -> Vec<SessionInfo> {
@@ -1397,6 +1395,54 @@ mod tests {
             .unwrap();
         assert!(updated.is_none(), "missing session must not be created");
         assert!(mgr.load("ghost").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_metadata_and_model_message_updates_do_not_lose_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        mgr.save(&Session::with_id("metadata-race", None))
+            .await
+            .unwrap();
+
+        const N: usize = 30;
+        let metadata_writer = {
+            let mgr = mgr.clone();
+            tokio::spawn(async move {
+                for i in 0..N {
+                    assert!(
+                        mgr.set_metadata("metadata-race", "auto-title", Some(i.into()))
+                            .await
+                            .unwrap()
+                    );
+                }
+            })
+        };
+        let record_writer = {
+            let mgr = mgr.clone();
+            tokio::spawn(async move {
+                for i in 0..N {
+                    mgr.update_session_record("metadata-race", |session| {
+                        session.add_message("assistant", &format!("message-{i}"));
+                        session.model_override = Some(crate::config::models::ActiveModelRef {
+                            provider: "zhipu".to_string(),
+                            model: format!("model-{i}"),
+                        });
+                    })
+                    .await
+                    .unwrap()
+                    .expect("session exists");
+                }
+            })
+        };
+        metadata_writer.await.unwrap();
+        record_writer.await.unwrap();
+
+        let final_session = mgr.load("metadata-race").await.unwrap().unwrap();
+        assert_eq!(final_session.messages.len(), N);
+        assert!(final_session.metadata.contains_key("auto-title"));
+        assert!(final_session.model_override.is_some());
+        assert_eq!(final_session.version, (2 * N) as u64);
     }
 
     /// Whole-record writers (permission POST vs run save) previously raced as

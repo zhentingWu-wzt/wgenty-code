@@ -2282,16 +2282,18 @@ async fn run_session_turn(
     // 2b. Auto-title unnamed sessions from the first user message. Sessions
     // created without an explicit name default `name` to the session id (a
     // UUID) — the web rail and the TUI resume list would otherwise show raw
-    // UUIDs. Explicitly named sessions (`name != id`) are never touched. The
-    // reload after the seed save keeps `messages` current so the rename
-    // cannot clobber the just-saved history.
-    if let Ok(Some(mut session)) = sessions.load(session_id).await {
-        if session.name == session_id {
-            if let Some(title) = title_from_first_user_message(&seed) {
-                session.name = title;
-                if let Err(e) = sessions.save(&session).await {
-                    tracing::warn!(error = %e, session = session_id, "auto-title save failed");
-                }
+    // UUIDs. Explicitly named sessions (`name != id`) are never touched.
+    if session.name == session_id {
+        if let Some(title) = title_from_first_user_message(&seed) {
+            let result = sessions
+                .update_session_record(session_id, |session| {
+                    if session.name == session_id {
+                        session.name = title;
+                    }
+                })
+                .await;
+            if let Err(e) = result {
+                tracing::warn!(error = %e, session = session_id, "auto-title save failed");
             }
         }
     }
