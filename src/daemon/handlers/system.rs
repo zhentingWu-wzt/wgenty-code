@@ -194,9 +194,9 @@ async fn resolve_session_model_snapshot(
             session_id,
             provider = %model_override.provider,
             model = %model_override.model,
-            "failed to resolve session model override; using global settings"
+            "session model override is unavailable"
         );
-        return (settings.models.active_model.clone(), true);
+        return (None, true);
     }
     (Some(model_override), true)
 }

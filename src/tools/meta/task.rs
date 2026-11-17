@@ -88,7 +88,7 @@ mod tests;
 
 use transcript::build_transcript;
 
-type SessionSettingsResolver = Arc<dyn Fn(&str) -> Settings + Send + Sync>;
+type SessionSettingsResolver = Arc<dyn Fn(&str) -> anyhow::Result<Settings> + Send + Sync>;
 type SessionPermissionResolver =
     Arc<dyn Fn(&str) -> crate::permissions::PermissionModeEntry + Send + Sync>;
 
@@ -170,16 +170,16 @@ impl TaskTool {
             .clone()
     }
 
-    fn settings_for_session(&self, session_id: &str) -> Settings {
+    fn settings_for_session(&self, session_id: &str) -> anyhow::Result<Settings> {
         self.session_settings_resolver
             .as_ref()
             .map(|resolver| resolver(session_id))
-            .unwrap_or_else(|| self.settings())
+            .unwrap_or_else(|| Ok(self.settings()))
     }
 
     pub fn with_session_settings_resolver(
         mut self,
-        resolver: Arc<dyn Fn(&str) -> Settings + Send + Sync>,
+        resolver: Arc<dyn Fn(&str) -> anyhow::Result<Settings> + Send + Sync>,
     ) -> Self {
         self.session_settings_resolver = Some(resolver);
         self
@@ -382,7 +382,12 @@ impl TaskTool {
             };
 
         // Structural failure does not swap the model: reuse parent's settings.
-        let settings = self.settings_for_session(context.agent.session_id.as_str());
+        let settings = self
+            .settings_for_session(context.agent.session_id.as_str())
+            .map_err(|error| ToolError {
+                message: error.to_string(),
+                code: Some("session_model_unavailable".to_string()),
+            })?;
         let api_client = ApiClient::new(settings.clone());
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
             message: "tool registry unavailable for fallback".to_string(),
@@ -604,7 +609,12 @@ impl Tool for TaskTool {
         // it so the acknowledgement can report it as ignored rather than
         // silently dropping a field the model thinks it controls.
         let background_supplied = input.get("background").is_some();
-        let settings = self.settings_for_session(context.agent.session_id.as_str());
+        let settings = self
+            .settings_for_session(context.agent.session_id.as_str())
+            .map_err(|error| ToolError {
+                message: error.to_string(),
+                code: Some("session_model_unavailable".to_string()),
+            })?;
 
         // Token budget: 4-level fallback per spec §3.3a.
         // 1. explicit input.token_budget (caller-explicit; 0 = unlimited stays None)

@@ -10,11 +10,15 @@ fn tasktool_resolver_overrides_global_settings() {
     let mut session = Settings::default();
     session.models.main.name = "glm-5.3-flash".to_string();
     let tool = task_tool_with_coordinator(4, 3)
-        .with_session_settings_resolver(Arc::new(move |_| session.clone()));
+        .with_session_settings_resolver(Arc::new(move |_| Ok(session.clone())));
 
     *tool.settings_handle.write().unwrap() = global;
     assert_eq!(
-        tool.settings_for_session("session-a").models.main.name,
+        tool.settings_for_session("session-a")
+            .unwrap()
+            .models
+            .main
+            .name,
         "glm-5.3-flash"
     );
 }
@@ -27,7 +31,11 @@ fn tasktool_without_resolver_falls_back_to_global() {
     *tool.settings_handle.write().unwrap() = global;
 
     assert_eq!(
-        tool.settings_for_session("session-a").models.main.name,
+        tool.settings_for_session("session-a")
+            .unwrap()
+            .models
+            .main
+            .name,
         "global-model"
     );
 }

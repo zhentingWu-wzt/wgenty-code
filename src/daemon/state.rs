@@ -993,7 +993,7 @@ impl DaemonState {
                     .expect("settings lock poisoned")
                     .clone();
                 let Some(state) = state else {
-                    return global;
+                    return Ok(global);
                 };
                 match tokio::runtime::Handle::try_current() {
                     Ok(handle)
@@ -1007,14 +1007,14 @@ impl DaemonState {
                         })
                     }
                     _ => {
-                        let fallback = global.clone();
+                        let fallback = Ok(global.clone());
                         let session_id = session_id.to_string();
                         std::thread::spawn(move || {
                             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                                 .enable_all()
                                 .build()
                             else {
-                                return global;
+                                return Ok(global);
                             };
                             runtime.block_on(state.resolve_session_model(&session_id))
                         })
@@ -1022,7 +1022,7 @@ impl DaemonState {
                         .unwrap_or(fallback)
                     }
                 }
-            }) as Arc<dyn Fn(&str) -> crate::config::Settings + Send + Sync>
+            }) as Arc<dyn Fn(&str) -> anyhow::Result<crate::config::Settings> + Send + Sync>
         };
         // Session-scoped permission resolution for subagent snapshots: bridges
         // async `DaemonState::effective_permission` (session override >
@@ -2189,7 +2189,7 @@ impl DaemonState {
     }
 
     /// Resolve the session's model selection without mutating global settings.
-    pub async fn resolve_session_model(&self, session_id: &str) -> crate::config::Settings {
+    pub async fn resolve_session_model(&self, session_id: &str) -> anyhow::Result<crate::config::Settings> {
         let global = {
             self.settings_handle
                 .read()
@@ -2197,10 +2197,10 @@ impl DaemonState {
                 .clone()
         };
         let Some((_, session)) = self.resolve_session(session_id).await else {
-            return global;
+            return Ok(global);
         };
         let Some(model_override) = session.model_override else {
-            return global;
+            return Ok(global);
         };
         let Some(endpoint) = self
             .catalog
@@ -2211,9 +2211,13 @@ impl DaemonState {
                 session_id,
                 provider = %model_override.provider,
                 model = %model_override.model,
-                "failed to resolve session model override; using global settings"
+                "session model override is unavailable"
             );
-            return global;
+            anyhow::bail!(
+                "session model override '{}/{}' is unavailable; refresh the model catalog or select it again",
+                model_override.provider,
+                model_override.model
+            );
         };
 
         let mut resolved = global;
@@ -2223,7 +2227,7 @@ impl DaemonState {
             .providers
             .retain(|provider, _| *provider == model_override.provider);
         resolved.models.active_model = Some(model_override);
-        resolved
+        Ok(resolved)
     }
 
     /// The session's effective working root: bound worktree > the session's
@@ -2346,7 +2350,10 @@ mod tests {
                 .with_model_override(model_override.clone());
             state.session_manager.save(&session).await.unwrap();
 
-            let resolved = state.resolve_session_model("override").await;
+            let resolved = state
+                .resolve_session_model("override")
+                .await
+                .expect("configured override resolves");
             assert_eq!(resolved.models.main.name, "glm-5.3-flash");
             assert_eq!(
                 resolved.models.main.base_url.as_deref(),
@@ -2363,7 +2370,10 @@ mod tests {
 
             let plain = crate::context::memory_session::Session::with_id("plain", None);
             state.session_manager.save(&plain).await.unwrap();
-            let resolved = state.resolve_session_model("plain").await;
+            let resolved = state
+                .resolve_session_model("plain")
+                .await
+                .expect("session without override uses global settings");
             assert_eq!(resolved.models.main.name, "global-model");
             assert_eq!(
                 resolved.models.main.base_url.as_deref(),
@@ -2507,10 +2517,12 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn resolve_session_model_falls_back_for_unknown_override() {
+    async fn resolve_session_model_fails_closed_for_unknown_override() {
+        let server = crate::daemon::catalog::test_support::MockCatalogServer::start(500, &[]).await;
         let temp = tempfile::tempdir().unwrap();
         let fake_home = tempfile::tempdir().unwrap();
-        let settings = session_model_settings(temp.path());
+        let mut settings = session_model_settings(temp.path());
+        settings.models.providers.get_mut("zhipu").unwrap().base_url = server.base_url.clone();
         let previous_home = std::env::var_os("WGENTY_HOME");
         std::env::set_var("WGENTY_HOME", fake_home.path());
         let run = async {
@@ -2522,9 +2534,12 @@ mod tests {
                 });
             state.session_manager.save(&session).await.unwrap();
 
-            let resolved = state.resolve_session_model("invalid").await;
-            assert_eq!(resolved.models.main.name, "global-model");
-            assert!(resolved.models.active_model.is_none());
+            let error = state
+                .resolve_session_model("invalid")
+                .await
+                .expect_err("unavailable override must not fall back to global settings");
+            let message = error.to_string();
+            assert!(message.contains("zhipu/missing-model"), "{message}");
         }
         .await;
         match previous_home {

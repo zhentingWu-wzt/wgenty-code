@@ -2645,6 +2645,7 @@ async fn switch_model_with_session_writes_override_only() {
             state
                 .resolve_session_model("session-a")
                 .await
+                .expect("session override resolves")
                 .models
                 .main
                 .name,
@@ -2978,6 +2979,7 @@ async fn model_reset_clears_override() {
         state
             .resolve_session_model("session-a")
             .await
+            .expect("global fallback resolves after reset")
             .models
             .main
             .name,
@@ -3637,7 +3639,10 @@ async fn catalog_entry_session_switch_resolves_without_global_write() {
         .expect("catalog row can be selected for a session");
         assert!(response.success);
 
-        let resolved = state.resolve_session_model("catalog-session").await;
+        let resolved = state
+            .resolve_session_model("catalog-session")
+            .await
+            .expect("fetched session override resolves");
         assert_eq!(resolved.models.main.name, "new-model");
         assert_eq!(
             resolved.models.main.base_url.as_deref(),
@@ -3672,6 +3677,71 @@ async fn catalog_entry_session_switch_resolves_without_global_write() {
             std::fs::read_to_string(fake_home.path().join(".wgenty-code/settings.json")).unwrap(),
             disk_before,
             "session catalog selection must not write global settings"
+        );
+    }
+    .await;
+    match previous_home {
+        Some(value) => std::env::set_var("WGENTY_HOME", value),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    run
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn fetched_only_override_restart_failure_does_not_activate_global_provider() {
+    use axum::extract::{Query, State};
+    use axum::Json;
+
+    let server = crate::daemon::catalog::test_support::MockCatalogServer::start(
+        200,
+        &["fetched-only-model"],
+    )
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let mut settings = provider_test_settings(temp.path());
+    for group in settings.models.providers.values_mut() {
+        group.base_url = server.base_url.clone();
+        group.api_key = Some("catalog-test-key".to_string());
+        group.protocol = Some("openai".to_string());
+    }
+    seed_settings_disk(fake_home.path(), &settings);
+    let previous_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+    let run = async {
+        {
+            let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings.clone())).await);
+            let _ = switch_model(
+                State(state),
+                Json(SwitchModelRequest {
+                    provider: "anthropic".to_string(),
+                    model: "fetched-only-model".to_string(),
+                    profile: None,
+                    session_id: Some("fetched-restart".to_string()),
+                }),
+            )
+            .await
+            .expect("fetched row can be selected before restart");
+        }
+        server.set_reply(500, &[]);
+        let restarted = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+        let Json(response) = list_models(
+            State(restarted),
+            Query(ListModelsQuery {
+                session_id: Some("fetched-restart".to_string()),
+            }),
+        )
+        .await;
+
+        assert!(response.is_override, "the session still has an override");
+        assert!(
+            response
+                .providers
+                .iter()
+                .flat_map(|provider| provider.models.iter())
+                .all(|model| !model.active),
+            "an unavailable override must not mark the global provider model active"
         );
     }
     .await;

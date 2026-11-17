@@ -2299,7 +2299,13 @@ async fn run_session_turn(
     }
 
     // 3. Session-resolved settings + LLM port (same wiring as chat_stream).
-    let settings = state.resolve_session_model(session_id).await;
+    let settings = match state.resolve_session_model(session_id).await {
+        Ok(settings) => settings,
+        Err(error) => {
+            sink.emit(RuntimeEvent::StreamError(error.to_string()));
+            return false;
+        }
+    };
     let client = ApiClient::with_clients(
         settings.clone(),
         state.http_client.clone(),
