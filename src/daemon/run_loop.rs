@@ -1529,7 +1529,14 @@ fn summarize_tool_args(tool_name: &str, arguments_json: &str) -> String {
         "execute_command" | "exec_command" | "background" => &["command"],
         "codegraph_explore" | "codegraph_node" => &["query", "symbol"],
         "task" => &["description"],
-        _ => &["path", "pattern", "command", "query", "symbol", "description"],
+        _ => &[
+            "path",
+            "pattern",
+            "command",
+            "query",
+            "symbol",
+            "description",
+        ],
     };
     let parts: Vec<String> = keys
         .iter()
@@ -4546,9 +4553,9 @@ mod tests {
     #[tokio::test]
     async fn subagent_retry_uses_progress_store_messages_when_available() {
         let state = continuation_test_state().await;
-        let store = crate::transcript::SubagentTranscriptStore::open(
-            std::path::Path::new(&state.app_state.settings.storage.transcript.db_path),
-        )
+        let store = crate::transcript::SubagentTranscriptStore::open(std::path::Path::new(
+            &state.app_state.settings.storage.transcript.db_path,
+        ))
         .expect("open transcript store");
         store
             .save(
@@ -4566,36 +4573,33 @@ mod tests {
         {
             use crate::progress::{SubagentProgress, SubagentStatus};
             let mut progress = state.subagent_progress.write().await;
-            progress
-                .entry("session-a".to_string())
-                .or_default()
-                .insert(
-                    "node-with-history".to_string(),
-                    SubagentProgress {
-                        node_id: "node-with-history".to_string(),
-                        parent_id: None,
-                        label: "task: analyze the auth flow".to_string(),
-                        status: SubagentStatus::Failed,
-                        round: Some(3),
-                        max_rounds: Some(100),
-                        current_tool: None,
-                        current_params: None,
-                        action_log: Vec::new(),
-                        text_snapshot: None,
-                        started_at: 1_000,
-                        elapsed_ms: 5_000,
-                        metadata: None,
-                        progress_delta: None,
-                        token_budget_k: None,
-                        cumulative_tokens: 1_200,
-                        error_details: None,
-                        events: Vec::new(),
-                        messages: vec![
-                            crate::api::types::ChatMessage::user("find refresh token uses"),
-                            crate::api::types::ChatMessage::assistant("Found src/auth/mod.rs."),
-                        ],
-                    },
-                );
+            progress.entry("session-a".to_string()).or_default().insert(
+                "node-with-history".to_string(),
+                SubagentProgress {
+                    node_id: "node-with-history".to_string(),
+                    parent_id: None,
+                    label: "task: analyze the auth flow".to_string(),
+                    status: SubagentStatus::Failed,
+                    round: Some(3),
+                    max_rounds: Some(100),
+                    current_tool: None,
+                    current_params: None,
+                    action_log: Vec::new(),
+                    text_snapshot: None,
+                    started_at: 1_000,
+                    elapsed_ms: 5_000,
+                    metadata: None,
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: 1_200,
+                    error_details: None,
+                    events: Vec::new(),
+                    messages: vec![
+                        crate::api::types::ChatMessage::user("find refresh token uses"),
+                        crate::api::types::ChatMessage::assistant("Found src/auth/mod.rs."),
+                    ],
+                },
+            );
         }
 
         let (status, Json(response)) = post_subagent_retry(

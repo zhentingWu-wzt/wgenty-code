@@ -64,7 +64,6 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
 
   useEffect(() => {
     let live = true;
-    setState({ status: "loading" });
     client
       .fetchFile(meta.absPath)
       .then(
@@ -122,13 +121,16 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
   const blob = content?.kind === "blob" ? content.blob : null;
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   useEffect(() => {
-    if (!blob) {
-      setBlobUrl(null);
-      return;
-    }
+    if (!blob) return;
+    let live = true;
     const url = URL.createObjectURL(blob);
-    setBlobUrl(url);
-    return () => URL.revokeObjectURL(url);
+    queueMicrotask(() => {
+      if (live) setBlobUrl(url);
+    });
+    return () => {
+      live = false;
+      URL.revokeObjectURL(url);
+    };
   }, [blob]);
 
   let sizeLabel: string | null = null;
@@ -148,7 +150,14 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
           icon={<FileWarning size={20} className="text-warning" />}
           message={state.message}
           action={
-            <Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setState({ status: "loading" });
+                setAttempt((n) => n + 1);
+              }}
+            >
               <RefreshCw size={12} />
               重试
             </Button>

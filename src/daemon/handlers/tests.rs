@@ -325,8 +325,8 @@ async fn daemon_state_saves_sessions_under_project_local_dir() {
     use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
     use crate::state::AppState;
     use crate::utils::project_sessions_dir;
-    use axum::Json;
     use axum::extract::{Path, State};
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -379,8 +379,8 @@ async fn multi_project_session_routing() {
     use crate::config::Settings;
     use crate::daemon::models::CreateSessionRequest;
     use crate::state::AppState;
-    use axum::Json;
     use axum::extract::{Path, State};
+    use axum::Json;
 
     let main = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -410,16 +410,12 @@ async fn multi_project_session_routing() {
     let sid = created.id;
 
     // The session file lands under project B's store, not the main one.
-    assert!(
-        crate::utils::project_sessions_dir(&b_canon)
-            .join(format!("{sid}.json"))
-            .is_file()
-    );
-    assert!(
-        !crate::utils::project_sessions_dir(main.path())
-            .join(format!("{sid}.json"))
-            .is_file()
-    );
+    assert!(crate::utils::project_sessions_dir(&b_canon)
+        .join(format!("{sid}.json"))
+        .is_file());
+    assert!(!crate::utils::project_sessions_dir(main.path())
+        .join(format!("{sid}.json"))
+        .is_file());
 
     // list_sessions aggregates both projects and tags the entry.
     let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
@@ -461,8 +457,8 @@ async fn no_project_session_routes_to_scratch_workspace() {
     use crate::config::Settings;
     use crate::daemon::models::CreateSessionRequest;
     use crate::state::AppState;
-    use axum::Json;
     use axum::extract::{Path, State};
+    use axum::Json;
 
     let main = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -498,16 +494,12 @@ async fn no_project_session_routes_to_scratch_workspace() {
     .expect("create_session into No Project");
     let sid = created.id;
 
-    assert!(
-        crate::utils::project_sessions_dir(&scratch_canon)
-            .join(format!("{sid}.json"))
-            .is_file()
-    );
-    assert!(
-        !crate::utils::project_sessions_dir(main.path())
-            .join(format!("{sid}.json"))
-            .is_file()
-    );
+    assert!(crate::utils::project_sessions_dir(&scratch_canon)
+        .join(format!("{sid}.json"))
+        .is_file());
+    assert!(!crate::utils::project_sessions_dir(main.path())
+        .join(format!("{sid}.json"))
+        .is_file());
 
     // list_sessions aggregates it with the scratch root as project_path.
     let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
@@ -522,12 +514,10 @@ async fn no_project_session_routes_to_scratch_workspace() {
     assert_eq!(state.effective_session_root(&sid).await, scratch_canon);
 
     // The scratch workspace cannot be removed via the endpoint contract.
-    assert!(
-        state
-            .projects
-            .remove(scratch_canon.to_str().unwrap())
-            .is_err()
-    );
+    assert!(state
+        .projects
+        .remove(scratch_canon.to_str().unwrap())
+        .is_err());
 
     // delete routes to the owning store.
     let _ = delete_session(State(state.clone()), Path(sid.clone()))
@@ -541,8 +531,8 @@ async fn update_session_upsert_preserves_path_id_across_saves() {
     use crate::config::Settings;
     use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
     use crate::state::AppState;
-    use axum::Json;
     use axum::extract::{Path, State};
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let mut settings = Settings::default();
@@ -603,8 +593,8 @@ async fn update_session_version_matrix() {
     use crate::config::Settings;
     use crate::daemon::models::UpdateSessionRequest;
     use crate::state::AppState;
-    use axum::Json;
     use axum::extract::{Path, State};
+    use axum::Json;
 
     // Keep the tempdir alive for the whole test: sessions persist under
     // `working_dir`'s project-local dir (mirrors the first test above).
@@ -632,7 +622,7 @@ async fn update_session_version_matrix() {
         .await
         .expect_err("stale expected_version conflicts");
     assert_eq!(err.0, StatusCode::CONFLICT);
-    assert_eq!(err.1.0["current_version"], 1);
+    assert_eq!(err.1 .0["current_version"], 1);
 
     // Some(1) matches → success, version advances to 2.
     let Json(r3) = update_session(State(state.clone()), Path(id.clone()), Json(body(Some(1))))
@@ -649,8 +639,8 @@ async fn update_session_version_matrix() {
 
 #[tokio::test]
 async fn agent_routes_support_recursive_generation_bound_navigation() {
-    use crate::agent::SpawnChildRequest;
     use crate::agent::capability::CapabilityGrant;
+    use crate::agent::SpawnChildRequest;
     use crate::config::Settings;
     use crate::daemon::models::{CreateViewerResponse, LocalAgentViewResponse};
     use crate::state::AppState;
@@ -1220,12 +1210,10 @@ async fn navigation_resolves_recursive_targets_with_canonical_hierarchy() {
         .unwrap();
     assert_eq!(root_response.self_view.agent_id, root.agent_id.as_str());
     assert_eq!(root_response.children.len(), 1);
-    assert!(
-        !root_response
-            .children
-            .iter()
-            .any(|record| record.agent_id == grandchild.agent_id.as_str())
-    );
+    assert!(!root_response
+        .children
+        .iter()
+        .any(|record| record.agent_id == grandchild.agent_id.as_str()));
 
     let child_capability = &root_response.children[0].navigation_capability;
     let child_context =
@@ -1571,8 +1559,8 @@ async fn memory_list_filters_by_scope_and_importance() {
     use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
     use crate::daemon::models::MemoryListQuery;
     use crate::state::AppState;
-    use axum::Json;
     use axum::extract::{Query, State};
+    use axum::Json;
     use std::sync::Arc;
 
     let temp = tempfile::tempdir().unwrap();
@@ -1663,8 +1651,8 @@ async fn memory_prune_dry_run_is_noop() {
     use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
     use crate::daemon::models::PruneRequest;
     use crate::state::AppState;
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
     use std::sync::Arc;
 
     let temp = tempfile::tempdir().unwrap();
@@ -1949,8 +1937,8 @@ async fn set_permission_mode_bumps_session_version_and_keeps_messages() {
 #[tokio::test]
 #[serial_test::serial]
 async fn set_permission_mode_broadcasts_mode_changed() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let temp = tempfile::tempdir().expect("tempdir");
     let fake_home = tempfile::tempdir().expect("fake home");
@@ -2460,8 +2448,8 @@ async fn list_models_v2_groups_and_marks_active() {
 #[tokio::test]
 #[serial_test::serial]
 async fn switch_model_with_session_writes_override_only() {
-    use axum::Json;
     use axum::extract::{Query, State};
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let fake_home = tempfile::tempdir().unwrap();
@@ -2588,8 +2576,8 @@ async fn switch_model_with_session_writes_override_only() {
 #[tokio::test]
 #[serial_test::serial]
 async fn switch_model_without_session_preserves_global_path() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let fake_home = tempfile::tempdir().unwrap();
@@ -2821,8 +2809,8 @@ async fn switch_model_legacy_profile_does_not_guess_bare_model_name() {
 /// refresh that session's display.
 #[tokio::test]
 async fn model_reset_clears_override() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(
@@ -2921,8 +2909,8 @@ async fn model_reset_broadcasts_legacy_fallback_with_null_provider() {
 /// same pattern as `set_permission_mode`.
 #[tokio::test]
 async fn model_switch_and_reset_reject_unsafe_session_id() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(
@@ -2965,8 +2953,8 @@ async fn model_switch_and_reset_reject_unsafe_session_id() {
 /// session-scoped and the global path.
 #[tokio::test]
 async fn switch_model_unknown_pair_returns_400_listing_models() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let state = Arc::new(
@@ -3000,8 +2988,8 @@ async fn switch_model_unknown_pair_returns_400_listing_models() {
 
 #[tokio::test]
 async fn claim_task_group_broadcasts_task_group_result() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let state = Arc::new(global_event_test_state().await);
     // Produce a ready root group through the coordinator (same path as
@@ -3183,23 +3171,19 @@ async fn background_results_are_isolated_from_foreign_and_unowned_sessions() {
     assert_eq!(session_b.len(), 1);
     assert_eq!(session_b[0].task_id, "shared-task");
     assert_eq!(session_b[0].command, "foreign command");
-    assert!(
-        state
-            .background_results_snapshot()
-            .await
-            .iter()
-            .all(|result| result.task_id != "legacy")
-    );
+    assert!(state
+        .background_results_snapshot()
+        .await
+        .iter()
+        .all(|result| result.task_id != "legacy"));
     assert!(matches!(
         rx.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
-    assert!(
-        state
-            .background_results_snapshot_for_session("missing-session")
-            .await
-            .is_empty()
-    );
+    assert!(state
+        .background_results_snapshot_for_session("missing-session")
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
@@ -3249,8 +3233,8 @@ async fn background_results_evict_oldest_beyond_capacity() {
 
 #[tokio::test]
 async fn get_background_results_returns_snapshot_without_draining() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let state = Arc::new(global_event_test_state().await);
     state
@@ -3344,8 +3328,8 @@ async fn set_permission_mode_without_session_id_is_rejected() {
 #[tokio::test]
 #[serial_test::serial]
 async fn set_permission_mode_persists_across_daemon_restart() {
-    use axum::Json;
     use axum::extract::State;
+    use axum::Json;
 
     let temp = tempfile::tempdir().unwrap();
     let fake_home = tempfile::tempdir().unwrap();

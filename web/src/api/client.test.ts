@@ -228,7 +228,8 @@ function jsonResponse(payload: unknown, status = 200) {
 
 /** Route-based fetch stub: each URL maps to a handler; unmapped URLs throw. */
 function mockFetchRouter(handlers: Record<string, () => Response>) {
-  const spy = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+  const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    void init;
     const handler = handlers[String(input)];
     if (!handler) throw new Error(`unexpected fetch: ${String(input)}`);
     return handler();

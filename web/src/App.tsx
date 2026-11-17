@@ -85,7 +85,7 @@ export function App() {
 
   // Set once the startup restore below finishes (success or not); gates the
   // welcome screen so it doesn't flash before history restores.
-  const [booted, setBooted] = useState(false);
+  const [booted, setBooted] = useState(() => useSessionManager.getState().activeId !== null);
 
   // Bootstrap: restore the most recent daemon sessions so the left rail shows
   // real history on startup, and activate the newest one (TUI-aligned). When
@@ -95,7 +95,6 @@ export function App() {
   // render is a render-phase side effect (react-hooks purity rules).
   useEffect(() => {
     if (useSessionManager.getState().activeId) {
-      setBooted(true);
       return; // already bootstrapped
     }
     let cancelled = false;
