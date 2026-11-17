@@ -405,6 +405,8 @@ async fn catalog_failure_falls_back_and_caches() {
 
 ### Task 9: Composer chip 行 + 两级 picker + StatusBar 瘦身
 
+- [x] Task 9: Composer chip 行 + 两级 picker + StatusBar 瘦身
+
 **Files:**
 - Create: `web/src/features/chat/ModelModeChips.tsx`
 - Modify: `web/src/App.tsx`（挂载 chip 行于 Composer 上方）、`web/src/components/StatusBar.tsx`（删两块控件）、`web/src/hooks/usePermissionModeSync.ts`
@@ -414,7 +416,7 @@ async fn catalog_failure_falls_back_and_caches() {
 - Consumes: Task 8 的 entry 状态与 client 方法
 - Produces: `<ModelModeChips client={client} />`（内部读 activeEntry；模型 chip 两级 popover + 「跟随默认」项；模式 chip 作用于 session；busy 态仅模式 chip——从 sessionStore 的 running 状态判定）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```tsx
 // 两级选择只写当前 session：mock client.switchModel 断言 sessionId 参数
@@ -423,10 +425,10 @@ async fn catalog_failure_falls_back_and_caches() {
 // StatusBar 查询无 role=button name=/model|permission/i
 ```
 
-- [ ] **Step 2: 验证失败** — Run: `cd web && npx vitest run src/features/chat/ModelModeChips.test.tsx 2>&1 | tail -5`，Expected: FAIL
-- [ ] **Step 3: 实现**（chip 行样式对齐现有 Composer 上方 TurnStatus 条；popover 复用 StatusBar 现有下拉的样式模式）
-- [ ] **Step 4: 验证通过 + tsc/eslint** — Run: `cd web && npx vitest run 2>&1 | tail -4 && npx tsc --noEmit && npx eslint src --quiet`，Expected: 全绿
-- [ ] **Step 5: Commit** — `feat(web): vendor→model two-level chips above composer; strip StatusBar`
+- [x] **Step 2: 验证失败** — Run: `cd web && npx vitest run src/features/chat/ModelModeChips.test.tsx 2>&1 | tail -5`，Expected: FAIL
+- [x] **Step 3: 实现**（chip 行样式对齐现有 Composer 上方 TurnStatus 条；popover 复用 StatusBar 现有下拉的样式模式）
+- [x] **Step 4: 验证通过 + tsc/eslint** — Web 289/289、tsc 与 scoped ESLint 通过；全量 ESLint 的 4 个既有基线错误交由 Task 10 处理
+- [x] **Step 5: Commit** — `4c31ee95` + 审查修复 `a5a69a13`，仅本地 commit
 
 ---
 

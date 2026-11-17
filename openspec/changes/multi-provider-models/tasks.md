@@ -28,6 +28,6 @@
 
 - [x] 4.1 `sessionManager`：`modelName`/`permissionMode` 全局单值改为 per-entry（effective + override 标记）；`ModelChanged`/`ModeChanged` 按 `session_id` 定向更新
 - [x] 4.2 `api/client.ts`：`listModels(sessionId?)`、`switchModel({provider, model, sessionId?})`、`resetSessionModel`、`resetSessionMode`
-- [ ] 4.3 Composer 上方 chip 行：模型 chip（两级 picker：厂商→模型，「跟随默认」重置项）+ 模式 chip；busy 态收窄策略
-- [ ] 4.4 StatusBar 瘦身：移除模型/模式控件，保留连接/审批/workspace/context
-- [ ] 4.5 web 测试：两级选择只影响当前 session、重置回退、chip 随会话切换同步、StatusBar 无模型/模式
+- [x] 4.3 Composer 上方 chip 行：模型 chip（两级 picker：厂商→模型，「跟随默认」重置项）+ 模式 chip；busy 态收窄策略
+- [x] 4.4 StatusBar 瘦身：移除模型/模式控件，保留连接/审批/workspace/context
+- [x] 4.5 web 测试：两级选择只影响当前 session、重置回退、chip 随会话切换同步、StatusBar 无模型/模式
