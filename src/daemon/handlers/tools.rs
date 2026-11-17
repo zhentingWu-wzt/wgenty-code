@@ -35,8 +35,7 @@ pub async fn execute_tool(
     let session_root = state.effective_session_root(session_id).await;
     let (_, cp_store) = state.checkpoints_for_project(&session_root);
 
-    // Per-project permission mode for this session's working directory.
-    let mode_entry = state.permission_modes.get(&session_root);
+    let mode_entry = state.effective_permission(session_id).await;
 
     // Validate against policy
     let decision = {

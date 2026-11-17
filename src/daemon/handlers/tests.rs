@@ -1773,6 +1773,97 @@ async fn effective_permission_session_overrides_project() {
 }
 
 #[tokio::test]
+async fn execute_tool_session_normal_does_not_inherit_project_yolo() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+    state.permission_modes.set(
+        state.projects.main_root(),
+        crate::config::RootPermissionMode::Yolo,
+        crate::sandbox::EffectiveMode::Yolo,
+    );
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-normal", None)
+                .with_permission_override(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Normal,
+                    effective_mode: crate::sandbox::EffectiveMode::Normal,
+                }),
+        )
+        .await
+        .unwrap();
+    let target = temp.path().join("must-not-exist.txt");
+
+    let Json(response) = execute_tool(
+        State(state),
+        Json(crate::daemon::models::ExecuteToolRequest {
+            tool_name: "file_write".into(),
+            arguments: serde_json::json!({
+                "path": target,
+                "content": "session override must win"
+            }),
+            session_id: Some("session-normal".into()),
+            turn_id: None,
+        }),
+    )
+    .await
+    .expect("permission Ask is a successful API response");
+
+    assert!(response.permission_required.is_some());
+    assert!(!response.success);
+    assert!(!target.exists());
+}
+
+#[tokio::test]
+async fn execute_tool_session_yolo_overrides_project_normal() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+    state.permission_modes.set(
+        state.projects.main_root(),
+        crate::config::RootPermissionMode::Normal,
+        crate::sandbox::EffectiveMode::Normal,
+    );
+    state
+        .session_manager
+        .save(
+            &crate::context::memory_session::Session::with_id("session-yolo", None)
+                .with_permission_override(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Yolo,
+                    effective_mode: crate::sandbox::EffectiveMode::Yolo,
+                }),
+        )
+        .await
+        .unwrap();
+    let target = temp.path().join("written.txt");
+
+    let Json(response) = execute_tool(
+        State(state),
+        Json(crate::daemon::models::ExecuteToolRequest {
+            tool_name: "file_write".into(),
+            arguments: serde_json::json!({
+                "path": &target,
+                "content": "session override must win"
+            }),
+            session_id: Some("session-yolo".into()),
+            turn_id: None,
+        }),
+    )
+    .await
+    .expect("Yolo auto-approval executes the tool");
+
+    assert!(response.permission_required.is_none());
+    assert!(response.success, "tool error: {:?}", response.error);
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "session override must win"
+    );
+}
+
+#[tokio::test]
 async fn set_permission_mode_scopes_override_to_session() {
     let mut state = global_event_test_state().await;
     state.permission_modes = crate::permissions::PermissionModeStore::new();
