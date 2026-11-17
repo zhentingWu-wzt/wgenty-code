@@ -319,21 +319,10 @@ impl Settings {
             .find_provider_model_by_key(profile)
             .or_else(|| self.models.find_provider_model(profile))
         {
-            let group_base_url = self.models.providers[&group_name].base_url.clone();
-            let group_api_key = self.models.providers[&group_name].api_key.clone();
-            let group_protocol = self.models.providers[&group_name].protocol.clone();
-            let endpoint = crate::config::models::ModelEndpoint {
-                name: model.name.clone(),
-                base_url: Some(model.base_url.clone().unwrap_or(group_base_url)),
-                api_key: model.api_key.clone().or(group_api_key),
-                appkey: None,
-                provider: group_protocol,
-                context_window: model.context_window,
-                temperature: model.temperature,
-                display_name: None,
-                tier: model.tier,
-                pricing: None,
-            };
+            let endpoint = self
+                .models
+                .resolve_endpoint(&group_name, &model.name)
+                .expect("provider model found above must resolve");
             self.models.active_model = Some(crate::config::models::ActiveModelRef {
                 provider: group_name,
                 model: endpoint.name.clone(),

@@ -122,6 +122,78 @@ fn load_from_disk_migrates_legacy_model_fields() {
 }
 
 #[test]
+#[serial_test::serial]
+fn grouped_load_and_reload_preserve_api_key_precedence_through_api_client() {
+    let env_names = [
+        "WGENTY_HOME",
+        "KIMI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "DASHSCOPE_API_KEY",
+    ];
+    let previous: Vec<_> = env_names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    std::env::set_var("KIMI_API_KEY", "test-provider-env-key");
+    std::env::set_var("DEEPSEEK_API_KEY", "test-global-fallback-key");
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("DASHSCOPE_API_KEY");
+
+    let cases = [
+        (Some("test-model-key"), Some("test-provider-key"), "test-model-key"),
+        (None, Some("test-provider-key"), "test-provider-key"),
+        (None, None, "test-provider-env-key"),
+    ];
+    for (model_key, provider_key, expected) in cases {
+        let model = serde_json::json!({
+            "name": "kimi-for-test",
+            "api_key": model_key,
+        });
+        let group = serde_json::json!({
+            "base_url": "https://api.kimi.com/coding/v1",
+            "api_key": provider_key,
+            "models": [model],
+        });
+        std::fs::write(
+            cfg_dir.join("settings.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "models": {
+                    "providers": {"kimi": group},
+                    "active_model": {"provider": "kimi", "model": "kimi-for-test"}
+                }
+            }))
+            .unwrap(),
+        )
+        .expect("seed grouped settings");
+
+        let loaded = Settings::load().expect("load grouped settings");
+        let reloaded = Settings::reload().expect("reload grouped settings");
+        assert_eq!(
+            crate::api::ApiClient::new(loaded).get_api_key().as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            crate::api::ApiClient::new(reloaded)
+                .get_api_key()
+                .as_deref(),
+            Some(expected)
+        );
+    }
+
+    for (name, value) in previous {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+}
+
+#[test]
 fn transport_max_concurrent_llm_requests_defaults_to_eight_and_parses_zero() {
     let s = Settings::default();
     assert_eq!(s.models.transport.max_concurrent_llm_requests, 8);

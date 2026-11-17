@@ -856,26 +856,8 @@ impl ModelsConfig {
     pub fn migrate_providers(&mut self) {
         if self.profiles.is_empty() {
             if let Some(active) = self.active_model.clone() {
-                if let Some(group) = self.providers.get(&active.provider) {
-                    if let Some(model) = group.models.iter().find(|m| m.name == active.model) {
-                        self.main = ModelEndpoint {
-                            name: model.name.clone(),
-                            base_url: Some(
-                                model
-                                    .base_url
-                                    .clone()
-                                    .unwrap_or_else(|| group.base_url.clone()),
-                            ),
-                            api_key: model.api_key.clone().or_else(|| group.api_key.clone()),
-                            appkey: None,
-                            provider: group.protocol.clone(),
-                            context_window: model.context_window,
-                            temperature: model.temperature,
-                            display_name: None,
-                            tier: model.tier,
-                            pricing: None,
-                        };
-                    }
+                if let Some(endpoint) = self.resolve_endpoint(&active.provider, &active.model) {
+                    self.main = endpoint;
                 }
             }
             return;

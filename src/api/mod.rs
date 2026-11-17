@@ -297,6 +297,15 @@ impl ApiClient {
     }
 
     pub fn get_api_key(&self) -> Option<String> {
+        if self.settings.models.active_model.is_some() {
+            return self
+                .settings
+                .models
+                .main
+                .api_key
+                .clone()
+                .or_else(|| self.settings.models.main.endpoint_api_key());
+        }
         self.settings.models.main.endpoint_api_key()
     }
 
