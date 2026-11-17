@@ -2218,6 +2218,10 @@ impl DaemonState {
 
         let mut resolved = global;
         resolved.models.main = endpoint;
+        resolved
+            .models
+            .providers
+            .retain(|provider, _| *provider == model_override.provider);
         resolved.models.active_model = Some(model_override);
         resolved
     }
@@ -2373,6 +2377,132 @@ mod tests {
             None => std::env::remove_var("WGENTY_HOME"),
         }
         run
+    }
+
+    #[tokio::test]
+    async fn spawned_tier_model_stays_inside_session_override_provider() {
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+        async fn mock_chat(
+            axum::extract::State(tx): axum::extract::State<
+                tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+            >,
+            axum::Json(request): axum::Json<serde_json::Value>,
+        ) -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
+            let _ = tx.send(request);
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                "data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":null}]}\n\n\
+                 data: {\"id\":\"mock\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+                 data: [DONE]\n\n",
+            )
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local model mock");
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new()
+                    .route("/v1/chat/completions", axum::routing::post(mock_chat))
+                    .with_state(request_tx),
+            )
+            .await
+            .unwrap();
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = session_model_settings(temp.path());
+        let base_url = format!("http://{address}/v1");
+        let provider_model = |name: &str, tier| crate::config::models::ProviderModel {
+            name: name.to_string(),
+            profile_key: None,
+            tier,
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            context_window: None,
+            temperature: None,
+        };
+        for (provider, models) in [
+            (
+                "a-provider",
+                vec![provider_model(
+                    "cross-provider-light",
+                    Some(crate::config::models::ModelTier::Light),
+                )],
+            ),
+            (
+                "z-provider",
+                vec![
+                    provider_model("session-main", None),
+                    provider_model(
+                        "session-light",
+                        Some(crate::config::models::ModelTier::Light),
+                    ),
+                ],
+            ),
+        ] {
+            settings.models.providers.insert(
+                provider.to_string(),
+                crate::config::models::ProviderGroup {
+                    display_name: None,
+                    base_url: base_url.clone(),
+                    api_key: Some("test-key".to_string()),
+                    protocol: Some("openai".to_string()),
+                    models,
+                },
+            );
+        }
+        settings.models.routing.llm_fallback = false;
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        state.start_background_continuation_scheduler();
+        state
+            .session_manager
+            .save(
+                &crate::context::memory_session::Session::with_id("tier-session", None)
+                    .with_model_override(crate::config::models::ActiveModelRef {
+                        provider: "z-provider".to_string(),
+                        model: "session-main".to_string(),
+                    }),
+            )
+            .await
+            .unwrap();
+        let root = state.root_context("tier-session").await.unwrap();
+        let context = crate::agent::ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("tier-scope-test"),
+            origin_turn_id: Some("tier-scope-turn"),
+            workdir: Some(temp.path()),
+            effective_mode: crate::sandbox::EffectiveMode::Yolo,
+            checkpoint: None,
+        };
+
+        let output = state
+            .tool_registry
+            .execute_with_context(
+                &context,
+                "task",
+                serde_json::json!({
+                    "description": "verify provider scope",
+                    "prompt": "return a short response",
+                    "use_small_model": true
+                }),
+            )
+            .await
+            .expect("spawn real child");
+        let request = tokio::time::timeout(std::time::Duration::from_secs(5), request_rx.recv())
+            .await
+            .expect("child reaches local model mock")
+            .expect("model request");
+        assert_eq!(request["model"], "session-light");
+
+        if let Some(child_id) = output.metadata.get("child_id").and_then(|id| id.as_str()) {
+            let _ = state
+                .coordinator
+                .cancel_subtree(&root, crate::agent::AgentId::new(child_id.to_string()))
+                .await;
+        }
+        root.cancellation.cancel();
+        server.abort();
     }
 
     #[tokio::test]
