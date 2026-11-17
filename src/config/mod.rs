@@ -154,7 +154,10 @@ impl Settings {
                     ))?;
                 }
             }
-            settings.models.migrate_providers();
+            settings
+                .models
+                .migrate_providers()
+                .context("Failed to migrate legacy model profiles into providers")?;
             if profiles_present {
                 settings.save()?;
             }

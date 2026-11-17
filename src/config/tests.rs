@@ -194,6 +194,58 @@ fn grouped_load_and_reload_preserve_api_key_precedence_through_api_client() {
 }
 
 #[test]
+#[serial_test::serial]
+fn legacy_env_only_active_profile_uses_provider_env_through_api_client() {
+    let env_names = ["WGENTY_HOME", "KIMI_API_KEY", "DEEPSEEK_API_KEY"];
+    let previous: Vec<_> = env_names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    std::env::set_var("KIMI_API_KEY", "test-provider-env-key");
+    std::env::set_var("DEEPSEEK_API_KEY", "test-global-fallback-key");
+    std::fs::write(
+        cfg_dir.join("settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "models": {
+                "profiles": {
+                    "kimi-env": {
+                        "name": "kimi-for-test",
+                        "base_url": "https://api.kimi.com/coding/v1"
+                    }
+                },
+                "active_profile": "kimi-env"
+            }
+        }))
+        .unwrap(),
+    )
+    .expect("seed env-only legacy profile");
+
+    let loaded = Settings::load().expect("load env-only legacy profile");
+    let reloaded = Settings::reload().expect("reload migrated profile");
+    assert_eq!(
+        crate::api::ApiClient::new(loaded).get_api_key().as_deref(),
+        Some("test-provider-env-key")
+    );
+    assert_eq!(
+        crate::api::ApiClient::new(reloaded)
+            .get_api_key()
+            .as_deref(),
+        Some("test-provider-env-key")
+    );
+
+    for (name, value) in previous {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+}
+
+#[test]
 fn transport_max_concurrent_llm_requests_defaults_to_eight_and_parses_zero() {
     let s = Settings::default();
     assert_eq!(s.models.transport.max_concurrent_llm_requests, 8);
@@ -773,7 +825,7 @@ fn endpoint_for_tier_migration_preserves_choice() {
     let before = cfg.endpoint_for_tier(ModelTier::Light);
     assert_eq!(before.name, "glm-5.3-flash");
 
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     let after = cfg.endpoint_for_tier(ModelTier::Light);
     assert_eq!(after.name, "glm-5.3-flash");
     assert_eq!(
@@ -1240,7 +1292,7 @@ fn legacy_profiles_json() -> String {
 #[test]
 fn migrate_profiles_groups_by_host() {
     let mut cfg: ModelsConfig = serde_json::from_str(&legacy_profiles_json()).unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     assert_eq!(cfg.providers.len(), 2, "kimi + zhipu");
     let zg = cfg.providers.get("zhipu").expect("zhipu group");
     assert_eq!(
@@ -1265,9 +1317,9 @@ fn migrate_profiles_groups_by_host() {
 #[test]
 fn migrate_is_idempotent() {
     let mut cfg: ModelsConfig = serde_json::from_str(&legacy_profiles_json()).unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     let once = serde_json::to_string(&cfg.providers).unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     let twice = serde_json::to_string(&cfg.providers).unwrap();
     assert_eq!(once, twice);
 }
@@ -1278,7 +1330,7 @@ fn migrate_unknown_host_uses_host_as_group_name() {
         r#"{"profiles": {"x": {"name": "m", "base_url": "https://llm.internal.io/v1"}}}"#,
     )
     .unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     assert!(cfg.providers.contains_key("llm.internal.io"));
 }
 
@@ -1287,7 +1339,7 @@ fn migrate_invalid_url_uses_custom_group() {
     let mut cfg: ModelsConfig =
         serde_json::from_str(r#"{"profiles": {"x": {"name": "m", "base_url": "not a url"}}}"#)
             .unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     assert!(cfg.providers.contains_key("custom"));
 }
 
@@ -1309,7 +1361,7 @@ fn migrate_merges_into_existing_providers_without_duplicates() {
         }"#,
     )
     .unwrap();
-    cfg.migrate_providers();
+    cfg.migrate_providers().unwrap();
     let zg = cfg.providers.get("zhipu").expect("zhipu group");
     assert_eq!(
         zg.models
@@ -1320,6 +1372,87 @@ fn migrate_merges_into_existing_providers_without_duplicates() {
         "existing model kept, new one appended, no duplicate"
     );
     assert!(cfg.profiles.is_empty());
+}
+
+#[test]
+#[serial_test::serial]
+fn load_from_disk_rejects_conflicting_same_name_profiles_without_rewriting() {
+    let previous = std::env::var_os("WGENTY_HOME");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    let first = serde_json::json!({
+        "name": "shared-model",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "test-first-key",
+        "provider": "openai",
+        "tier": "light"
+    });
+    let changes = [
+        ("api_key", serde_json::json!("test-second-key")),
+        ("base_url", serde_json::json!("https://api.deepseek.com/other/v1")),
+        ("tier", serde_json::json!("heavy")),
+        ("provider", serde_json::json!("anthropic")),
+    ];
+
+    for (field, value) in changes {
+        let mut second = first.clone();
+        second[field] = value;
+        let original = serde_json::to_string_pretty(&serde_json::json!({
+            "models": {"profiles": {"a-first": first, "b-second": second}}
+        }))
+        .unwrap();
+        let path = cfg_dir.join("settings.json");
+        std::fs::write(&path, &original).expect("seed conflicting profiles");
+
+        let result = Settings::load_from_disk();
+        let after = std::fs::read_to_string(&path).expect("read settings after migration");
+        assert!(
+            result.is_err(),
+            "{field} conflict must not migrate successfully"
+        );
+        assert_eq!(after, original, "{field} conflict rewrote the old file");
+    }
+    restore_wgenty_home(previous);
+}
+
+#[test]
+#[serial_test::serial]
+fn load_from_disk_rejects_second_merge_conflict_without_rewriting() {
+    let previous = std::env::var_os("WGENTY_HOME");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_dir = dir.path().join(".wgenty-code");
+    std::fs::create_dir_all(&cfg_dir).expect("create cfg dir");
+    std::env::set_var("WGENTY_HOME", dir.path());
+    let original = serde_json::to_string_pretty(&serde_json::json!({
+        "models": {
+            "profiles": {
+                "legacy": {
+                    "name": "shared-model",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "test-legacy-key"
+                }
+            },
+            "providers": {
+                "deepseek": {
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "test-existing-key",
+                    "models": [{"name": "shared-model"}]
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let path = cfg_dir.join("settings.json");
+    std::fs::write(&path, &original).expect("seed second-merge conflict");
+
+    let result = Settings::load_from_disk();
+    let after = std::fs::read_to_string(&path).expect("read settings after migration");
+    restore_wgenty_home(previous);
+
+    assert!(result.is_err(), "second merge silently discarded a key");
+    assert_eq!(after, original, "second merge rewrote the old file");
 }
 
 #[test]

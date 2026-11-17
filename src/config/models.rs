@@ -853,30 +853,30 @@ impl ModelsConfig {
     /// `api_key` is the first profile's key. When `active_profile` resolves
     /// into a group, `active_model` is written and the `main` runtime cache
     /// is synced from the active profile.
-    pub fn migrate_providers(&mut self) {
+    pub fn migrate_providers(&mut self) -> anyhow::Result<()> {
         if self.profiles.is_empty() {
             if let Some(active) = self.active_model.clone() {
                 if let Some(endpoint) = self.resolve_endpoint(&active.provider, &active.model) {
                     self.main = endpoint;
                 }
             }
-            return;
+            return Ok(());
         }
         // Deterministic processing order: sorted by profile key so group
-        // creation and "first key wins" do not depend on HashMap iteration.
+        // creation and conflict reporting do not depend on HashMap iteration.
         let mut entries: Vec<(String, ModelEndpoint)> = self
             .profiles
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut providers = self.providers.clone();
 
         for (profile_key, ep) in &entries {
             let host = extract_host(ep.base_url.as_deref().unwrap_or_default());
             let group_name = vendor_for_host(&host).unwrap_or(&host).to_string();
-            let group = self
-                .providers
-                .entry(group_name)
+            let group = providers
+                .entry(group_name.clone())
                 .or_insert_with(|| ProviderGroup {
                     display_name: None,
                     base_url: ep.base_url.clone().unwrap_or_default(),
@@ -884,7 +884,44 @@ impl ModelsConfig {
                     protocol: ep.provider.clone(),
                     models: Vec::new(),
                 });
-            if group.models.iter().any(|m| m.name == ep.name) {
+            if let Some(existing) = group.models.iter().find(|m| m.name == ep.name) {
+                let mut conflicts = Vec::new();
+                if existing.api_key.as_ref().or(group.api_key.as_ref())
+                    != ep.api_key.as_ref().or(group.api_key.as_ref())
+                {
+                    conflicts.push("api_key");
+                }
+                if existing.base_url.as_deref().unwrap_or(&group.base_url)
+                    != ep.base_url.as_deref().unwrap_or(&group.base_url)
+                {
+                    conflicts.push("base_url");
+                }
+                if existing.tier != ep.tier {
+                    conflicts.push("tier");
+                }
+                if ep.provider.is_some() && ep.provider != group.protocol {
+                    conflicts.push("protocol");
+                }
+                if existing.context_window != ep.context_window {
+                    conflicts.push("context_window");
+                }
+                if existing.temperature != ep.temperature {
+                    conflicts.push("temperature");
+                }
+                if existing
+                    .profile_key
+                    .as_deref()
+                    .is_some_and(|key| key != profile_key)
+                {
+                    conflicts.push("profile_key");
+                }
+                if !conflicts.is_empty() {
+                    anyhow::bail!(
+                        "legacy profile '{profile_key}' conflicts with provider model '{group_name}/{}' in fields: {}",
+                        ep.name,
+                        conflicts.join(", ")
+                    );
+                }
                 continue;
             }
             group.models.push(ProviderModel {
@@ -905,6 +942,7 @@ impl ModelsConfig {
                 temperature: ep.temperature,
             });
         }
+        self.providers = providers;
 
         // Map the active profile onto (group, model) and sync the `main`
         // runtime cache from the still-present profile entry.
@@ -917,18 +955,20 @@ impl ModelsConfig {
                     .get(&group_name)
                     .is_some_and(|g| g.models.iter().any(|m| m.name == ep.name))
                 {
+                    self.main = self
+                        .resolve_endpoint(&group_name, &ep.name)
+                        .expect("migrated active provider model must resolve");
                     self.active_model = Some(ActiveModelRef {
                         provider: group_name,
                         model: ep.name.clone(),
                     });
                 }
-                self.main = ep;
             }
         }
 
-        // Old structure is dropped: a subsequent save serializes only
-        // `providers` + `active_model`.
+        // Old structure is dropped only after the complete migration succeeds.
         self.profiles.clear();
+        Ok(())
     }
 }
 
