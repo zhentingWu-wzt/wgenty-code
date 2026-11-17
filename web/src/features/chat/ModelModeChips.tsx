@@ -27,7 +27,10 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    message: string;
+    retry: "catalog" | "model-reset" | null;
+  } | null>(null);
   const catalogGeneration = useRef(0);
   const mounted = useRef(true);
   const isRunning = useSyncExternalStore(
@@ -63,7 +66,10 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
       }
     } catch (cause) {
       if (mounted.current && catalogGeneration.current === generation) {
-        setError(`Model list failed: ${messageOf(cause)}. Try again.`);
+        setError({
+          message: `Model list failed: ${messageOf(cause)}. Try again.`,
+          retry: "catalog",
+        });
       }
     } finally {
       if (mounted.current && catalogGeneration.current === generation) {
@@ -89,18 +95,21 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
   };
 
   const chooseModel = async (provider: string, model: string) => {
+    const revision = useSessionManager.getState().getSessionModelRevision(entryId);
     setPending(true);
     setError(null);
     try {
       const response = await client.switchModel({ provider, model, sessionId });
-      useSessionManager.getState().setSessionModel(entryId, {
+      useSessionManager.getState().setSessionModelIfRevision(entryId, revision, {
         provider,
         model: response.model_name,
         isOverride: true,
       });
       if (mounted.current) closePopovers();
     } catch (cause) {
-      if (mounted.current) setError(`Model switch failed: ${messageOf(cause)}. Try again.`);
+      if (mounted.current) {
+        setError({ message: `Model switch failed: ${messageOf(cause)}. Try again.`, retry: null });
+      }
     } finally {
       if (mounted.current) setPending(false);
     }
@@ -113,41 +122,52 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
       await client.resetSessionModel(sessionId);
       if (mounted.current) closePopovers();
     } catch (cause) {
-      if (mounted.current) setError(`Model reset failed: ${messageOf(cause)}. Try again.`);
+      if (mounted.current) {
+        setError({
+          message: `Model reset failed: ${messageOf(cause)}. Try again.`,
+          retry: "model-reset",
+        });
+      }
     } finally {
       if (mounted.current) setPending(false);
     }
   };
 
   const chooseMode = async (mode: PermissionMode) => {
+    const revision = useSessionManager.getState().getSessionModeRevision(entryId);
     setPending(true);
     setError(null);
     try {
       const response = await client.setPermissionMode(sessionId, mode);
-      useSessionManager.getState().setSessionMode(entryId, {
+      useSessionManager.getState().setSessionModeIfRevision(entryId, revision, {
         mode: response.mode,
         isOverride: response.is_override === true,
       });
       if (mounted.current) closePopovers();
     } catch (cause) {
-      if (mounted.current) setError(`Mode switch failed: ${messageOf(cause)}. Try again.`);
+      if (mounted.current) {
+        setError({ message: `Mode switch failed: ${messageOf(cause)}. Try again.`, retry: null });
+      }
     } finally {
       if (mounted.current) setPending(false);
     }
   };
 
   const resetMode = async () => {
+    const revision = useSessionManager.getState().getSessionModeRevision(entryId);
     setPending(true);
     setError(null);
     try {
       const response = await client.resetSessionMode(sessionId);
-      useSessionManager.getState().setSessionMode(entryId, {
+      useSessionManager.getState().setSessionModeIfRevision(entryId, revision, {
         mode: response.mode,
         isOverride: response.is_override === true,
       });
       if (mounted.current) closePopovers();
     } catch (cause) {
-      if (mounted.current) setError(`Mode reset failed: ${messageOf(cause)}. Try again.`);
+      if (mounted.current) {
+        setError({ message: `Mode reset failed: ${messageOf(cause)}. Try again.`, retry: null });
+      }
     } finally {
       if (mounted.current) setPending(false);
     }
@@ -190,7 +210,7 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
               <div className="absolute bottom-full left-0 z-50 mb-1 max-h-80 w-72 overflow-y-auto rounded-md border border-border bg-popover py-1 text-foreground shadow-lg">
                 {error && (
                   <div role="alert" className="px-2 py-1 text-danger">
-                    {error}
+                    {error.message}
                   </div>
                 )}
                 {loadingModels ? (
@@ -233,11 +253,14 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
                         Follow default
                       </button>
                     )}
-                    {!loadingModels && error && (
+                    {!loadingModels && error?.retry && (
                       <button
                         type="button"
-                        onClick={() => void loadModels()}
-                        className="w-full px-2 py-1 text-left hover:bg-accent"
+                        disabled={pending}
+                        onClick={() =>
+                          void (error.retry === "model-reset" ? resetModel() : loadModels())
+                        }
+                        className="w-full px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
                       >
                         Retry
                       </button>
@@ -287,7 +310,7 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
             <div className="absolute bottom-full left-0 z-50 mb-1 w-44 rounded-md border border-border bg-popover py-1 text-foreground shadow-lg">
               {error && (
                 <div role="alert" className="px-2 py-1 text-danger">
-                  {error}
+                  {error.message}
                 </div>
               )}
               {entry.mode?.isOverride && (
@@ -297,7 +320,7 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
                   onClick={() => void resetMode()}
                   className="w-full border-b border-border px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
                 >
-                  Follow project default
+                  Follow default
                 </button>
               )}
               {MODE_ORDER.map((mode) => (

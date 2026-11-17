@@ -216,7 +216,7 @@ describe("ModelModeChips", () => {
     await user.click(
       screen.getByRole("button", { name: "Permission mode: yolo (session override)" }),
     );
-    await user.click(screen.getByRole("button", { name: "Follow project default" }));
+    await user.click(screen.getByRole("button", { name: "Follow default" }));
     await waitFor(() =>
       expect(useSessionManager.getState().entries[a].mode).toEqual({
         mode: "accept_edits",
@@ -274,6 +274,49 @@ describe("ModelModeChips", () => {
       isOverride: true,
     });
     expect(await screen.findByRole("button", { name: /vendor\/glm-5\.3.*heavy/ })).toBeEnabled();
+  });
+
+  it("retries a failed model reset instead of reloading the catalog", async () => {
+    const client = createClient();
+    client.resetSessionModel.mockRejectedValueOnce(new Error("reset boom"));
+    const user = userEvent.setup();
+    createSessions();
+    renderChips(client);
+
+    await user.click(
+      screen.getByRole("button", { name: "Session model: zhipu/glm-old (session override)" }),
+    );
+    await user.click(await screen.findByRole("button", { name: "Follow default" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Model reset failed: reset boom. Try again.",
+    );
+    expect(client.resetSessionModel).toHaveBeenCalledTimes(1);
+    expect(client.listModels).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(client.resetSessionModel).toHaveBeenCalledTimes(2));
+    expect(client.listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a failed catalog load without resetting the model", async () => {
+    const client = createClient();
+    client.listModels.mockRejectedValueOnce(new Error("catalog boom"));
+    const user = userEvent.setup();
+    createSessions();
+    renderChips(client);
+
+    await user.click(
+      screen.getByRole("button", { name: "Session model: zhipu/glm-old (session override)" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Model list failed: catalog boom. Try again.",
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(client.listModels).toHaveBeenCalledTimes(2));
+    expect(client.resetSessionModel).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: /^Zhipu/ })).toBeInTheDocument();
   });
 
   it("closes a stale picker and ignores its late catalog response after active changes", async () => {
@@ -339,6 +382,149 @@ describe("ModelModeChips", () => {
       isOverride: false,
     });
     expect(screen.getByRole("button", { name: "Session model: kimi/k3" })).toBeInTheDocument();
+  });
+
+  it("keeps a newer model event when an old switch response arrives after A to B to A", async () => {
+    const { a, b } = createSessions();
+    const client = createClient();
+    const pending = deferred<{
+      success: boolean;
+      label: string;
+      provider: string;
+      model_name: string;
+    }>();
+    client.switchModel.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    renderChips(client);
+
+    const target = await openTargetModel(user);
+    await user.click(target);
+    await waitFor(() => expect(client.switchModel).toHaveBeenCalledTimes(1));
+    await act(async () => useSessionManager.getState().setActive(b));
+    await act(async () => useSessionManager.getState().setActive(a));
+    act(() => {
+      useSessionManager.getState().applyModelChanged({
+        seq: 1,
+        kind: "model_changed",
+        data: {
+          session_id: "daemon-a",
+          reset: false,
+          provider: "kimi",
+          model_name: "newer-model",
+        },
+      });
+    });
+    await act(async () => {
+      pending.resolve({
+        success: true,
+        label: "zhipu/vendor/glm-5.3",
+        provider: "zhipu",
+        model_name: "vendor/glm-5.3",
+      });
+      await pending.promise;
+    });
+
+    expect(useSessionManager.getState().entries[a].model).toEqual({
+      provider: "kimi",
+      model: "newer-model",
+      isOverride: true,
+    });
+    expect(useSessionManager.getState().entries[b].model).toEqual({
+      provider: "kimi",
+      model: "k3",
+      isOverride: false,
+    });
+  });
+
+  it("keeps a newer mode event when an old set response arrives", async () => {
+    const { a } = createSessions();
+    const client = createClient();
+    const pending = deferred<{
+      success: boolean;
+      mode: "yolo";
+      effective_mode: "yolo";
+      is_override: boolean;
+    }>();
+    client.setPermissionMode.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    renderChips(client);
+
+    await user.click(screen.getByRole("button", { name: "Permission mode: normal" }));
+    await user.click(screen.getByRole("button", { name: "yolo" }));
+    await waitFor(() => expect(client.setPermissionMode).toHaveBeenCalledTimes(1));
+    act(() => {
+      useSessionManager.getState().applyModeChanged({
+        seq: 1,
+        kind: "mode_changed",
+        data: {
+          session_id: "daemon-a",
+          mode: "accept_edits",
+          is_override: true,
+        },
+      });
+    });
+    await act(async () => {
+      pending.resolve({
+        success: true,
+        mode: "yolo",
+        effective_mode: "yolo",
+        is_override: true,
+      });
+      await pending.promise;
+    });
+
+    expect(useSessionManager.getState().entries[a].mode).toEqual({
+      mode: "accept_edits",
+      isOverride: true,
+    });
+  });
+
+  it("keeps a newer mode event when an old reset response arrives", async () => {
+    const { a } = createSessions();
+    useSessionManager.getState().setSessionMode(a, { mode: "normal", isOverride: true });
+    const client = createClient();
+    const pending = deferred<{
+      success: boolean;
+      mode: "accept_edits";
+      effective_mode: "accept_edits";
+      is_override: boolean;
+      reset: boolean;
+    }>();
+    client.resetSessionMode.mockReturnValueOnce(pending.promise);
+    const user = userEvent.setup();
+    renderChips(client);
+
+    await user.click(
+      screen.getByRole("button", { name: "Permission mode: normal (session override)" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Follow default" }));
+    await waitFor(() => expect(client.resetSessionMode).toHaveBeenCalledTimes(1));
+    act(() => {
+      useSessionManager.getState().applyModeChanged({
+        seq: 1,
+        kind: "mode_changed",
+        data: {
+          session_id: "daemon-a",
+          mode: "yolo",
+          is_override: true,
+        },
+      });
+    });
+    await act(async () => {
+      pending.resolve({
+        success: true,
+        mode: "accept_edits",
+        effective_mode: "accept_edits",
+        is_override: false,
+        reset: true,
+      });
+      await pending.promise;
+    });
+
+    expect(useSessionManager.getState().entries[a].mode).toEqual({
+      mode: "yolo",
+      isOverride: true,
+    });
   });
 
   it("renders nothing without an active session", () => {
