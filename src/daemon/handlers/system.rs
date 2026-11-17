@@ -144,29 +144,33 @@ pub async fn list_models(
         None => (s.models.active_model.clone(), false),
     };
 
-    let mut providers = Vec::with_capacity(s.models.providers.len());
-    for (key, group) in &s.models.providers {
-        let models = state
-            .catalog
-            .merged(&s, key)
-            .await
-            .into_iter()
-            .map(|model| ProviderModelInfo {
-                name: model.name.clone(),
-                tier: tier_label(model.tier),
-                configured: model.configured,
-                active: active
-                    .as_ref()
-                    .is_some_and(|active| active.provider == *key && active.model == model.name),
-            })
-            .collect();
-        providers.push(ProviderGroupInfo {
-            key: key.clone(),
-            display_name: group.display_name.clone().unwrap_or_else(|| key.clone()),
-            protocol: group.protocol.clone(),
-            models,
-        });
-    }
+    let catalog = &state.catalog;
+    let settings = &s;
+    let active = active.as_ref();
+    let mut providers = futures::future::join_all(s.models.providers.iter().map(|(key, group)| {
+        async move {
+            let models = catalog
+                .merged(settings, key)
+                .await
+                .into_iter()
+                .map(|model| ProviderModelInfo {
+                    name: model.name.clone(),
+                    tier: tier_label(model.tier),
+                    configured: model.configured,
+                    active: active.is_some_and(|active| {
+                        active.provider == *key && active.model == model.name
+                    }),
+                })
+                .collect();
+            ProviderGroupInfo {
+                key: key.clone(),
+                display_name: group.display_name.clone().unwrap_or_else(|| key.clone()),
+                protocol: group.protocol.clone(),
+                models,
+            }
+        }
+    }))
+    .await;
     // Stable ordering for a predictable picker.
     providers.sort_by(|a, b| a.key.cmp(&b.key));
     Json(ListModelsResponse {

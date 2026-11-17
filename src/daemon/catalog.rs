@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 const CATALOG_TTL: Duration = Duration::from_secs(300);
+const CATALOG_FETCH_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Built-in model fallbacks, merged with provider responses and manual settings.
 pub const BUILTIN_CATALOGS: &[(&str, &[&str])] = &[
@@ -185,9 +186,18 @@ impl ModelCatalogService {
             .get(provider_key)
             .filter(|entry| entry.identity == identity)
             .cloned();
-        let fetched = self
-            .fetch_models(&identity.base_url, &api_key, provider_key)
-            .await;
+        let fetched = match tokio::time::timeout(
+            CATALOG_FETCH_TIMEOUT,
+            self.fetch_models(&identity.base_url, &api_key, provider_key),
+        )
+        .await
+        {
+            Ok(fetched) => fetched,
+            Err(_) => {
+                tracing::warn!(provider = provider_key, "model catalog request timed out");
+                None
+            }
+        };
         let entry = CatalogEntry {
             identity,
             fetched: fetched.or_else(|| previous.and_then(|entry| entry.fetched)),
@@ -267,6 +277,8 @@ pub(crate) mod test_support {
         reply: RwLock<MockReply>,
         delay: Duration,
         hits: AtomicUsize,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
         authorizations: RwLock<Vec<Option<String>>>,
     }
 
@@ -293,6 +305,8 @@ pub(crate) mod test_support {
                 }),
                 delay,
                 hits: AtomicUsize::new(0),
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
                 authorizations: RwLock::new(Vec::new()),
             });
             let app = Router::new()
@@ -325,6 +339,10 @@ pub(crate) mod test_support {
             self.state.hits.load(Ordering::SeqCst)
         }
 
+        pub(crate) fn max_concurrent(&self) -> usize {
+            self.state.max_active.load(Ordering::SeqCst)
+        }
+
         pub(crate) fn authorizations(&self) -> Vec<Option<String>> {
             self.state
                 .authorizations
@@ -345,6 +363,8 @@ pub(crate) mod test_support {
         headers: HeaderMap,
     ) -> (StatusCode, Json<serde_json::Value>) {
         state.hits.fetch_add(1, Ordering::SeqCst);
+        let active = state.active.fetch_add(1, Ordering::SeqCst) + 1;
+        state.max_active.fetch_max(active, Ordering::SeqCst);
         state
             .authorizations
             .write()
@@ -358,6 +378,7 @@ pub(crate) mod test_support {
         if !state.delay.is_zero() {
             tokio::time::sleep(state.delay).await;
         }
+        state.active.fetch_sub(1, Ordering::SeqCst);
         let reply = state.reply.read().expect("mock reply lock").clone();
         let data: Vec<serde_json::Value> = reply
             .models

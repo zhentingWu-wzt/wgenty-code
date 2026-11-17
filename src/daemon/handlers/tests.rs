@@ -2513,6 +2513,76 @@ fn seed_settings_disk(fake_home: &std::path::Path, settings: &crate::config::Set
     raw
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn hanging_catalogs_do_not_block_manual_models_and_fetch_concurrently() {
+    use axum::extract::{Query, State};
+    use axum::Json;
+
+    let server = crate::daemon::catalog::test_support::MockCatalogServer::start_with_delay(
+        200,
+        &["dynamic-model"],
+        std::time::Duration::from_secs(60),
+    )
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let mut settings = provider_test_settings(temp.path());
+    for group in settings.models.providers.values_mut() {
+        group.base_url = server.base_url.clone();
+        group.api_key = Some("catalog-test-key".to_string());
+        group.protocol = Some("openai".to_string());
+    }
+    let previous_home = std::env::var_os("WGENTY_HOME");
+    std::env::set_var("WGENTY_HOME", fake_home.path());
+    let run = async {
+        let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+        let Json(response) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            list_models(State(state.clone()), Query(ListModelsQuery { session_id: None })),
+        )
+        .await
+        .expect("hanging catalogs must not block the manual catalog");
+        let names: Vec<&str> = response
+            .providers
+            .iter()
+            .flat_map(|provider| provider.models.iter())
+            .map(|model| model.name.as_str())
+            .collect();
+        assert!(names.contains(&"glm-5.3"));
+        assert!(names.contains(&"claude-sonnet-4-5"));
+        assert_eq!(server.hits(), 2);
+        assert_eq!(
+            server.max_concurrent(),
+            2,
+            "independent provider catalogs must not be fetched serially"
+        );
+
+        let switched = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            switch_model(
+                State(state),
+                Json(SwitchModelRequest {
+                    provider: "zhipu".to_string(),
+                    model: "glm-5.3".to_string(),
+                    profile: None,
+                    session_id: Some("manual-during-hang".to_string()),
+                }),
+            ),
+        )
+        .await
+        .expect("manual model switch must not wait for catalog refresh")
+        .expect("manual model remains switchable");
+        assert!(switched.success);
+    }
+    .await;
+    match previous_home {
+        Some(value) => std::env::set_var("WGENTY_HOME", value),
+        None => std::env::remove_var("WGENTY_HOME"),
+    }
+    run
+}
+
 /// v2 `GET /models`: vendor-grouped projection of `models.providers`, sorted
 /// by group key then model name, with the global `active_model` pair marked
 /// `active` (no session scope). Manual settings entries are `configured`.
