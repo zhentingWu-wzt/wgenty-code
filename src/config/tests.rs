@@ -123,6 +123,29 @@ fn load_from_disk_migrates_legacy_model_fields() {
 
 #[test]
 #[serial_test::serial]
+fn legacy_planner_role_resolves_provider_model_after_load_and_reload() {
+    let previous = std::env::var_os("WGENTY_HOME");
+    let _dir = seed_legacy_settings_home();
+
+    for settings in [
+        Settings::load().expect("load legacy planner"),
+        Settings::reload().expect("reload migrated planner"),
+    ] {
+        let planner = settings
+            .planner_settings()
+            .expect("planner role must survive profile migration");
+        assert_eq!(planner.models.main.name, "planner-x");
+        assert_eq!(
+            planner.models.main.base_url.as_deref(),
+            Some("https://planner.example")
+        );
+        assert_eq!(planner.models.main.api_key.as_deref(), Some("k-main"));
+    }
+    restore_wgenty_home(previous);
+}
+
+#[test]
+#[serial_test::serial]
 fn grouped_load_and_reload_preserve_api_key_precedence_through_api_client() {
     let env_names = [
         "WGENTY_HOME",

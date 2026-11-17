@@ -270,6 +270,14 @@ impl Settings {
                 s.models.main = ep.clone();
                 return Some(s);
             }
+            if let Some((provider, model)) = self.models.find_provider_model_by_key(key) {
+                let mut s = self.clone();
+                s.models.main = self
+                    .models
+                    .resolve_endpoint(&provider, &model.name)
+                    .expect("planner provider model found above must resolve");
+                return Some(s);
+            }
             tracing::warn!(
                 key = %key,
                 "models.roles.planner points at an unknown profile; falling back to main"
