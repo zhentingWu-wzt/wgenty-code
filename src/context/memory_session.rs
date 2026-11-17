@@ -370,9 +370,25 @@ impl SessionManager {
         }
 
         let content = tokio::fs::read_to_string(&path).await?;
-        let session: Session = serde_json::from_str(&content)?;
+        let mut session: Session = serde_json::from_str(&content)?;
 
         let mut sessions = self.sessions.write().await;
+        if let Some(runtime_permission) = sessions
+            .get(id)
+            .and_then(|current| current.permission_override.clone())
+            .filter(|current| current.effective_mode == crate::sandbox::EffectiveMode::Plan)
+        {
+            if session.permission_override.as_ref().is_some_and(|persisted| {
+                persisted.root_mode == runtime_permission.root_mode
+                    && persisted.effective_mode
+                        == persistable_effective_mode(
+                            runtime_permission.root_mode,
+                            runtime_permission.effective_mode,
+                        )
+            }) {
+                session.permission_override = Some(runtime_permission);
+            }
+        }
         sessions.insert(id.to_string(), session.clone());
 
         Ok(Some(session))
@@ -1252,7 +1268,8 @@ mod tests {
         );
 
         mgr.save(&session).await.unwrap();
-        let loaded = mgr.load("plan-override").await.unwrap().unwrap();
+        let restarted = SessionManager::with_dir(tmp.path().to_path_buf());
+        let loaded = restarted.load("plan-override").await.unwrap().unwrap();
 
         let permission = loaded.permission_override.expect("permission override");
         assert_eq!(

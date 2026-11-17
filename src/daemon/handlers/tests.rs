@@ -1917,9 +1917,11 @@ async fn set_permission_mode_scopes_override_to_session() {
 }
 
 #[tokio::test]
-async fn set_permission_mode_normalizes_plan_before_session_save() {
-    let mut state = global_event_test_state().await;
-    state.permission_modes = crate::permissions::PermissionModeStore::new();
+async fn set_permission_mode_keeps_runtime_plan_but_persists_derived_mode() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut settings = crate::config::Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
     state
         .session_manager
         .save(&crate::context::memory_session::Session::with_id(
@@ -1928,9 +1930,8 @@ async fn set_permission_mode_normalizes_plan_before_session_save() {
         ))
         .await
         .unwrap();
-    let state = Arc::new(state);
 
-    let _ = set_permission_mode(
+    let Json(response) = set_permission_mode(
         State(state.clone()),
         Json(crate::daemon::models::SetPermissionModeRequest {
             mode: Some(crate::config::RootPermissionMode::Normal),
@@ -1942,14 +1943,39 @@ async fn set_permission_mode_normalizes_plan_before_session_save() {
     .await
     .unwrap();
 
-    let saved = state
+    assert_eq!(response["effective_mode"], "plan");
+    assert_eq!(
+        state.effective_permission("session-a").await.effective_mode,
+        crate::sandbox::EffectiveMode::Plan
+    );
+    let current = state
         .session_manager
         .load("session-a")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        saved.permission_override.unwrap().effective_mode,
+        current.permission_override.unwrap().effective_mode,
+        crate::sandbox::EffectiveMode::Plan
+    );
+
+    let sessions_dir = state
+        .projects
+        .main_root()
+        .join(".wgenty-code")
+        .join("sessions");
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(sessions_dir.join("session-a.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["permission_override"]["effective_mode"], "normal");
+    let restarted = crate::context::memory_session::SessionManager::with_dir(sessions_dir)
+        .load("session-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restarted.permission_override.unwrap().effective_mode,
         crate::sandbox::EffectiveMode::Normal
     );
 }

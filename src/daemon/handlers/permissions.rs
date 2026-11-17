@@ -178,11 +178,6 @@ pub async fn set_permission_mode(
     let effective = body
         .effective_mode
         .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(mode));
-    let stored_effective = if effective == crate::sandbox::EffectiveMode::Plan {
-        crate::sandbox::EffectiveMode::from_root_permission_mode(mode)
-    } else {
-        effective
-    };
     // Serialize with PUT overwrites (which take the same lock around their
     // load → version check → save sequence) so the two full-record writers
     // cannot interleave.
@@ -196,7 +191,7 @@ pub async fn set_permission_mode(
                 .update_session_record(session_id, |session| {
                     session.permission_override = Some(crate::permissions::PermissionModeEntry {
                         root_mode: mode,
-                        effective_mode: stored_effective,
+                        effective_mode: effective,
                     });
                 })
                 .await
@@ -217,7 +212,7 @@ pub async fn set_permission_mode(
             let mut session = crate::context::memory_session::Session::with_id(session_id, None)
                 .with_permission_override(crate::permissions::PermissionModeEntry {
                     root_mode: mode,
-                    effective_mode: stored_effective,
+                    effective_mode: effective,
                 });
             session.version += 1;
             state
