@@ -434,10 +434,10 @@ async fn catalog_failure_falls_back_and_caches() {
 
 ### Task 10: 集成验收 + fmt/clippy
 
-- [ ] **Step 1: 全量测试** — Run: `cargo test --workspace --quiet 2>&1 | grep "test result" | sort | uniq -c`，Expected: 全 ok
-- [ ] **Step 2: fmt/clippy/tsc/eslint** — Run: `cargo fmt && cargo clippy --workspace --quiet 2>&1 | tail -3 && cd web && npx tsc --noEmit`，Expected: 干净
-- [ ] **Step 3: 手动冒烟脚本**（可选，无浏览器时跳过）：临时 WGENTY_HOME 起 daemon，curl `GET /models`（旧 settings.json 迁移断言：providers 分组 + .bak 生成）、`POST /model/switch` 带/不带 session_id
-- [ ] **Step 4: Commit（如冒烟有修）** — `test: multi-provider-models integration acceptance`
+- [x] **Step 1: 全量测试** — Rust 2272 passed / 0 failed / 4 ignored；Web 293/293 passed
+- [x] **Step 2: fmt/clippy/tsc/eslint** — fmt、严格 clippy、tsc、全量 ESLint 与 diff check 均通过
+- [x] **Step 3: 手动冒烟脚本** — 可选项未执行（not-run）；自动化 handler、迁移和 session 行为验收通过，未访问真实厂商
+- [x] **Step 4: Commit** — `16a6e307` + 审查修复 `56620264`，仅本地 commit
 
 ## Self-Review 结论
 

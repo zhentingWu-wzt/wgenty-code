@@ -5,11 +5,12 @@
 - Mode: subagent-driven-development / tdd
 - Review mode: standard
 
-## Current Task: Task 10 (集成验收 + fmt/clippy)
+## Current Task: Final whole-branch review
 
-- 阶段: pending
-- 前置: Task 9 已完成并通过唯一修复轮 scoped 复查
-- 待办: OpenSpec 2.6 集成场景、全量 Rust/Web、fmt/clippy/tsc/ESLint、现有基线门禁问题处理
+- Task 10: complete，standard 1 fix round scoped 复查通过
+- 自动化验收: Rust 2272 passed；Web 293 passed；fmt/clippy/tsc/ESLint 全绿
+- 可选手动 daemon 冒烟: not-run
+- 下一步: 全分支轻量 final review，triaged deferred findings
 
 ## Completed Tasks
 

@@ -16,7 +16,7 @@
 - [x] 2.3 `effective_permission(session_id)`：session 覆盖 > PermissionModeStore > Normal；GET/POST permission-mode handler 与 TaskTool spawn 快照改走该入口
 - [x] 2.4 `POST /model/switch` 扩展：带 `session_id` 只写覆盖不落盘；`GET /models`（list）带 `session_id` 时 active 按合成值；`ModelChanged`/`ModeChanged` 广播携带 `session_id`
 - [x] 2.5 覆盖重置端点/参数（清除 session 的模型或模式覆盖）
-- [ ] 2.6 daemon 测试：同 project 双 session 隔离、fallback 链、重置、spawn 快照、Plan 不持久化
+- [x] 2.6 daemon 测试：同 project 双 session 隔离、fallback 链、重置、spawn 快照、Plan 不持久化
 
 ## 3. 动态模型目录
 
