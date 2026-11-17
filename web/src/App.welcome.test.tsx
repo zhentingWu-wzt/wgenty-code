@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useLayoutEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonClient } from "./api/client";
@@ -168,6 +169,28 @@ describe("App welcome screen", () => {
         ["main-1", "main-2", "main-3", "main-4", "main-5", "docs-1", "docs-2"].sort(),
       );
     });
+  });
+
+  it("latches boot when a session appears before the bootstrap effect", async () => {
+    const listSessions = vi
+      .spyOn(DaemonClient.prototype, "listSessions")
+      .mockImplementation(() => new Promise(() => {}));
+    function SessionBeforeEffects() {
+      useLayoutEffect(() => {
+        useSessionManager
+          .getState()
+          .createLocalSession("interleaved", { id: "interleaved", daemonId: "interleaved" });
+      }, []);
+      return <App />;
+    }
+    render(<SessionBeforeEffects />);
+    expect(listSessions).not.toHaveBeenCalled();
+
+    const user = userEvent.setup();
+    const closeBtn = await screen.findAllByRole("button", { name: /^Close /i });
+    await user.click(closeBtn[0]);
+
+    expect(await screen.findByText("Wgenty Code", { selector: "h1" })).toBeInTheDocument();
   });
 
   it("routes model_changed broadcasts to the matching session entry", async () => {

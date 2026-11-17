@@ -94,10 +94,15 @@ export function App() {
   // throwaway session. Must live in an effect — creating a session during
   // render is a render-phase side effect (react-hooks purity rules).
   useEffect(() => {
-    if (useSessionManager.getState().activeId) {
-      return; // already bootstrapped
-    }
     let cancelled = false;
+    if (useSessionManager.getState().activeId) {
+      queueMicrotask(() => {
+        if (!cancelled) setBooted(true);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
     (async () => {
       try {
         const sessions = await client.listSessions();

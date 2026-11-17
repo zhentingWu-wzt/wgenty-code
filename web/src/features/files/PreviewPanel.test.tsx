@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewPanel } from "./PreviewPanel";
@@ -20,7 +20,42 @@ const text = (lines: string[], size: number): FileContent => ({
   version: { mtime_ms: 1, size },
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("PreviewPanel", () => {
+  it("shows loading on path changes and ignores superseded responses", async () => {
+    const first = deferred<FileContent>();
+    const superseded = deferred<FileContent>();
+    const current = deferred<FileContent>();
+    const requests = new Map([
+      ["/w/proj/first.txt", first.promise],
+      ["/w/proj/superseded.txt", superseded.promise],
+      ["/w/proj/current.txt", current.promise],
+    ]);
+    const client = clientWith((path) => requests.get(path)!);
+    const { rerender } = render(<PreviewPanel client={client} meta={previewMeta("first.txt")} />);
+
+    await act(async () => first.resolve(text(["old content"], 11)));
+    expect(await screen.findByText("old content")).toBeInTheDocument();
+
+    rerender(<PreviewPanel client={client} meta={previewMeta("superseded.txt")} />);
+    expect(screen.queryByText("old content")).not.toBeInTheDocument();
+
+    rerender(<PreviewPanel client={client} meta={previewMeta("current.txt")} />);
+    await act(async () => current.resolve(text(["current content"], 15)));
+    expect(await screen.findByText("current content")).toBeInTheDocument();
+
+    await act(async () => superseded.resolve(text(["superseded content"], 18)));
+    expect(screen.queryByText("superseded content")).not.toBeInTheDocument();
+    expect(screen.getByText("current content")).toBeInTheDocument();
+  });
+
   it("renders code with a line-number gutter and shiki highlighting", async () => {
     const { container } = render(
       <PreviewPanel
@@ -59,7 +94,10 @@ describe("PreviewPanel", () => {
   it("falls back to a notice for non-whitelisted binaries", async () => {
     render(
       <PreviewPanel
-        client={clientWith(async () => ({ kind: "binary-unsupported", version: { mtime_ms: 1, size: 4096 } }))}
+        client={clientWith(async () => ({
+          kind: "binary-unsupported",
+          version: { mtime_ms: 1, size: 4096 },
+        }))}
         meta={previewMeta("bin/app.exe", "binary")}
       />,
     );
@@ -75,9 +113,7 @@ describe("PreviewPanel", () => {
         new Error("file too large to preview: 2.1 MB exceeds the 1.5 MB limit"),
       )
       .mockResolvedValueOnce(text(["ok"], 2));
-    render(
-      <PreviewPanel client={clientWith(fetchFile)} meta={previewMeta("big.txt")} />,
-    );
+    render(<PreviewPanel client={clientWith(fetchFile)} meta={previewMeta("big.txt")} />);
     expect(
       await screen.findByText(/file too large to preview: 2\.1 MB exceeds the 1\.5 MB limit/),
     ).toBeInTheDocument();
@@ -106,6 +142,7 @@ describe("PreviewPanel", () => {
       cleanup();
       URL.createObjectURL = originalCreate as typeof URL.createObjectURL;
       URL.revokeObjectURL = originalRevoke as typeof URL.revokeObjectURL;
+      vi.unstubAllGlobals();
       vi.clearAllMocks();
     });
 
@@ -122,6 +159,55 @@ describe("PreviewPanel", () => {
       expect(img).toHaveAttribute("alt", "logo.png");
       unmount();
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:fake-url");
+    });
+
+    it("never shows the previous blob URL while the next source is pending", async () => {
+      const microtasks: Array<() => void> = [];
+      vi.stubGlobal("queueMicrotask", (callback: () => void) => microtasks.push(callback));
+      createObjectURL.mockReturnValueOnce("blob:a").mockReturnValueOnce("blob:b");
+      const blobA = new Blob(["a"], { type: "image/png" });
+      const blobB = new Blob(["b"], { type: "image/png" });
+      const client = clientWith(async (path) => ({
+        kind: "blob",
+        mime: "image/png",
+        blob: path.endsWith("a.png") ? blobA : blobB,
+      }));
+      const { rerender } = render(
+        <PreviewPanel client={client} meta={previewMeta("a.png", "binary")} />,
+      );
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+      act(() => microtasks.shift()!());
+      expect(screen.getByRole("img")).toHaveAttribute("src", "blob:a");
+
+      rerender(<PreviewPanel client={client} meta={previewMeta("b.png", "binary")} />);
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(2));
+      expect(screen.queryByRole("img")).not.toBeInTheDocument();
+
+      act(() => microtasks.shift()!());
+      expect(screen.getByRole("img")).toHaveAttribute("src", "blob:b");
+      expect(screen.getByRole("img")).toHaveAttribute("alt", "b.png");
+    });
+
+    it("ignores a queued blob URL update after unmount", async () => {
+      const microtasks: Array<() => void> = [];
+      vi.stubGlobal("queueMicrotask", (callback: () => void) => microtasks.push(callback));
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const blob = new Blob(["png"], { type: "image/png" });
+      const { unmount } = render(
+        <PreviewPanel
+          client={clientWith(async () => ({ kind: "blob", mime: "image/png", blob }))}
+          meta={previewMeta("logo.png", "binary")}
+        />,
+      );
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+      expect(microtasks).toHaveLength(1);
+
+      unmount();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:fake-url");
+      consoleError.mockClear();
+      act(() => microtasks.shift()!());
+      expect(consoleError).not.toHaveBeenCalled();
+      consoleError.mockRestore();
     });
 
     it("renders PDFs in an iframe filling the panel", async () => {

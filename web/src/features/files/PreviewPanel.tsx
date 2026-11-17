@@ -21,15 +21,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import type { HighlighterCore } from "shiki/core";
-import {
-  Ban,
-  Code2,
-  Eye,
-  FileText,
-  FileWarning,
-  Loader2,
-  RefreshCw,
-} from "lucide-react";
+import { Ban, Code2, Eye, FileText, FileWarning, Loader2, RefreshCw } from "lucide-react";
 import { formatBytes, type DaemonClient } from "../../api/client";
 import type { FileContent } from "../../api/types";
 import type { PreviewTabMeta } from "../../state/uiStore";
@@ -51,37 +43,39 @@ export interface PreviewPanelProps {
 }
 
 type LoadState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "done"; content: FileContent };
+  | { status: "loading"; key: string }
+  | { status: "error"; key: string; message: string }
+  | { status: "done"; key: string; content: FileContent };
 
 export function PreviewPanel({ meta, client }: PreviewPanelProps) {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
   // Bumped by the retry button to re-run the fetch effect below.
   const [attempt, setAttempt] = useState(0);
+  const requestKey = `${meta.absPath}:${attempt}`;
+  const [state, setState] = useState<LoadState>({ status: "loading", key: requestKey });
+  const visibleState: LoadState =
+    state.key === requestKey ? state : { status: "loading", key: requestKey };
   // 渲染/源码 toggle for .md files (code view shows the highlighted source).
   const [mdSource, setMdSource] = useState(false);
 
   useEffect(() => {
     let live = true;
-    client
-      .fetchFile(meta.absPath)
-      .then(
-        (content) => {
-          if (live) setState({ status: "done", content });
-        },
-        (e) => {
-          if (live)
-            setState({
-              status: "error",
-              message: e instanceof Error ? e.message : String(e),
-            });
-        },
-      );
+    client.fetchFile(meta.absPath).then(
+      (content) => {
+        if (live) setState({ status: "done", key: requestKey, content });
+      },
+      (e) => {
+        if (live)
+          setState({
+            status: "error",
+            key: requestKey,
+            message: e instanceof Error ? e.message : String(e),
+          });
+      },
+    );
     return () => {
       live = false;
     };
-  }, [client, meta.absPath, attempt]);
+  }, [client, meta.absPath, attempt, requestKey]);
 
   // Highlighting reuses the chat CodeBlock singleton (loaded lazily; until it
   // resolves the code view falls back to plain text, like CodeBlock itself).
@@ -96,7 +90,7 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
     };
   }, []);
 
-  const content = state.status === "done" ? state.content : null;
+  const content = visibleState.status === "done" ? visibleState.content : null;
 
   const textInfo = useMemo(() => {
     if (!content || content.kind !== "text") return null;
@@ -119,13 +113,14 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
   // Blob object URL lifecycle: created when the blob content arrives, revoked
   // on unmount or when the content (path/retry) changes — no leaks.
   const blob = content?.kind === "blob" ? content.blob : null;
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [blobUrl, setBlobUrl] = useState<{ source: Blob; url: string } | null>(null);
+  const currentBlobUrl = blobUrl?.source === blob ? blobUrl.url : null;
   useEffect(() => {
     if (!blob) return;
     let live = true;
     const url = URL.createObjectURL(blob);
     queueMicrotask(() => {
-      if (live) setBlobUrl(url);
+      if (live) setBlobUrl({ source: blob, url });
     });
     return () => {
       live = false;
@@ -143,21 +138,14 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
   const isMd = isMarkdownPath(meta.relPath);
 
   const renderBody = () => {
-    if (state.status === "loading") return <Loading />;
-    if (state.status === "error") {
+    if (visibleState.status === "loading") return <Loading />;
+    if (visibleState.status === "error") {
       return (
         <Notice
           icon={<FileWarning size={20} className="text-warning" />}
-          message={state.message}
+          message={visibleState.message}
           action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setState({ status: "loading" });
-                setAttempt((n) => n + 1);
-              }}
-            >
+            <Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>
               <RefreshCw size={12} />
               重试
             </Button>
@@ -165,7 +153,7 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
         />
       );
     }
-    const c = state.content;
+    const c = visibleState.content;
     if (c.kind === "binary-unsupported") {
       return (
         <Notice
@@ -177,18 +165,22 @@ export function PreviewPanel({ meta, client }: PreviewPanelProps) {
     }
     if (c.kind === "blob") {
       if (isImageMime(c.mime)) {
-        return blobUrl ? (
+        return currentBlobUrl ? (
           <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
-            <img src={blobUrl} alt={meta.relPath} className="max-h-full max-w-full object-contain" />
+            <img
+              src={currentBlobUrl}
+              alt={meta.relPath}
+              className="max-h-full max-w-full object-contain"
+            />
           </div>
         ) : (
           <Loading />
         );
       }
       if (isPdfMime(c.mime)) {
-        return blobUrl ? (
+        return currentBlobUrl ? (
           <iframe
-            src={blobUrl}
+            src={currentBlobUrl}
             title={meta.relPath}
             className="min-h-0 w-full flex-1 border-0"
           />
