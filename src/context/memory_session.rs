@@ -609,18 +609,18 @@ impl SessionManager {
             self.load(id).await?;
         }
         let mut sessions = self.sessions.write().await;
-        let Some(session) = sessions.get_mut(id) else {
+        let Some(mut candidate) = sessions.get(id).cloned() else {
             return Ok(None);
         };
-        update(session);
-        session.version = session.version.saturating_add(1);
-        session.updated_at = chrono::Utc::now();
-        let snapshot = session.clone();
+        update(&mut candidate);
+        candidate.version = candidate.version.saturating_add(1);
+        candidate.updated_at = chrono::Utc::now();
         // Persist BEFORE releasing the lock: a concurrent writer must not
         // read-modify-write a record whose disk state still predates ours.
-        self.persist_to_disk(&snapshot).await?;
+        self.persist_to_disk(&candidate).await?;
+        sessions.insert(id.to_string(), candidate.clone());
         drop(sessions);
-        Ok(Some(snapshot))
+        Ok(Some(candidate))
     }
 
     pub async fn delete(&self, id: &str) -> anyhow::Result<()> {
@@ -1343,6 +1343,46 @@ mod tests {
         let on_disk = restarted.load("record").await.unwrap().unwrap();
         assert_eq!(on_disk.version, 1);
         assert!(on_disk.permission_override.is_some());
+    }
+
+    #[tokio::test]
+    async fn update_session_record_write_failure_leaves_memory_disk_and_version_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        let session = Session::with_id("atomic", Some("original-name"))
+            .with_permission_override(crate::permissions::PermissionModeEntry {
+                root_mode: crate::config::RootPermissionMode::Normal,
+                effective_mode: crate::sandbox::EffectiveMode::Normal,
+            });
+        mgr.save(&session).await.unwrap();
+        let path = tmp.path().join("atomic.json");
+        let original_disk = std::fs::read(&path).unwrap();
+        let mut readonly = std::fs::metadata(&path).unwrap().permissions();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly.clone()).unwrap();
+
+        let result = mgr
+            .update_session_record("atomic", |session| {
+                session.name = "changed-name".to_string();
+                session.permission_override = Some(crate::permissions::PermissionModeEntry {
+                    root_mode: crate::config::RootPermissionMode::Yolo,
+                    effective_mode: crate::sandbox::EffectiveMode::Yolo,
+                });
+            })
+            .await;
+        let mut writable = readonly;
+        writable.set_readonly(false);
+        std::fs::set_permissions(&path, writable).unwrap();
+
+        assert!(result.is_err(), "read-only session write must fail");
+        assert_eq!(std::fs::read(&path).unwrap(), original_disk);
+        let current = mgr.get("atomic").await.expect("session remains in memory");
+        assert_eq!(current.name, "original-name");
+        assert_eq!(current.version, 0);
+        assert_eq!(
+            current.permission_override.unwrap().root_mode,
+            crate::config::RootPermissionMode::Normal
+        );
     }
 
     #[tokio::test]
