@@ -1022,7 +1022,8 @@ impl DaemonState {
                         .unwrap_or(fallback)
                     }
                 }
-            }) as Arc<dyn Fn(&str) -> anyhow::Result<crate::config::Settings> + Send + Sync>
+            })
+                as Arc<dyn Fn(&str) -> anyhow::Result<crate::config::Settings> + Send + Sync>
         };
         // Session-scoped permission resolution for subagent snapshots: bridges
         // async `DaemonState::effective_permission` (session override >
@@ -2189,7 +2190,10 @@ impl DaemonState {
     }
 
     /// Resolve the session's model selection without mutating global settings.
-    pub async fn resolve_session_model(&self, session_id: &str) -> anyhow::Result<crate::config::Settings> {
+    pub async fn resolve_session_model(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<crate::config::Settings> {
         let global = {
             self.settings_handle
                 .read()
@@ -2397,7 +2401,10 @@ mod tests {
                 tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
             >,
             axum::Json(request): axum::Json<serde_json::Value>,
-        ) -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
+        ) -> (
+            [(axum::http::header::HeaderName, &'static str); 1],
+            &'static str,
+        ) {
             let _ = tx.send(request);
             (
                 [(axum::http::header::CONTENT_TYPE, "text/event-stream")],

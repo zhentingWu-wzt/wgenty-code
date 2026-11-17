@@ -147,8 +147,8 @@ pub async fn list_models(
     let catalog = &state.catalog;
     let settings = &s;
     let active = active.as_ref();
-    let mut providers = futures::future::join_all(s.models.providers.iter().map(|(key, group)| {
-        async move {
+    let mut providers =
+        futures::future::join_all(s.models.providers.iter().map(|(key, group)| async move {
             let models = catalog
                 .merged(settings, key)
                 .await
@@ -168,9 +168,8 @@ pub async fn list_models(
                 protocol: group.protocol.clone(),
                 models,
             }
-        }
-    }))
-    .await;
+        }))
+        .await;
     // Stable ordering for a predictable picker.
     providers.sort_by(|a, b| a.key.cmp(&b.key));
     Json(ListModelsResponse {

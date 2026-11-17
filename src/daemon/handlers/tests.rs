@@ -2539,7 +2539,10 @@ async fn hanging_catalogs_do_not_block_manual_models_and_fetch_concurrently() {
         let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
         let Json(response) = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            list_models(State(state.clone()), Query(ListModelsQuery { session_id: None })),
+            list_models(
+                State(state.clone()),
+                Query(ListModelsQuery { session_id: None }),
+            ),
         )
         .await
         .expect("hanging catalogs must not block the manual catalog");
@@ -3781,7 +3784,8 @@ async fn fetched_only_override_restart_failure_does_not_activate_global_provider
     std::env::set_var("WGENTY_HOME", fake_home.path());
     let run = async {
         {
-            let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings.clone())).await);
+            let state =
+                Arc::new(DaemonState::new(crate::state::AppState::new(settings.clone())).await);
             let _ = switch_model(
                 State(state),
                 Json(SwitchModelRequest {

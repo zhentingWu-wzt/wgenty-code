@@ -378,14 +378,18 @@ impl SessionManager {
             .and_then(|current| current.permission_override.clone())
             .filter(|current| current.effective_mode == crate::sandbox::EffectiveMode::Plan)
         {
-            if session.permission_override.as_ref().is_some_and(|persisted| {
-                persisted.root_mode == runtime_permission.root_mode
-                    && persisted.effective_mode
-                        == persistable_effective_mode(
-                            runtime_permission.root_mode,
-                            runtime_permission.effective_mode,
-                        )
-            }) {
+            if session
+                .permission_override
+                .as_ref()
+                .is_some_and(|persisted| {
+                    persisted.root_mode == runtime_permission.root_mode
+                        && persisted.effective_mode
+                            == persistable_effective_mode(
+                                runtime_permission.root_mode,
+                                runtime_permission.effective_mode,
+                            )
+                })
+            {
                 session.permission_override = Some(runtime_permission);
             }
         }
@@ -1347,17 +1351,19 @@ mod tests {
     async fn update_session_record_write_failure_leaves_memory_disk_and_version_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
-        let session = Session::with_id("atomic", Some("original-name"))
-            .with_permission_override(crate::permissions::PermissionModeEntry {
+        let session = Session::with_id("atomic", Some("original-name")).with_permission_override(
+            crate::permissions::PermissionModeEntry {
                 root_mode: crate::config::RootPermissionMode::Normal,
                 effective_mode: crate::sandbox::EffectiveMode::Normal,
-            });
+            },
+        );
         mgr.save(&session).await.unwrap();
         let path = tmp.path().join("atomic.json");
         let original_disk = std::fs::read(&path).unwrap();
-        let mut readonly = std::fs::metadata(&path).unwrap().permissions();
+        let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original_permissions.clone();
         readonly.set_readonly(true);
-        std::fs::set_permissions(&path, readonly.clone()).unwrap();
+        std::fs::set_permissions(&path, readonly).unwrap();
 
         let result = mgr
             .update_session_record("atomic", |session| {
@@ -1368,9 +1374,7 @@ mod tests {
                 });
             })
             .await;
-        let mut writable = readonly;
-        writable.set_readonly(false);
-        std::fs::set_permissions(&path, writable).unwrap();
+        std::fs::set_permissions(&path, original_permissions).unwrap();
 
         assert!(result.is_err(), "read-only session write must fail");
         assert_eq!(std::fs::read(&path).unwrap(), original_disk);
@@ -1410,11 +1414,10 @@ mod tests {
             let mgr = mgr.clone();
             tokio::spawn(async move {
                 for i in 0..N {
-                    assert!(
-                        mgr.set_metadata("metadata-race", "auto-title", Some(i.into()))
-                            .await
-                            .unwrap()
-                    );
+                    assert!(mgr
+                        .set_metadata("metadata-race", "auto-title", Some(i.into()))
+                        .await
+                        .unwrap());
                 }
             })
         };

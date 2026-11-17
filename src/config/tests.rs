@@ -168,7 +168,11 @@ fn grouped_load_and_reload_preserve_api_key_precedence_through_api_client() {
     std::env::remove_var("DASHSCOPE_API_KEY");
 
     let cases = [
-        (Some("test-model-key"), Some("test-provider-key"), "test-model-key"),
+        (
+            Some("test-model-key"),
+            Some("test-provider-key"),
+            "test-model-key",
+        ),
         (None, Some("test-provider-key"), "test-provider-key"),
         (None, None, "test-provider-env-key"),
     ];
@@ -1414,7 +1418,10 @@ fn load_from_disk_rejects_conflicting_same_name_profiles_without_rewriting() {
     });
     let changes = [
         ("api_key", serde_json::json!("test-second-key")),
-        ("base_url", serde_json::json!("https://api.deepseek.com/other/v1")),
+        (
+            "base_url",
+            serde_json::json!("https://api.deepseek.com/other/v1"),
+        ),
         ("tier", serde_json::json!("heavy")),
         ("provider", serde_json::json!("anthropic")),
     ];

@@ -177,10 +177,7 @@ impl TaskTool {
             .unwrap_or_else(|| Ok(self.settings()))
     }
 
-    pub fn with_session_settings_resolver(
-        mut self,
-        resolver: Arc<dyn Fn(&str) -> anyhow::Result<Settings> + Send + Sync>,
-    ) -> Self {
+    pub fn with_session_settings_resolver(mut self, resolver: SessionSettingsResolver) -> Self {
         self.session_settings_resolver = Some(resolver);
         self
     }
