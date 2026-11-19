@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "./Composer";
 import { SessionStoreContext } from "../../state/sessionContext";
 import { createSessionStore, type SessionStore } from "../../state/sessionStore";
+import { useSessionManager } from "../../state/sessionManager";
 import type { SlashCommand } from "../../components/slashCommands";
 
 function renderComposer(
@@ -20,6 +21,15 @@ function renderComposer(
 }
 
 describe("Composer", () => {
+  beforeEach(() => {
+    useSessionManager.setState({
+      entries: {},
+      order: [],
+      activeId: null,
+      connection: "connected",
+      contextWindow: null,
+    });
+  });
   it("sends the trimmed message on Enter and clears the input", async () => {
     const onSend = vi.fn();
     const user = userEvent.setup();
@@ -233,5 +243,54 @@ describe("Composer slash commands", () => {
 
     expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "/sessions" }));
     expect(input).toHaveValue("");
+  });
+
+  it("blocks sending until the active session resolves a model", async () => {
+    // Session without a model: the chip shows "-" and the daemon would have
+    // nothing to run the turn on.
+    useSessionManager.getState().createLocalSession("no-model", { id: "local-nm" });
+    const onSend = vi.fn();
+    const user = userEvent.setup();
+    renderComposer(onSend);
+
+    expect(screen.getByRole("note")).toHaveTextContent(/No model selected/);
+
+    const input = screen.getByRole("textbox");
+    await user.type(input, "hello agent");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+    await user.keyboard("{Enter}");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input).toHaveValue("hello agent");
+  });
+
+  it("keeps /model available when no model is selected", async () => {
+    useSessionManager.getState().createLocalSession("no-model", { id: "local-nm" });
+    const onSend = vi.fn();
+    const onCommand = vi.fn();
+    const user = userEvent.setup();
+    renderComposer(onSend, undefined, onCommand);
+
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/model");
+    await user.keyboard("{Enter}");
+
+    expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "/model" }));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("sends again once the session has a model", async () => {
+    const manager = useSessionManager.getState();
+    const id = manager.createLocalSession("with-model", { id: "local-wm" });
+    manager.setSessionModel(id, { provider: "zhipu", model: "glm-5.3", isOverride: false });
+    const onSend = vi.fn();
+    const user = userEvent.setup();
+    renderComposer(onSend);
+
+    const input = screen.getByRole("textbox");
+    await user.type(input, "hello agent");
+    await user.keyboard("{Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("hello agent");
   });
 });

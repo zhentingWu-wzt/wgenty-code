@@ -1,3 +1,7 @@
+---
+archived-with: 2026-11-19-multi-provider-models
+status: final
+---
 # multi-provider-models Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. 完成状态仅以 `openspec/changes/multi-provider-models/tasks.md` 为准，本计划通过 Comet task ID 引用任务，不维护第二套 checkbox。

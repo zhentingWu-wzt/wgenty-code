@@ -41,7 +41,7 @@ daemon 侧 `ModelCatalogService`：`fetch(provider) -> Vec<model>` 走 OpenAI �
 
 ### D5: web — per-session 状态 + Composer 上方 chip 行
 
-`sessionManager` 的 `modelName`/`permissionMode` 全局单值改为 per-entry（`entries[id].modelOverride/effectiveModel/modeOverride/effectiveMode`），`ModelChanged`/`ModeChanged` 事件按 `session_id` 定向更新。`Composer` 上方新增 chip 行组件（idle 态两 chip；busy 态收窄为模式 chip，沿 TUI status.rs 先例）。StatusBar 移除模型/模式控件。重置入口位于两级 picker 内（「跟随默认」项）。
+`sessionManager` 的 `modelName`/`permissionMode` 全局单值改为 per-entry（`entries[id].modelOverride/effectiveModel/modeOverride/effectiveMode`），`ModelChanged`/`ModeChanged` 事件按 `session_id` 定向更新。`Composer` 上方新增 chip 行组件（模型 chip 常驻显示（回答进行中可见当前生效模型）；busy 态禁用模型 chip、已打开的 picker 自动收起——会话模型覆盖在 turn 边界生效）。StatusBar 移除模型/模式控件。重置入口位于两级 picker 内（「跟随默认」项）。
 
 ## Risks / Trade-offs
 

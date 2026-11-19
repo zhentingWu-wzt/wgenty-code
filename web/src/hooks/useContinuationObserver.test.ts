@@ -87,6 +87,25 @@ describe("useContinuationObserver", () => {
     expect(observeDaemonRun).not.toHaveBeenCalled();
   });
 
+  it("does not attach on session-scoped model/mode broadcasts carrying a session_id", () => {
+    // Regression (multi-provider-models): /model/switch and permission-mode
+    // switches broadcast model_changed/mode_changed WITH session_id. Those
+    // events imply no run — observing them put the session into a phantom
+    // "thinking" state until the observer's idle timeout.
+    renderHook(() => useContinuationObserver(client));
+    serverSendGlobal(
+      globalEvent("model_changed", {
+        session_id: "daemon-s1",
+        provider: "kimi",
+        model_name: "k3",
+      }),
+    );
+    serverSendGlobal(
+      globalEvent("mode_changed", { session_id: "daemon-s1", mode: "yolo" }),
+    );
+    expect(observeDaemonRun).not.toHaveBeenCalled();
+  });
+
   it("subscribes nothing while the client is null", () => {
     const { rerender } = renderHook(({ c }) => useContinuationObserver(c), {
       initialProps: { c: null as DaemonClient | null },

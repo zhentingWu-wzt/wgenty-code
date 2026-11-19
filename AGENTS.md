@@ -178,3 +178,49 @@ ls -lh ./target/release/wgenty_code
 - 新工具在 `ToolRegistry` 构造时注册。若仅特定 provider 支持（如 `apply_patch` 的 Anthropic 特有格式），在 `with_settings()` 中按 provider 动态移除。
 - 工具执行结果应返回结构化 `ToolResult`，包含 `success`、`output`、可选的 `metadata`。
 - 执行类工具（`exec_command` 等）需经过 guardian 安全审查，修改系统状态的工具需声明 `is_read_only() = false`。
+
+---
+
+# 双工作流分工约定（Comet + Trellis）
+
+本仓库同时安装了 Comet（openspec + superpowers）和 Trellis 两套工作流系统。两者目录互不重叠，但必须遵守以下分工，避免同一需求被两套系统重复管理：
+
+## 主工作流：Comet
+
+- **所有需求变更**（新功能、bug fix、架构调整、重构）一律走 `/comet` 流程。
+- 任务追踪：`openspec/changes/<name>/` + `.comet.yaml`。
+- 规格管理：`openspec/specs/` capability delta spec，归档时合并回主 spec。
+- 禁止：同一需求同时创建 `.trellis/tasks/` 条目和 `openspec/changes/` 条目。
+
+## 辅助工作流：Trellis
+
+- **仅用于工程规范沉淀**（`.trellis/spec/` 各层编码规范）和跨 session journal 记录。
+- Trellis task（`.trellis/tasks/`）只用于规范类、基础设施类工作（如当前的 `00-bootstrap-guidelines`），不用于业务需求。
+- 写代码前，若触达 `.trellis/spec/` 已覆盖的层，先读对应 index 和 guideline 文件（trellis-before-dev skill 会自动做这件事）。
+
+## 冲突处理
+
+- 若同一改动两边都有记录，以 Comet change 为准，删除/归档 Trellis 侧的重复 task。
+- Trellis 命令（`/trellis:*`）和 Comet 命令（`/comet*`）不会自动互相触发；不要在一次 session 里对同一工作项混用两套命令。
+
+<!-- TRELLIS:START -->
+# Trellis Instructions
+
+These instructions are for AI assistants working in this project.
+
+This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+
+- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
+- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
+- `.trellis/workspace/` — per-developer journals and session traces
+- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+
+If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
+
+If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
+- `.agents/skills/` — reusable Trellis skills
+- `.codex/agents/` — optional custom subagents
+
+Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
+
+<!-- TRELLIS:END -->

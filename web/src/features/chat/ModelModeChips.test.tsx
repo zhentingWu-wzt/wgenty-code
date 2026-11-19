@@ -233,26 +233,44 @@ describe("ModelModeChips", () => {
     ).toBeInTheDocument();
   });
 
-  it("hides only the model chip from the active store's running state", async () => {
+  it("shows a disabled model chip while the active store is running", async () => {
     const { a, b } = createSessions();
     const activeStore = useSessionManager.getState().entries[a].store;
     activeStore.getState().setRunning(true);
     renderChips(createClient());
 
-    expect(screen.queryByRole("button", { name: /^Session model:/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Permission mode: normal" })).toBeInTheDocument();
+    // Visible (which model is answering) but not switchable mid-turn.
+    expect(screen.getByRole("button", { name: /^Session model:/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Permission mode: normal" })).toBeEnabled();
 
     act(() => activeStore.getState().setRunning(false));
     expect(
       screen.getByRole("button", { name: "Session model: zhipu/glm-old (session override)" }),
-    ).toBeInTheDocument();
+    ).toBeEnabled();
 
+    // Session b is idle: its chip stays enabled even while a runs.
     act(() => activeStore.getState().setRunning(true));
     await act(async () => useSessionManager.getState().setActive(b));
-    expect(screen.getByRole("button", { name: "Session model: kimi/k3" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Session model: kimi/k3" })).toBeEnabled();
     expect(
       screen.getByRole("button", { name: "Permission mode: yolo (session override)" }),
-    ).toBeInTheDocument();
+    ).toBeEnabled();
+  });
+
+  it("closes an open picker when the session starts running", async () => {
+    const { a } = createSessions();
+    const client = createClient();
+    const user = userEvent.setup();
+    renderChips(client);
+
+    await user.click(
+      screen.getByRole("button", { name: "Session model: zhipu/glm-old (session override)" }),
+    );
+    expect(await screen.findByRole("button", { name: /^Zhipu/ })).toBeInTheDocument();
+
+    const activeStore = useSessionManager.getState().entries[a].store;
+    act(() => activeStore.getState().setRunning(true));
+    expect(screen.queryByRole("button", { name: /^Zhipu/ })).not.toBeInTheDocument();
   });
 
   it("keeps the old model and an actionable error when switching fails", async () => {

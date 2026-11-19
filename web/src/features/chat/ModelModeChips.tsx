@@ -46,6 +46,16 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
     };
   }, []);
 
+  // A turn starting closes any open picker: switching applies at the next
+  // turn boundary, so the open list would be misleading mid-run.
+  useEffect(() => {
+    if (!isRunning) return;
+    catalogGeneration.current += 1;
+    setOpen(null);
+    setSelectedProvider(null);
+    setError(null);
+  }, [isRunning]);
+
   const closePopovers = () => {
     catalogGeneration.current += 1;
     setOpen(null);
@@ -187,108 +197,108 @@ function ActiveModelModeChips({ client, entry }: { client: DaemonClient; entry: 
       className="flex min-h-7 shrink-0 items-center gap-2 border-t border-border bg-background px-3 py-1 text-[11px] text-muted-foreground"
       aria-label="Session model and permission mode"
     >
-      {!isRunning && (
-        <div className="relative min-w-0">
-          <button
-            type="button"
-            aria-label={modelAccessibleLabel}
-            aria-expanded={open === "model"}
-            aria-haspopup="menu"
-            onClick={openModels}
-            className="flex max-w-full items-center gap-1.5 rounded-sm border border-border px-2 py-0.5 font-mono hover:bg-accent"
-          >
-            <span className="truncate">{modelLabel}</span>
-            {entry.model?.isOverride && (
-              <span className="shrink-0 rounded-sm bg-accent px-1 text-[9px] text-foreground">
-                override
-              </span>
-            )}
-          </button>
-          {open === "model" && (
-            <>
-              <PopoverDismiss label="Close model picker" onClose={closePopovers} />
-              <div className="absolute bottom-full left-0 z-50 mb-1 max-h-80 w-72 overflow-y-auto rounded-md border border-border bg-popover py-1 text-foreground shadow-lg">
-                {error && (
-                  <div role="alert" className="px-2 py-1 text-danger">
-                    {error.message}
-                  </div>
-                )}
-                {loadingModels ? (
-                  <div className="px-2 py-1 text-muted-foreground">Loading models…</div>
-                ) : provider ? (
-                  <>
+      <div className="relative min-w-0">
+        <button
+          type="button"
+          aria-label={modelAccessibleLabel}
+          aria-expanded={open === "model"}
+          aria-haspopup="menu"
+          disabled={isRunning}
+          onClick={openModels}
+          title={isRunning ? "Model switching applies between turns" : undefined}
+          className="flex max-w-full items-center gap-1.5 rounded-sm border border-border px-2 py-0.5 font-mono hover:bg-accent disabled:cursor-default disabled:opacity-60"
+        >
+          <span className="truncate">{modelLabel}</span>
+          {entry.model?.isOverride && (
+            <span className="shrink-0 rounded-sm bg-accent px-1 text-[9px] text-foreground">
+              override
+            </span>
+          )}
+        </button>
+        {open === "model" && (
+          <>
+            <PopoverDismiss label="Close model picker" onClose={closePopovers} />
+            <div className="absolute bottom-full left-0 z-50 mb-1 max-h-80 w-72 overflow-y-auto rounded-md border border-border bg-popover py-1 text-foreground shadow-lg">
+              {error && (
+                <div role="alert" className="px-2 py-1 text-danger">
+                  {error.message}
+                </div>
+              )}
+              {loadingModels ? (
+                <div className="px-2 py-1 text-muted-foreground">Loading models…</div>
+              ) : provider ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedProvider(null);
+                      setError(null);
+                    }}
+                    className="w-full px-2 py-1 text-left text-muted-foreground hover:bg-accent"
+                  >
+                    ← Providers
+                  </button>
+                  {provider.models.map((model) => (
+                    <button
+                      key={model.name}
+                      type="button"
+                      disabled={pending || model.active}
+                      onClick={() => void chooseModel(provider.key, model.name)}
+                      className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono">{model.name}</span>
+                      {model.tier && <span className="text-muted-foreground">{model.tier}</span>}
+                      {model.active && <span className="text-success">active</span>}
+                    </button>
+                  ))}
+                </>
+              ) : (
+                <>
+                  {entry.model?.isOverride && (
                     <button
                       type="button"
+                      disabled={pending}
+                      onClick={() => void resetModel()}
+                      className="w-full border-b border-border px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
+                    >
+                      Follow default
+                    </button>
+                  )}
+                  {!loadingModels && error?.retry && (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() =>
+                        void (error.retry === "model-reset" ? resetModel() : loadModels())
+                      }
+                      className="w-full px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
+                    >
+                      Retry
+                    </button>
+                  )}
+                  {providers.map((group) => (
+                    <button
+                      key={group.key}
+                      type="button"
                       onClick={() => {
-                        setSelectedProvider(null);
+                        setSelectedProvider(group.key);
                         setError(null);
                       }}
-                      className="w-full px-2 py-1 text-left text-muted-foreground hover:bg-accent"
+                      className="flex w-full items-center justify-between px-2 py-1 text-left hover:bg-accent"
                     >
-                      ← Providers
+                      <span>{group.display_name}</span>
+                      <span aria-hidden>›</span>
                     </button>
-                    {provider.models.map((model) => (
-                      <button
-                        key={model.name}
-                        type="button"
-                        disabled={pending || model.active}
-                        onClick={() => void chooseModel(provider.key, model.name)}
-                        className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
-                      >
-                        <span className="min-w-0 flex-1 truncate font-mono">{model.name}</span>
-                        {model.tier && <span className="text-muted-foreground">{model.tier}</span>}
-                        {model.active && <span className="text-success">active</span>}
-                      </button>
-                    ))}
-                  </>
-                ) : (
-                  <>
-                    {entry.model?.isOverride && (
-                      <button
-                        type="button"
-                        disabled={pending}
-                        onClick={() => void resetModel()}
-                        className="w-full border-b border-border px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
-                      >
-                        Follow default
-                      </button>
-                    )}
-                    {!loadingModels && error?.retry && (
-                      <button
-                        type="button"
-                        disabled={pending}
-                        onClick={() =>
-                          void (error.retry === "model-reset" ? resetModel() : loadModels())
-                        }
-                        className="w-full px-2 py-1 text-left hover:bg-accent disabled:opacity-60"
-                      >
-                        Retry
-                      </button>
-                    )}
-                    {providers.map((group) => (
-                      <button
-                        key={group.key}
-                        type="button"
-                        onClick={() => {
-                          setSelectedProvider(group.key);
-                          setError(null);
-                        }}
-                        className="flex w-full items-center justify-between px-2 py-1 text-left hover:bg-accent"
-                      >
-                        <span>{group.display_name}</span>
-                        <span aria-hidden>›</span>
-                      </button>
-                    ))}
-                    {!error && providers.length === 0 && (
-                      <div className="px-2 py-1 text-muted-foreground">No models configured</div>
-                    )}
-                  </>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+                  ))}
+                  {!error && providers.length === 0 && (
+                    <div className="px-2 py-1 text-muted-foreground">No models configured</div>
+                  )}
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </div>
 
       <div className="relative">
         <button

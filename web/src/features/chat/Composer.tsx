@@ -1,6 +1,7 @@
 import { useState, type KeyboardEvent } from "react";
 import { Clock, Send, Square, X } from "lucide-react";
 import { useSessionStore } from "../../state/sessionContext";
+import { useSessionManager } from "../../state/sessionManager";
 import { Button } from "../../components/ui/button";
 import { deriveTurnVisual } from "../../components/statusPhase";
 import {
@@ -42,6 +43,13 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
     (s) => s.pendingPermission !== null || s.pendingSubagent !== null || s.pendingQuestion !== null,
   );
   const hasError = useSessionStore((s) => s.lastError !== null);
+  // Sending requires a resolved model for the active session (chip state).
+  // Null model = nothing configured/fetched yet — the daemon would reject the
+  // turn anyway. No active session (tests, welcome screen) defaults open;
+  // the App only mounts the Composer when a session is active.
+  const modelReady = useSessionManager((s) =>
+    s.activeId ? (s.entries[s.activeId]?.model ?? null) !== null : true,
+  );
   const visual = deriveTurnVisual({
     awaitingDecision: hasPendingDecision,
     hasError,
@@ -59,14 +67,19 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
     const cmd = matchSlashCommand(trimmed);
     if (cmd) {
       if (cmd.send) {
-        // Skill commands (/skill-name) are agent-side — send as a message.
+        // Skill commands (/skill-name) are agent-side — send as a message,
+        // so they start a real turn and need a model like any message.
+        if (!modelReady) return;
         onSend(trimmed);
       } else {
+        // Modal commands (e.g. /model) stay available — they are exactly how
+        // the user resolves a missing model.
         onCommand(cmd);
       }
       setText("");
       return;
     }
+    if (!modelReady) return;
     onSend(trimmed);
     setText("");
   };
@@ -148,6 +161,11 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
           ))}
         </div>
       )}
+      {!modelReady && (
+        <div role="note" className="mb-1.5 px-0.5 text-[11px] text-warning">
+          No model selected — choose a model above (or use /model) before sending.
+        </div>
+      )}
       <div
         className={`flex items-end gap-2 rounded-lg border bg-card px-3 py-2 focus-within:ring-1 ${frameClass}`}
       >
@@ -168,7 +186,7 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
             <Square size={13} /> Stop
           </Button>
         ) : (
-          <Button className="shrink-0" onClick={send} disabled={!text.trim()}>
+          <Button className="shrink-0" onClick={send} disabled={!text.trim() || !modelReady}>
             <Send size={13} /> Send
           </Button>
         )}

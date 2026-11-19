@@ -31,6 +31,12 @@ export function useContinuationObserver(client: DaemonClient | null): void {
     if (!client) return;
 
     const unsubGlobal = wsChannel.subscribeGlobal((ev) => {
+      // Only these two broadcasts announce a daemon-spawned continuation
+      // turn. Other kinds may also carry a session_id — session-scoped
+      // `model_changed`/`mode_changed` (multi-provider-models) do — but never
+      // imply a run; observing them would flip the session into a phantom
+      // "thinking" state until the observer's idle timeout.
+      if (ev.kind !== "task_group_result" && ev.kind !== "background_result") return;
       // `task_group_result` carries `session_id` at the payload top level;
       // `background_result` nests it inside `data.result.session_id` (the
       // serialized BackgroundResult, which may omit it for unowned tasks —

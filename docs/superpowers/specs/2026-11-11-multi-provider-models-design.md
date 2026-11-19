@@ -2,6 +2,8 @@
 comet_change: multi-provider-models
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-11-19-multi-provider-models
+status: final
 ---
 
 # Technical Design: multi-provider-models
