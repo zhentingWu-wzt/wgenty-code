@@ -2,6 +2,8 @@
 comet_change: sse-to-websocket
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-11-19-sse-to-websocket
+status: final
 ---
 
 # Design: SSE → WebSocket 推送通道迁移

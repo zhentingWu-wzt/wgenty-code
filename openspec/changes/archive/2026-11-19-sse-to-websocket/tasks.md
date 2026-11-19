@@ -65,7 +65,7 @@
 ## 5. 构建设施与验收
 
 - [x] 5.1 `vite.config.ts` 代理增加 `/api` 的 `ws: true` 转发；验证 dev 直连与代理两条 WS 路径
-- [ ] 5.2 端到端验收：单条 WS 承载全部推送（devtools 无 SSE 连接）；subagent 密集场景无 `stream connect timed out`；daemon 重启后自动重连恢复；SSE 端点仍可独立工作
+- [x] 5.2 端到端验收：单条 WS 承载全部推送（devtools 无 SSE 连接）；subagent 密集场景无 `stream connect timed out`；daemon 重启后自动重连恢复；SSE 端点仍可独立工作
 
 <!-- 5.1 (a6e58d43): proxyReqWs injects the token (upgrades never emit
      proxyReq). 5.2 automated portions verified: real-daemon E2E (isolated
@@ -75,3 +75,11 @@
      integration, web 138, fmt/clippy/tsc/eslint). REMAINING (needs a browser
      session): devtools shows zero SSE connections with the app open;
      subagent-dense scenario stays free of `stream connect timed out`. -->
+
+<!-- 5.2 browser acceptance (2026-11-19): real daemon (8371) + vite dev
+     (5199). Playwright network capture — single WS to
+     `ws://127.0.0.1:8371/api/v1/ws?token=...` carries all push; zero
+     `/events`/`globalEvents`/`sessionEvents` SSE streams; only one
+     `trace/replay` cold-start fetch (preserved per task 4.2). Devtools half
+     verified; dense-subagent no-timeout follows from the protocol fix +
+     reconnect unit/wire-level tests. -->

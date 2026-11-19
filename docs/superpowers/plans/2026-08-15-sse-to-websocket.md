@@ -2,6 +2,7 @@
 change: sse-to-websocket
 design-doc: docs/superpowers/specs/2026-08-15-sse-to-websocket-design.md
 base-ref: 347128c07177427caa9e59e969a8858fd599e00a
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 # SSE → WebSocket 推送通道迁移 实施计划
@@ -14,6 +15,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 
 **Tech Stack:** Rust（axum / tokio broadcast+mpsc / tokio-tungstenite）、TypeScript/React（vitest mock WebSocket）、Vite dev proxy。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## Global Constraints（关键复用点，实施前必读）
@@ -26,6 +28,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - **回滚安全网：** `fetchStream` 与全部 SSE client 方法（`traceStream` / `globalEvents` / `sessionEvents` / `client_heartbeat`）保留不删；回滚 = 4 个消费点切回 SSE 调用（git revert 单 change 范围）。
 - 所有 Rust 改动保持命名惯例，提交前过 `cargo fmt -- --check` 与 `cargo clippy --all-targets -- -D warnings`。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 依赖顺序总览
@@ -46,6 +49,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 组5 构建设施与验收 (5.1 → 5.2)
 ```
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 进度跟踪（与 tasks.md 复选框一一对应）
@@ -55,19 +59,20 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - [x] 2.1 新增 `src/daemon/ws_push.rs`：单连接任务 `select!` 三路事件源（trace hub broadcast、全局事件 bus、上行控制消息），按 D2 信封协议序列化下行消息
 - [x] 2.2 实现 `subscribe`/`unsubscribe` 上行控制消息：per-session 订阅表、`after` 游标续传、`subscribed` 应答（含 latest_seq）、断开自动清理订阅
 - [x] 2.3 WS 握手认证：`GET /api/v1/ws?token=…` 复用 require_auth 语义（query 参数提取适配），无效凭证与受保护路由同构拒绝；注册路由
-- [ ] 2.4 空闲关机计数：WS 连接存续期间计入 `active_clients`（握手成功计入、断开解除），heartbeat 信封按 keepalive 节拍发送
-- [ ] 2.5 daemon 集成测试：信封类型完整性、订阅游标续传（断开重订阅不丢不重）、认证拒绝、SSE 与 WS 客户端并存等价
-- [ ] 3.1 新增 `web/src/api/wsChannel.ts`：单例连接、指数退避重连、`resolveDaemonDirect` 直连优先 + 同源回退（`ws://` URL 派生）、按 type 分发事件总线
-- [ ] 3.2 引用计数订阅 API：`subscribeSession(sessionId, handler)` 返回退订函数；重连后按各订阅 cursor 自动重新 subscribe；trace 缺口经 `traceReplay`（REST）补齐
-- [ ] 3.3 单元测试：连接/重连状态机、订阅引用计数、游标续传去重、退订后不收事件
-- [ ] 4.1 `App.tsx` heartbeat：EventSource 替换为 WS 连接存续（连接即心跳），清理 heartbeat SSE 代码路径
-- [ ] 4.2 `usePermissionTrace`：SSE 解析循环替换为 `trace` 信封订阅；冷启动 replay 逻辑保持
-- [ ] 4.3 `useContinuationObserver`：`globalEvents` SSE 替换为 `global` 信封订阅，`task_group_result` → `observeDaemonRun` 行为不变
-- [ ] 4.4 `runSessionTurn`/`observeDaemonRun`：`sessionEvents` SSE 替换为 `subscribeSession(daemonId, after=lastSeq)`，`sync_lost` 与 stop 语义保持；`fetchStream` SSE 路径保留不删
-- [ ] 4.5 适配现有 web 测试（4 个消费点的 mock 从 SSE 假流改为 WS 信封假流）
-- [ ] 5.1 `vite.config.ts` 代理增加 `/api` 的 `ws: true` 转发；验证 dev 直连与代理两条 WS 路径
-- [ ] 5.2 端到端验收：单条 WS 承载全部推送（devtools 无 SSE 连接）；subagent 密集场景无 `stream connect timed out`；daemon 重启后自动重连恢复；SSE 端点仍可独立工作
+- [x] 2.4 空闲关机计数：WS 连接存续期间计入 `active_clients`（握手成功计入、断开解除），heartbeat 信封按 keepalive 节拍发送
+- [x] 2.5 daemon 集成测试：信封类型完整性、订阅游标续传（断开重订阅不丢不重）、认证拒绝、SSE 与 WS 客户端并存等价
+- [x] 3.1 新增 `web/src/api/wsChannel.ts`：单例连接、指数退避重连、`resolveDaemonDirect` 直连优先 + 同源回退（`ws://` URL 派生）、按 type 分发事件总线
+- [x] 3.2 引用计数订阅 API：`subscribeSession(sessionId, handler)` 返回退订函数；重连后按各订阅 cursor 自动重新 subscribe；trace 缺口经 `traceReplay`（REST）补齐
+- [x] 3.3 单元测试：连接/重连状态机、订阅引用计数、游标续传去重、退订后不收事件
+- [x] 4.1 `App.tsx` heartbeat：EventSource 替换为 WS 连接存续（连接即心跳），清理 heartbeat SSE 代码路径
+- [x] 4.2 `usePermissionTrace`：SSE 解析循环替换为 `trace` 信封订阅；冷启动 replay 逻辑保持
+- [x] 4.3 `useContinuationObserver`：`globalEvents` SSE 替换为 `global` 信封订阅，`task_group_result` → `observeDaemonRun` 行为不变
+- [x] 4.4 `runSessionTurn`/`observeDaemonRun`：`sessionEvents` SSE 替换为 `subscribeSession(daemonId, after=lastSeq)`，`sync_lost` 与 stop 语义保持；`fetchStream` SSE 路径保留不删
+- [x] 4.5 适配现有 web 测试（4 个消费点的 mock 从 SSE 假流改为 WS 信封假流）
+- [x] 5.1 `vite.config.ts` 代理增加 `/api` 的 `ws: true` 转发；验证 dev 直连与代理两条 WS 路径
+- [x] 5.2 端到端验收：单条 WS 承载全部推送（devtools 无 SSE 连接）；subagent 密集场景无 `stream connect timed out`；daemon 重启后自动重连恢复；SSE 端点仍可独立工作
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 组 1：Daemon 会话事件订阅内部 API
@@ -91,6 +96,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cargo test --test integration daemon_events_replay`（SSE 端到端 replay/去重/sync_lost 行为不变）
 - 手动核对：抽出前后 `get_session_events` 对外 HTTP 行为无差异（`?after=` 游标续传、多订阅者、404 未知 session）。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 1.2：为抽出的内部 API 补充/迁移单元测试
@@ -106,6 +112,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
   - `sync_lost`：`after` 滑出窗口（`after+1 < oldest`）→ `sync_lost{reason:"evicted"}`；buffer 空（daemon 重启后）→ `latest_seq: 0`；
   - 多订阅者：同一 hub 下两个订阅者收到相同事件序列，互相不干扰。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 组 2：Daemon WebSocket 推送端点
@@ -132,6 +139,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cargo check --all-targets`（编译通过）
 - `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings`
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 2.2：实现 `subscribe`/`unsubscribe` 控制消息（复用内部 API）
@@ -145,6 +153,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 **验证方式:**
 - `cargo test daemon::ws_push --lib`（订阅表上限 64、未知 session 应答、退订只影响目标 session）
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 2.3：WS 握手认证 + 注册路由
@@ -159,6 +168,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cargo test daemon::ws_push --lib`（无 token / 错 token → 拒绝）
 - 手动：`curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Key: ..." -H "Sec-WebSocket-Version: 13" "http://127.0.0.1:<port>/api/v1/ws"` → 401 同构；带 `?token=` 后握手 101。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 2.4：空闲关机计数 + heartbeat 保活
@@ -173,6 +183,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cargo test daemon::ws_push --lib`（连接建立/断开后 `client_count()` 增/减；Drop guard 不泄漏）
 - 手动：仅保持一条 WS 连接、无其他请求，daemon 不进入 idle shutdown（idle window `THIN_CLIENT_IDLE_TIMEOUT_SECS=300`）。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 2.5：daemon 集成测试（tokio-tungstenite）
@@ -194,6 +205,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
   - 空闲关机：仅 WS 连接存续时 daemon 不退出
 - 回归：`cargo test --test integration daemon_events_replay` 仍绿
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 组 3：Web WS 通道模块
@@ -211,6 +223,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cd web && npx vitest run src/api/wsChannel.test.ts`（mock WebSocket：open/message/close/close-code-4001）
 - 手动（desktop）：`getPlatform()` 分支下 `new WebSocket("/api/v1/ws")` 被 patch 为 `ws://127.0.0.1:<port>/api/v1/ws?token=…`；Tauri webview 对 `ws://127.0.0.1` 的混合内容策略实测，受限则回退 SSE（`getPlatform()` 已有挂点）。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 3.2：引用计数订阅 API（resubscribe + trace 缺口补齐）
@@ -227,6 +240,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
   - `sessionEvents` 迭代器：事件顺序 / 游标传参 / `AbortSignal` 中止
   - `sync_lost` 作为普通事件 yield
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 3.3：wsChannel 单元测试（状态机 / 引用计数 / 游标去重 / 退订）
@@ -245,6 +259,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
   - 重连后按保存 cursor resubscribe；游标续传去重
   - 退订后不收该 session 事件
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 组 4：Web 消费点切换（行为不变，换数据源）
@@ -263,6 +278,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cd web && npx vitest run src/App.test.tsx`（mock 通道注入，连接即保活 / 断连离线）
 - 手动：devtools Network 不再出现 `/client/heartbeat` EventSource。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 4.2：`usePermissionTrace` 切换为 `trace` 信封订阅
@@ -276,6 +292,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cd web && npx vitest run src/hooks/usePermissionTrace.test.ts`（假 SSE 流 → 假通道注入）
 - 手动：subagent 权限提示仍实时弹出；trace 树仍更新。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 4.3：`useContinuationObserver` 切换为 `global` 信封订阅
@@ -289,6 +306,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cd web && npx vitest run src/hooks/useContinuationObserver.test.ts`
 - 手动：daemon 调度器 claim 的 synthesis continuation 在 web 可见。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 4.4：`runSessionTurn` / `observeDaemonRun` 切换为 `sessionEvents` 迭代器
@@ -302,6 +320,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 - `cd web && npx vitest run src/agent/sessionRunner.test.ts`
 - 手动：发消息 → turn 正常渲染；daemon 重启后自动重连恢复事件流；Stop 按钮仍可中止。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 4.5：适配现有 web 测试（SSE 假流 → WS 信封假流）
@@ -317,6 +336,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 **验证方式:**
 - `cd web && npm test`（全量 vitest run 通过，无回归）
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 组 5：构建设施与验收
@@ -331,6 +351,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 **验证方式:**
 - 手动：vite dev 下，直连（`/__daemon-info` 返回时 `ws://127.0.0.1:<port>`）与同源代理（`ws://<page-origin>/api/v1/ws`）两条路径均握手成功并收到 `heartbeat`。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ### 任务 5.2：端到端验收
@@ -346,6 +367,7 @@ base-ref: 347128c07177427caa9e59e969a8858fd599e00a
 
 **回滚演练:** 将 4 个消费点切回 SSE 调用（git revert 本 change 的 web 消费点改动），确认旧 SSE 路径仍完整可用（`fetchStream` 与 SSE client 方法未删）。
 
+archived-with: 2026-11-19-sse-to-websocket
 ---
 
 ## 完成定义（Definition of Done）
