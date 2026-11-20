@@ -433,6 +433,23 @@ impl ToolRegistry {
     /// Before executing mutating filesystem tools (`file_edit`, `file_write`,
     /// `apply_patch`), captures pre-edit file content into the active turn
     /// snapshot when `context.checkpoint` and `context.origin_turn_id` are set.
+    /// Read-only tools plus the command-execution family that must stay
+    /// available while a root-cause specialist runs in the background.
+    ///
+    /// Command execution is technically not read-only (a command can write),
+    /// but blocking it froze the waiting agent completely: it could not run
+    /// tests or builds to verify the fix the specialist would later assess.
+    /// Command writes during the window are transient (build outputs, temp
+    /// files), not checkpointed workspace state, so the race the guard
+    /// protects against (persistent edits vs. rollback) does not apply.
+    fn is_allowed_during_root_cause_wait(tool: &dyn Tool) -> bool {
+        tool.is_read_only()
+            || matches!(
+                tool.name(),
+                "exec_command" | "execute_command" | "run_test" | "background" | "write_stdin" | "kill_session"
+            )
+    }
+
     pub async fn execute_with_context(
         &self,
         context: &ToolContext<'_>,
@@ -447,7 +464,7 @@ impl ToolRegistry {
             .cloned();
         match tool {
             Some(tool) => {
-                if !tool.is_read_only()
+                if !Self::is_allowed_during_root_cause_wait(tool.as_ref())
                     && name != "submit_specialist_report"
                     && self
                         .root_cause_guard
@@ -903,6 +920,77 @@ mod external_tool_tests {
             .await
             .expect_err("a root-cause child must not restart anchored verification");
         assert_eq!(error.code.as_deref(), Some("root_cause_pending"));
+    }
+
+    #[tokio::test]
+    async fn root_cause_wait_allows_read_only_and_command_tools_but_blocks_mutation() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let registry = Arc::new(ToolRegistry::with_project_root(directory.path(), 2));
+        let runtime_store = Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            registry.checkpoint_store.clone(),
+            2,
+        ));
+        registry.register_exec_session_tools(runtime_store.clone());
+        registry.enable_static_root_cause_route(runtime_store.clone());
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new(
+            "root-cause-wait-allowance",
+        ));
+        runtime_store
+            .ensure_turn(&root.session_id)
+            .expect("start graph turn");
+        runtime_store
+            .runtime_for(&root.session_id)
+            .expect("resolve graph runtime")
+            .begin_node("diagnose".into(), Vec::new(), Vec::new())
+            .await
+            .expect("start graph node");
+        runtime_store.seed_root_cause_route_for_test(&root.session_id);
+        runtime_store
+            .prepare_root_cause_dispatch(&root.session_id)
+            .expect("reserve root-cause route");
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("wait-allowance"),
+            origin_turn_id: None,
+            workdir: Some(directory.path()),
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+
+        // Read-only search tool: allowed.
+        registry
+            .execute_with_context(
+                &context,
+                "grep",
+                serde_json::json!({ "pattern": "nothing", "path": "." }),
+            )
+            .await
+            .expect("read-only grep must be allowed while waiting");
+
+        // Command-execution family: allowed so the waiting agent can run
+        // tests/builds to verify the fix the specialist will assess.
+        let output = registry
+            .execute_with_context(
+                &context,
+                "execute_command",
+                serde_json::json!({ "command": "echo wait-ok" }),
+            )
+            .await
+            .expect("execute_command must be allowed while waiting");
+        assert!(output.content.contains("wait-ok"), "{:?}", output.content);
+
+        // Mutating filesystem tools: still blocked.
+        let error = registry
+            .execute_with_context(
+                &context,
+                "file_write",
+                serde_json::json!({ "path": "blocked.txt", "content": "must wait" }),
+            )
+            .await
+            .expect_err("mutation must stay blocked while waiting");
+        assert_eq!(error.code.as_deref(), Some("root_cause_pending"));
+        assert!(!directory.path().join("blocked.txt").exists());
     }
 
     #[tokio::test]

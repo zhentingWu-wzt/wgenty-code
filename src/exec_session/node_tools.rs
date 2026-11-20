@@ -430,7 +430,13 @@ Failed."
         output.content = json!({
             "next_step": WorkGraphStep::RootCause,
             "status": "root_cause_dispatched",
-            "root_cause_child_id": output.metadata.get("root_cause_child_id")
+            "root_cause_child_id": output.metadata.get("root_cause_child_id"),
+            "waiting_on": format!(
+                "root-cause specialist {} is running in the background; its report arrives via <child-results>. \
+                 Read-only tools plus exec_command/execute_command/run_test remain available while waiting; \
+                 mutating tools stay blocked until the report is submitted.",
+                output.metadata.get("root_cause_child_id").and_then(|id| id.as_str()).unwrap_or("unknown")
+            )
         })
         .to_string();
         Ok(output)
