@@ -5,9 +5,19 @@ use super::*;
 pub async fn list_mcp_servers(
     State(state): State<Arc<DaemonState>>,
 ) -> Json<ListMcpServersResponse> {
+    // Read a fresh clone from the live settings handle (kept current by the
+    // settings.json file watcher), not the frozen `app_state.settings`
+    // snapshot captured at daemon startup. Sessions seed their MCP tools from
+    // this same list, so a settings.json edit must be reflected here without
+    // a daemon restart - mirrors `get_config`'s handle-first pattern.
+    let settings = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings")
+        .clone();
     let servers: Vec<McpServerInfo> = state
         .mcp_manager
-        .list_servers_for_settings(&state.app_state.settings)
+        .list_servers_for_settings(&settings)
         .await
         .into_iter()
         .map(|server| McpServerInfo {

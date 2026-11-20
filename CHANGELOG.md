@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (MCP)
+
+- **`GET /api/v1/mcp/servers` 改读热更新 settings**：此前列表 handler 读取
+  daemon 启动时冻结的 `app_state.settings` 快照，settings.json 新增/移除
+  MCP server 后列表不刷新，只能重启 daemon 才能看到；现改为从 watcher 维护
+  的 `settings_handle` 取实时配置（与 `get_config` 的 handle-first 模式一致），
+  新会话据此装配的 MCP 工具也随之即时生效。
+
 ### Added (Permissions)
 
 - **权限模式跨 daemon 重启持久化**：`POST /permission-mode` 切换的模式现落盘至

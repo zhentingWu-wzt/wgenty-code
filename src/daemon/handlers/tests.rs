@@ -1,4 +1,3 @@
-use super::agents::{assemble_local_view, resolve_navigation_context};
 use super::*;
 
 #[tokio::test]
@@ -23,6 +22,48 @@ async fn daemon_registers_contextual_work_graph_tools() {
             "missing contextual work-graph tool {name}"
         );
     }
+}
+
+#[tokio::test]
+async fn mcp_server_list_reads_live_settings_handle() {
+    use crate::config::mcp_config::McpConfig;
+    use crate::config::Settings;
+    use crate::state::AppState;
+
+    let temp = tempfile::tempdir().expect("temp directory");
+    let mut settings = Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    let state = std::sync::Arc::new(DaemonState::new(AppState::new(settings)).await);
+
+    // Simulate an external settings.json edit. In production the file watcher
+    // performs the same in-place update on the live handle; the frozen
+    // `app_state.settings` snapshot deliberately never learns about this server.
+    {
+        let mut live = state.settings_handle.write().expect("settings lock");
+        live.integrations
+            .mcp_servers
+            .push(McpConfig::new("atlassian", "npx"));
+    }
+
+    let response = list_mcp_servers(axum::extract::State(state.clone())).await;
+    assert!(
+        response
+            .0
+            .servers
+            .iter()
+            .any(|server| server.name == "atlassian"),
+        "MCP list must reflect live settings, not the startup snapshot"
+    );
+    assert!(
+        !state
+            .app_state
+            .settings
+            .integrations
+            .mcp_servers
+            .iter()
+            .any(|server| server.name == "atlassian"),
+        "precondition: the frozen snapshot must not contain the server"
+    );
 }
 
 #[tokio::test]
