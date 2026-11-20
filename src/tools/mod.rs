@@ -449,7 +449,12 @@ impl ToolRegistry {
         tool.is_read_only()
             || matches!(
                 tool.name(),
-                "exec_command" | "execute_command" | "run_test" | "background" | "write_stdin" | "kill_session"
+                "exec_command"
+                    | "execute_command"
+                    | "run_test"
+                    | "background"
+                    | "write_stdin"
+                    | "kill_session"
             )
     }
 

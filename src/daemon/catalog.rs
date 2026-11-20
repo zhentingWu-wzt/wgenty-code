@@ -711,7 +711,12 @@ mod tests {
         );
 
         // Unknown key + unknown host → no builtin rows.
-        let custom = settings("custom", "https://llm.internal.io/v1", "anthropic", Some("k"));
+        let custom = settings(
+            "custom",
+            "https://llm.internal.io/v1",
+            "anthropic",
+            Some("k"),
+        );
         let merged = service.merged(&custom, "custom").await;
         assert_eq!(merged.len(), 1, "only the manual model is present");
     }
