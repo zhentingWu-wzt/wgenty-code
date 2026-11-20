@@ -1405,6 +1405,21 @@ impl AgentCoordinator {
             .await)
     }
 
+    /// Whether the trusted persistent root owns any task group (ready or not)
+    /// in the requested generation, after sweeping expired groups. Lets the
+    /// await endpoint exit immediately when no subagent was ever spawned,
+    /// instead of burning its full timeout.
+    pub async fn task_group_exists(&self, root: &AgentExecutionContext, generation: u64) -> bool {
+        if !Self::is_root(root) {
+            return false;
+        }
+        let _operation = self.group_operations.lock().await;
+        let _ = self.task_groups.expire_due_groups(Instant::now()).await;
+        self.task_groups
+            .has_group(&root.session_id, &root.agent_id, generation)
+            .await
+    }
+
     /// Advances a task generation and discards mappings into older groups.
     pub async fn advance_generation(&self, session_id: &SessionId) -> u64 {
         let _operation = self.group_operations.lock().await;

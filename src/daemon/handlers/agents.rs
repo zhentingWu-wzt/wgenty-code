@@ -82,6 +82,17 @@ pub async fn await_task_group(
                 results: d.results,
             }));
         }
+        // No ready group: if the owner has no group at all in this
+        // generation, no subagent was ever spawned — waiting would only burn
+        // the full timeout, so exit immediately. (A group that exists but is
+        // not ready means children are still running: keep waiting.)
+        if !state
+            .coordinator
+            .task_group_exists(&root, body.generation)
+            .await
+        {
+            return Err(StatusCode::NO_CONTENT);
+        }
         if tokio::time::Instant::now() >= deadline {
             return Err(StatusCode::NO_CONTENT);
         }

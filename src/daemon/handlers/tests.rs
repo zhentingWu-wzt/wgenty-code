@@ -375,6 +375,39 @@ async fn daemon_state_saves_sessions_under_project_local_dir() {
 }
 
 #[tokio::test]
+async fn await_task_group_exits_immediately_when_no_group_exists() {
+    use axum::extract::State;
+    use axum::Json;
+
+    // No subagent was ever spawned: the session has no task group at all.
+    // The await must return immediately instead of burning its timeout —
+    // RootSynthesisPort calls it at EVERY turn finalize, so a blind wait
+    // would add the full timeout to every plain turn.
+    let state = Arc::new(global_event_test_state().await);
+    state.root_context("s").await.expect("root context");
+
+    let started = std::time::Instant::now();
+    let result = await_task_group(
+        State(state),
+        Json(crate::daemon::models::AwaitTaskGroupRequest {
+            session_id: "s".to_string(),
+            generation: 0,
+            timeout_ms: Some(10_000),
+        }),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(StatusCode::NO_CONTENT)),
+        "no-group await must 204"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "no-group await must not wait out its timeout (elapsed: {:?})",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn multi_project_session_routing() {
     use crate::config::Settings;
     use crate::daemon::models::CreateSessionRequest;

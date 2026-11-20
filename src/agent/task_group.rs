@@ -253,6 +253,24 @@ impl TaskGroupStore {
             .map(|group| group.child_ids.len())
     }
 
+    /// Whether the owner has ANY group (ready or not) in the requested
+    /// generation. Callers use this to decide whether waiting is meaningful:
+    /// no group at all means no subagent was ever spawned for this turn, so a
+    /// bounded wait would only burn its full timeout.
+    pub async fn has_group(
+        &self,
+        session_id: &SessionId,
+        owner_id: &AgentId,
+        generation: u64,
+    ) -> bool {
+        let state = self.inner.read().await;
+        state.groups.values().any(|group| {
+            group.session_id == *session_id
+                && group.owner_id == *owner_id
+                && group.generation == generation
+        })
+    }
+
     /// Converts every unfinished child in an expired active group to a timeout.
     pub async fn expire_due_groups(&self, now: Instant) -> Result<usize, TaskGroupError> {
         let mut state = self.inner.write().await;
