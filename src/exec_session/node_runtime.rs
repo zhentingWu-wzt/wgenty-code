@@ -301,6 +301,12 @@ fn profile_audit_event(
 }
 
 /// Charge one coordinator-owned work-graph iteration after a failed anchor.
+///
+/// `iter_used` is charged ONLY here — at compile/test/verify anchor failures
+/// and whole-unit decomposition failures — never per agent turn. A failed
+/// anchor buys exactly one Implement/RootCause retry from the router; agent
+/// navigation (reads, searches, ad-hoc test runs) and successful anchor
+/// passes leave the budget untouched.
 fn consume_iteration_budget(coord: &mut SessionCoordinator) -> Result<()> {
     let mut budget = coord
         .work_state()
@@ -3259,6 +3265,60 @@ mod tests {
         assert_eq!(
             setup.verify_log().final_status,
             Some(VerifyLogFinalStatus::Completed)
+        );
+    }
+
+    /// Regression guard for the budget-accounting semantics: `iter_used`
+    /// counts failed verification anchors (each one buys one Implement/RootCause
+    /// retry), never agent navigation turns or successful anchor passes. The
+    /// all-green run above asserts budget preservation via audit events; this
+    /// test pins the same invariant on the state-owned budget itself.
+    #[tokio::test]
+    async fn successful_anchor_pass_does_not_consume_iteration_budget() {
+        let setup = ScriptedSetup::new([0, 0, 0]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("begin rust node");
+        setup
+            .coord
+            .write()
+            .expect("coordinator")
+            .work_state_mut()
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter: 2,
+                    iter_used: 0,
+                    token_used: 0,
+                },
+            )
+            .expect("set state-owned budget");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("verify rust node");
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Complete
+            })
+        ));
+
+        let coord = setup.coord.read().expect("coordinator");
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .expect("read budget")
+            .expect("budget present");
+        assert_eq!(
+            budget.iter_used, 0,
+            "a fully green anchor pass must not consume retry budget"
         );
     }
 

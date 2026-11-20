@@ -36,24 +36,19 @@
 
 ## P1：`iter_used` 只在重试 Implement 时计费
 
-### 现状
+### 调查结论（修订）
 
-- `node_runtime.rs:311` 在每轮 agent loop 对 `budget.iter_used` 递增（`iter_used.saturating_add(1)`）。
-- `work_graph.rs:66 retry_or_escalate` 用 `iter_used < max_iter` 判断是否还能重试。
+实施时核查代码发现：计费点**已经**是失败锚点驱动——`consume_iteration_budget` 只在 compile/test/verify 锚点失败（`node_runtime.rs` 的 `record_compile_result` / `record_test_result` / `verify_for_work_graph` 失败分支）和整组 unit 失败时调用，agent 轮次本身不计费。本次事故的 Escalate 直接成因是等待期拦截导致修复无法在同一轮验证、两连败耗尽预算，而非"每轮扣预算"。因此 P1 从"移动计费点"修订为"固化语义 + 回归测试"。
 
 ### 设计
 
-1. **移动计费点**：删除 agent loop 每轮的递增；改为在路由决定消耗一次重试时计费——即 `retry_or_escalate` 路径选择 `Implement` 或 `RootCause` 时，对 `budget.iter_used` +1。
-2. **预算语义**：`max_iter` 表示"最多允许几轮 修改→锚点验证 循环"；编译/测试/验证锚点首次失败不额外计费（它触发的重试会计），导航轮次不计费。
-3. **兼容性**：
-   - 持久化格式不变（`Budget { max_iter, iter_used }` 字段不动），旧 checkpoint 语义近似兼容（旧数据 `iter_used` 偏高只会更早 Escalate，方向安全）。
-   - `decompose.rs` 的预算拆分（`remaining = max_iter - iter_used`）语义随新计费点自动成立：拆分出去的是"剩余重试次数"。
-4. **测试更新**：`node_runtime.rs` 中依赖"每轮递增"语义的夹具（如 `iter_used == 1` 的断言、以及 3380/3389/3398/3407/3416 行的逐轮递增断言组）改为模拟路由级重试后断言；`audit_*` 组测试中预算耗尽路径改为通过路由重试触发。
+1. **语义固化**：`consume_iteration_budget` 文档注释明确——`iter_used` 只在锚点失败处计费；一次失败购买一次 Implement/RootCause 重试；导航轮次与成功锚点不消耗。
+2. **回归测试**：新增 `successful_anchor_pass_does_not_consume_iteration_budget`——全绿锚点跑完后 `iter_used` 保持 0，防止未来有人把计费点移回每轮递增。既有测试（如 `audit_compile_failure_records_root_cause_route_and_consumed_budget`）已覆盖失败计费方向。
 
-### 备选方案（不采用）
+### 备选方案（已否决）
 
-- 新增独立 `navigation_iters` 字段与重试预算分开统计：持久化格式变更，收益与 P1 相同但复杂度更高。
-- 保留每轮计费、单纯调大 `max_iter`：只延迟问题，不解决计费语义错位。
+- 移动计费点到路由层：调查后确认现状已符合语义，移动反而引入双计费风险。
+- 新增独立 `navigation_iters` 字段：持久化格式变更，无实际收益。
 
 ## 影响面
 

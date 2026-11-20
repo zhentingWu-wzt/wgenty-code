@@ -8,10 +8,10 @@
 
 ## P1：iter_used 只在重试 Implement 时计费
 
-- [ ] 4. 移除 agent loop 每轮 `iter_used` 递增（node_runtime.rs:311），改在路由选择 Implement/RootCause 重试时计费
-- [ ] 5. 更新依赖每轮递增语义的测试夹具与断言
-- [ ] 6. 新增测试：导航轮次（读/查/验证工具调用）不消耗重试预算
+- [x] 4. 调查确认计费点已是失败锚点驱动（compile/test/verify 失败与整组 unit 失败才调用 `consume_iteration_budget`）；将"只在此处计费、导航轮次与成功锚点不消耗"的语义固化到函数文档注释
+- [x] 5. 原"移动计费点"方案经调查后确认不适用（现状已符合语义），无需变更测试夹具
+- [x] 6. 新增回归测试：全绿锚点通过不消耗重试预算（`successful_anchor_pass_does_not_consume_iteration_budget`）
 
 ## 收尾
 
-- [ ] 7. `cargo test --lib` 全量回归 + `cargo clippy --lib -- -D warnings`
+- [x] 7. `cargo test --lib` 全量回归 + `cargo clippy --lib -- -D warnings`

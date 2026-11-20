@@ -11,13 +11,13 @@
 
 ## 根因分析
 
-- **计费点错位**：`iter_used` 的本意是限制"盲目重试改代码"的次数（`retry_or_escalate` 的语义），但计费点在每轮 agent loop，而不是在"路由决定重试 Implement"的时刻。预算惩罚了认真调查的行为。
-- **等待期策略过严**：`root_cause_dispatched` 是为防止主 agent 在专家诊断期间继续改代码造成状态竞争，但拦截范围扩大到了只读操作和验证命令，且没有向 agent 暴露等待语义，形成"越卡越烧、越烧越卡"的恶性循环。
+- **等待期策略过严**：`root_cause_dispatched` 为防止主 agent 在专家诊断期间改代码造成状态竞争，拦截了所有非只读工具——包括 `exec_command`/`execute_command`/`run_test` 等验证类命令工具。等待期间主 agent 无法跑测试验证修复，也收不到"子 agent 在后台执行"的语义提示，误判死锁后绕开图手动验证；期间产生的失败锚点继续消耗 `iter_used`，最终两连败触发 Escalate。
+- **计费点（已排除）**：调查初期怀疑 `iter_used` 按 agent 轮次计费；实施时核查确认计费点已是失败锚点驱动（仅 compile/test/verify 失败与整组 unit 失败时计费），与本次事故无因果关系。该语义此前只有隐式约定，本 change 将其文档化并加回归测试。
 
 ## 修复目标
 
-- **P0**：`root_cause_dispatched` 等待期放开只读工具与验证命令的执行；`verify_node` 返回的 `root_cause_dispatched` 响应携带等待语义（在等待哪个 child、结果如何送达）。
-- **P1**：`iter_used` 只在路由选择"重试 Implement"（含 RootCause 诊断路径）时递增，导航轮次不再消耗预算。
+- **P0**：`root_cause_dispatched` 等待期放行只读工具与验证类命令工具（exec_command/execute_command/run_test 等）；`verify_node` 返回的 `root_cause_dispatched` 响应携带等待语义（在等待哪个 child、结果如何送达、哪些工具仍可用）。
+- **P1**：固化 `iter_used` 的失败锚点计费语义（文档注释）并补回归测试，防止计费点被移回按轮递增。
 
 ## 非目标
 
