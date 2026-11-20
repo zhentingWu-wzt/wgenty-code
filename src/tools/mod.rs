@@ -436,12 +436,15 @@ impl ToolRegistry {
     /// Read-only tools plus the command-execution family that must stay
     /// available while a root-cause specialist runs in the background.
     ///
-    /// Command execution is technically not read-only (a command can write),
-    /// but blocking it froze the waiting agent completely: it could not run
-    /// tests or builds to verify the fix the specialist would later assess.
-    /// Command writes during the window are transient (build outputs, temp
-    /// files), not checkpointed workspace state, so the race the guard
-    /// protects against (persistent edits vs. rollback) does not apply.
+    /// Command execution is technically not read-only — a shell command can
+    /// write anything, including tracked sources — but command side effects
+    /// are never captured by `maybe_capture_pre_edit` (only file_edit /
+    /// file_write / apply_patch are), during the wait or otherwise. The race
+    /// this guard exists to prevent is *checkpointed* persistent edits vs.
+    /// rollback; admitting commands does not weaken that invariant because
+    /// they never participated in checkpointing in the first place. Blocking
+    /// them froze the waiting agent completely: it could not run tests or
+    /// builds to verify the fix the specialist would later assess.
     fn is_allowed_during_root_cause_wait(tool: &dyn Tool) -> bool {
         tool.is_read_only()
             || matches!(
