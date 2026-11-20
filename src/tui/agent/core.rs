@@ -1,8 +1,8 @@
 //! TUI agent loop — thin facade over `agent::runtime::run_agent_loop`.
 
 use super::adapters::{
-    ApiPlannerPort, DaemonLlmPort, DaemonTaskProgress, DaemonToolPort, TuiCompactor, TuiEventSink,
-    TuiInteractionPort,
+    ApiPlannerPort, DaemonLlmPort, DaemonTaskProgress, DaemonToolPort, RootSynthesisPort,
+    TuiCompactor, TuiEventSink, TuiInteractionPort,
 };
 use super::{AgentError, AgentLoop};
 use crate::agent::runtime::{
@@ -78,6 +78,15 @@ impl AgentLoop {
         let task_progress = DaemonTaskProgress::new(self.client.clone());
         let task_progress_ref: &dyn crate::agent::runtime::TaskProgressPort = &task_progress;
 
+        // Root finalize-join: wait for ready background subagent results at
+        // turn end and inject them as a <child-results> continuation.
+        let synthesis = RootSynthesisPort::new(
+            self.client.clone(),
+            self.session_id.clone(),
+            self.agent_generation,
+        );
+        let synthesis_ref: &dyn crate::agent::runtime::SynthesisPort = &synthesis;
+
         let result = run_agent_loop(RunLoopArgs {
             llm: &llm,
             tools: &tools,
@@ -92,7 +101,7 @@ impl AgentLoop {
                 planner: planner_ref,
                 stuck_detector: Some(&mut self.stuck_detector),
                 token_counter: Some(&self.token_counter),
-                synthesis: None,
+                synthesis: Some(synthesis_ref),
                 observer: None,
                 task_progress: Some(task_progress_ref),
                 inbox: None,

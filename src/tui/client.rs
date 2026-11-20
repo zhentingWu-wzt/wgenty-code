@@ -414,6 +414,44 @@ impl DaemonClient {
         ))
     }
 
+    /// `POST /api/v1/agents/task-groups/await` -- bounded wait + atomic claim
+    /// for one ready root-direct task group (root finalize-join path).
+    /// Returns `Ok(Some(delivery))` on a 200 delivery, `Ok(None)` on 204
+    /// (timeout / nothing ready / stale generation). Network errors surface
+    /// as `Err` — the caller degrades to a normal finalize.
+    pub async fn await_task_group(
+        &self,
+        session_id: &str,
+        generation: u64,
+        timeout_ms: u64,
+    ) -> anyhow::Result<Option<TaskGroupDeliveryResponse>> {
+        let url = format!("{}/api/v1/agents/task-groups/await", self.base_url);
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "generation": generation,
+            "timeout_ms": timeout_ms,
+        });
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("await ready task group")?;
+        if resp.status() == StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!("await_task_group ({})", resp.status());
+        }
+        Ok(Some(
+            resp.json()
+                .await
+                .context("decode awaited task group delivery")?,
+        ))
+    }
+
     /// `POST /api/v1/agents/generation/reset` -- advance the session generation
     /// and cancel obsolete root-direct subtrees. Returns the new generation.
     pub async fn reset_agent_generation(&self, session_id: &str) -> anyhow::Result<u64> {

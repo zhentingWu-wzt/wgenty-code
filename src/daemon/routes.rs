@@ -51,6 +51,10 @@ pub(crate) fn agent_routes() -> Router<Arc<DaemonState>> {
             post(handlers::claim_task_group),
         )
         .route(
+            "/api/v1/agents/task-groups/await",
+            post(handlers::await_task_group),
+        )
+        .route(
             "/api/v1/agents/generation/reset",
             post(handlers::reset_agent_generation),
         )

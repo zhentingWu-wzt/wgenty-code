@@ -368,7 +368,10 @@ pub fn build_failure_diagnostics(
     }
 }
 
-fn format_child_result_batch(results: &[ChildResult]) -> String {
+/// Format a child-result batch in the canonical `<child-results>` contract
+/// shared by the TUI continuation turn, the daemon synthesis continuation, and
+/// the root finalize-join SynthesisPort.
+pub fn format_child_result_batch(results: &[ChildResult]) -> String {
     let body = serde_json::to_string(results).unwrap_or_else(|error| {
         format!(
             r#"{{"error":"serialize_child_results","message":{}}}"#,
@@ -409,12 +412,15 @@ struct SubagentSynthesis {
 impl SynthesisPort for SubagentSynthesis {
     async fn on_candidate_final(&self, _candidate: &str) -> Result<Option<String>, RuntimeError> {
         if !self.is_non_root {
-            // Root (main agent): await in-flight subagents and synthesize their
-            // results before finalizing. Without this, the main agent's final
-            // answer ignored subagent work entirely -- the task tool returns an
-            // immediate ack and root previously short-circuited to `None`, so
-            // subagent changes were invisible until a later continuation turn
-            // (and dropped entirely if a generation reset intervened).
+            // Root (main agent) when this port is wired into the root loop: await
+            // in-flight subagents and synthesize their results before finalizing.
+            // Note: the TUI and headless root loops do NOT wire this port — the
+            // daemon runs the turn, so the TUI uses RootSynthesisPort over the
+            // `task-groups/await` endpoint instead (same finalize-join contract,
+            // bounded wait + atomic claim). This in-process path serves nested
+            // subagent loops whose parent is itself a subagent (ghost-fallback
+            // guard below) and any future root runtime that owns its
+            // coordinator directly.
             return self.synthesize_root_children().await;
         }
 

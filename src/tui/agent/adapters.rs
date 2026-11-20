@@ -4,8 +4,8 @@
 
 use crate::agent::runtime::{
     archive_transcript, parse_compaction_response, Compactor, EventSink, HistoryStore,
-    InteractionPort, LlmPort, PlannerPort, RuntimeError, RuntimeEvent, ToolPort, ToolRequest,
-    ToolResponse, COMPACTION_SYSTEM_PROMPT,
+    InteractionPort, LlmPort, PlannerPort, RuntimeError, RuntimeEvent, SynthesisPort, ToolPort,
+    ToolRequest, ToolResponse, COMPACTION_SYSTEM_PROMPT,
 };
 use crate::agent::{StreamEvent, StreamProcessor};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
@@ -31,6 +31,69 @@ pub struct TuiEventSink {
 impl TuiEventSink {
     pub fn new(tx: mpsc::UnboundedSender<AppEvent>) -> Self {
         Self { tx }
+    }
+}
+
+// ── Root finalize-join synthesis ────────────────────────────────────────────
+
+/// Root-side `SynthesisPort`: when the model produces a final candidate, wait
+/// (bounded) for ready background subagent results and inject them as a
+/// `<child-results>` continuation instead of ending the turn. This closes the
+/// "completed-but-invisible-until-next-turn" gap: without it, results only
+/// arrive via the idle 500ms poll or the daemon scheduler after the turn
+/// ends.
+///
+/// Degradation is the status quo: no ready group, timeout, stale generation,
+/// or network error all return `Ok(None)` so the turn finishes normally and
+/// the existing delivery paths take over.
+pub struct RootSynthesisPort {
+    client: DaemonClient,
+    session_id: String,
+    generation: u64,
+    timeout: Duration,
+}
+
+impl RootSynthesisPort {
+    pub fn new(client: DaemonClient, session_id: String, generation: u64) -> Self {
+        Self {
+            client,
+            session_id,
+            generation,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+#[async_trait]
+impl SynthesisPort for RootSynthesisPort {
+    async fn on_candidate_final(&self, _candidate: &str) -> Result<Option<String>, RuntimeError> {
+        match self
+            .client
+            .await_task_group(
+                &self.session_id,
+                self.generation,
+                self.timeout.as_millis() as u64,
+            )
+            .await
+        {
+            Ok(Some(delivery)) if !delivery.results.is_empty() => {
+                tracing::info!(
+                    group_id = %delivery.group_id,
+                    results = delivery.results.len(),
+                    "root finalize-join: injecting ready subagent results"
+                );
+                Ok(Some(crate::teams::format_child_result_batch(
+                    &delivery.results,
+                )))
+            }
+            Ok(_) => Ok(None),
+            // The finalize path must never fail because the hint channel
+            // errored; degrade to a normal turn end.
+            Err(error) => {
+                tracing::warn!(%error, "root finalize-join await failed; finishing turn");
+                Ok(None)
+            }
+        }
     }
 }
 

@@ -220,6 +220,39 @@ impl TaskGroupStore {
             .is_some_and(Self::is_ready)
     }
 
+    /// Read-only readiness probe: the member count of the owner's ready group
+    /// in the requested generation, without consuming it. Used to hint the
+    /// agent mid-turn that results are waiting; delivery still goes through
+    /// the atomic claim methods (exactly-once).
+    pub async fn peek_ready_count(
+        &self,
+        session_id: &SessionId,
+        owner_id: &AgentId,
+        generation: u64,
+    ) -> Option<usize> {
+        let state = self.inner.read().await;
+        if state
+            .generations
+            .get(session_id)
+            .copied()
+            .unwrap_or_default()
+            != generation
+        {
+            return None;
+        }
+        state
+            .groups
+            .values()
+            .filter(|group| {
+                group.session_id == *session_id
+                    && group.owner_id == *owner_id
+                    && group.generation == generation
+                    && Self::is_ready(group)
+            })
+            .min_by(|left, right| left.id.as_str().cmp(right.id.as_str()))
+            .map(|group| group.child_ids.len())
+    }
+
     /// Converts every unfinished child in an expired active group to a timeout.
     pub async fn expire_due_groups(&self, now: Instant) -> Result<usize, TaskGroupError> {
         let mut state = self.inner.write().await;
@@ -581,6 +614,95 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(delivery.results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn peek_ready_count_reports_without_consuming() {
+        let store = TaskGroupStore::default();
+        let group = create_root_group(
+            &store,
+            "turn-1",
+            0,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+        store.add_child(&group, AgentId::new("a")).await.unwrap();
+        store.add_child(&group, AgentId::new("b")).await.unwrap();
+
+        // Not ready: one child still running.
+        store
+            .record_result(&group, result("a", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .peek_ready_count(&SessionId::new("s"), &AgentId::new("root"), 0)
+                .await,
+            None
+        );
+
+        // Ready: both terminal. Peek is read-only — the claim afterwards
+        // still delivers exactly once.
+        store
+            .record_result(&group, result("b", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .peek_ready_count(&SessionId::new("s"), &AgentId::new("root"), 0)
+                .await,
+            Some(2)
+        );
+        assert_eq!(
+            store
+                .peek_ready_count(&SessionId::new("s"), &AgentId::new("root"), 0)
+                .await,
+            Some(2),
+            "repeated peeks must not consume the group"
+        );
+
+        let delivery = store
+            .claim_ready(&SessionId::new("s"), 0)
+            .await
+            .unwrap()
+            .expect("claim succeeds after peeks");
+        assert_eq!(delivery.results.len(), 2);
+        assert_eq!(
+            store
+                .peek_ready_count(&SessionId::new("s"), &AgentId::new("root"), 0)
+                .await,
+            None,
+            "peek after claim sees nothing"
+        );
+
+        // Stale generation: a ready group is not reported when the probe
+        // carries a non-matching generation.
+        let group2 = create_root_group(
+            &store,
+            "turn-2",
+            0,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+        store.add_child(&group2, AgentId::new("c")).await.unwrap();
+        store
+            .record_result(&group2, result("c", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .peek_ready_count(&SessionId::new("s"), &AgentId::new("root"), 0)
+                .await,
+            Some(1),
+            "the generation-matching probe reports a ready group (min group id)"
+        );
+        assert_eq!(
+            store
+                .peek_ready_count(&SessionId::new("s"), &AgentId::new("root"), 1)
+                .await,
+            None,
+            "a generation mismatch must not report even when a group is ready"
+        );
     }
 
     #[tokio::test]

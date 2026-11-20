@@ -18,6 +18,47 @@ pub async fn list_tools(State(state): State<Arc<DaemonState>>) -> Json<ListTools
     Json(ListToolsResponse { tools })
 }
 
+/// Mid-turn readiness hint: append a `<reminder>` to the tool response when
+/// the session has a ready root-direct subagent group. Delivery stays with
+/// the atomic claim (await endpoint / idle poll / daemon scheduler at turn
+/// end); this only tells the agent it may finish early to receive results.
+/// Best-effort: probe errors skip the hint.
+async fn append_ready_subagent_hint(
+    state: &DaemonState,
+    session_id: &str,
+    response: ExecuteToolResponse,
+) -> ExecuteToolResponse {
+    if response.permission_required.is_some() || response.content.is_none() {
+        return response;
+    }
+    let hint = match state.root_context(session_id).await {
+        Ok(root) => {
+            let generation = state.coordinator.current_generation(&root.session_id).await;
+            match state
+                .coordinator
+                .peek_ready_root_count(&root, generation)
+                .await
+            {
+                Ok(Some(count)) if count > 0 => Some(format!(
+                    "\n<reminder>{count} background subagent result(s) are ready and will be \
+                     delivered when this turn ends. You may finish this turn early to receive \
+                     them.</reminder>"
+                )),
+                _ => None,
+            }
+        }
+        Err(_) => None,
+    };
+    match hint {
+        Some(hint) => {
+            let mut response = response;
+            response.content = Some(format!("{}{}", response.content.unwrap_or_default(), hint));
+            response
+        }
+        None => response,
+    }
+}
+
 pub async fn execute_tool(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<ExecuteToolRequest>,
@@ -79,17 +120,24 @@ pub async fn execute_tool(
             let content = msg.content.unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
 
-            Ok(Json(ExecuteToolResponse {
-                success: parsed["success"].as_bool().unwrap_or(false),
-                output_type: parsed["output_type"].as_str().map(|s| s.to_string()),
-                content: parsed["content"].as_str().map(|s| s.to_string()),
-                error: parsed["error"]
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .map(|s| s.to_string()),
-                metadata: parsed.get("metadata").cloned(),
-                permission_required: None,
-            }))
+            Ok(Json(
+                append_ready_subagent_hint(
+                    &state,
+                    session_id,
+                    ExecuteToolResponse {
+                        success: parsed["success"].as_bool().unwrap_or(false),
+                        output_type: parsed["output_type"].as_str().map(|s| s.to_string()),
+                        content: parsed["content"].as_str().map(|s| s.to_string()),
+                        error: parsed["error"]
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .map(|s| s.to_string()),
+                        metadata: parsed.get("metadata").cloned(),
+                        permission_required: None,
+                    },
+                )
+                .await,
+            ))
         }
         Ok(PolicyDecision::Ask(req)) => {
             // Check if rule was already approved for this session, OR root mode
@@ -130,17 +178,24 @@ pub async fn execute_tool(
                 let content = msg.content.unwrap_or_default();
                 let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
 
-                return Ok(Json(ExecuteToolResponse {
-                    success: parsed["success"].as_bool().unwrap_or(false),
-                    output_type: parsed["output_type"].as_str().map(|s| s.to_string()),
-                    content: parsed["content"].as_str().map(|s| s.to_string()),
-                    error: parsed["error"]
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .map(|s| s.to_string()),
-                    metadata: parsed.get("metadata").cloned(),
-                    permission_required: None,
-                }));
+                return Ok(Json(
+                    append_ready_subagent_hint(
+                        &state,
+                        session_id,
+                        ExecuteToolResponse {
+                            success: parsed["success"].as_bool().unwrap_or(false),
+                            output_type: parsed["output_type"].as_str().map(|s| s.to_string()),
+                            content: parsed["content"].as_str().map(|s| s.to_string()),
+                            error: parsed["error"]
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .map(|s| s.to_string()),
+                            metadata: parsed.get("metadata").cloned(),
+                            permission_required: None,
+                        },
+                    )
+                    .await,
+                ));
             }
 
             // Need permission from user

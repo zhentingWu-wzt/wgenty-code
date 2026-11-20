@@ -1378,6 +1378,33 @@ impl AgentCoordinator {
         self.task_groups.current_generation(session_id).await
     }
 
+    /// Read-only readiness probe for the trusted persistent root's current
+    /// group: the member count when a ready group exists, `None` otherwise.
+    /// Sweeps expired groups first (same as the claim path) so the hint never
+    /// says "nothing ready" while a claim would deliver timeouts. Never
+    /// consumes; delivery stays with the atomic claim.
+    pub async fn peek_ready_root_count(
+        &self,
+        root: &AgentExecutionContext,
+        generation: u64,
+    ) -> Result<Option<usize>, CoordinatorError> {
+        if !Self::is_root(root) {
+            return Err(CoordinatorError::NotVisible);
+        }
+        let _operation = self.group_operations.lock().await;
+        let expired = self.task_groups.expire_due_groups(Instant::now()).await?;
+        if expired > 0 {
+            tracing::warn!(
+                expired_children = expired,
+                "Swept expired task-group children during root peek"
+            );
+        }
+        Ok(self
+            .task_groups
+            .peek_ready_count(&root.session_id, &root.agent_id, generation)
+            .await)
+    }
+
     /// Advances a task generation and discards mappings into older groups.
     pub async fn advance_generation(&self, session_id: &SessionId) -> u64 {
         let _operation = self.group_operations.lock().await;

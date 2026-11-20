@@ -19,6 +19,76 @@ pub(super) fn map_scoped_coordinator_error(error: crate::agent::CoordinatorError
     }
 }
 
+/// `POST /api/v1/agents/task-groups/await` -- bounded wait + claim for one
+/// ready root-direct task group. This is the root finalize-join path: the
+/// TUI's SynthesisPort calls it when the model produces a final candidate;
+/// a delivery lets the turn continue with the child results injected, a 204
+/// (timeout / nothing ready) lets it finish normally.
+///
+/// The wait is a probe: it does NOT hold a `session_runs` claim (it starts no
+/// turn of its own); consumption stays with the atomic claim, which at most
+/// one of {await, TUI idle poll, daemon scheduler} wins. Readiness pings are
+/// hints only — each retry re-verifies by claiming.
+pub async fn await_task_group(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<crate::daemon::models::AwaitTaskGroupRequest>,
+) -> Result<Json<TaskGroupDeliveryResponse>, StatusCode> {
+    const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+    const MAX_TIMEOUT_MS: u64 = 120_000;
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+    let timeout_ms = body
+        .timeout_ms
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .min(MAX_TIMEOUT_MS);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+
+    loop {
+        // Fast path and every retry go through the same atomic claim; a claim
+        // error (e.g. generation already reset) surfaces as 204 rather than
+        // failing the finalize — the TUI then finishes its turn normally.
+        let root = state
+            .root_context(&body.session_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let generation = state.coordinator.current_generation(&root.session_id).await;
+        if generation != body.generation {
+            return Err(StatusCode::NO_CONTENT);
+        }
+        let delivery = match state
+            .coordinator
+            .claim_ready_root_group(&root, body.generation)
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        if let Some(d) = delivery {
+            let project = state.effective_session_root(&body.session_id).await;
+            state.broadcast_global(
+                crate::daemon::global_events::GlobalEventKind::TaskGroupResult,
+                serde_json::json!({
+                    "task_group_id": d.group_id.as_str(),
+                    "session_id": body.session_id,
+                    "generation": d.generation,
+                    "project": project,
+                    "result_count": d.results.len(),
+                    "statuses": d.results.iter().map(|r| r.status).collect::<Vec<_>>(),
+                }),
+            );
+            return Ok(Json(TaskGroupDeliveryResponse {
+                group_id: d.group_id.as_str().to_string(),
+                generation: d.generation,
+                results: d.results,
+            }));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(StatusCode::NO_CONTENT);
+        }
+        tokio::time::sleep(RETRY_INTERVAL.min(deadline - tokio::time::Instant::now())).await;
+    }
+}
+
 /// `POST /api/v1/ui/viewers` -- create a trusted UI viewer. Generates a
 /// 256-bit bearer token, stores only its HMAC digest, returns the token once.
 pub async fn create_viewer(

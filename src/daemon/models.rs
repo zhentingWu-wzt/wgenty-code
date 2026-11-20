@@ -530,6 +530,18 @@ pub struct ClaimTaskGroupRequest {
     pub generation: u64,
 }
 
+/// `POST /api/v1/agents/task-groups/await` -- bounded wait + claim for one
+/// ready root-direct task group (root finalize-join path).
+#[derive(Debug, Deserialize)]
+pub struct AwaitTaskGroupRequest {
+    pub session_id: String,
+    pub generation: u64,
+    /// Bound for the whole wait, milliseconds. Default 30_000, capped at
+    /// 120_000; values of zero take at most the one fast-path claim.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
 /// One delivered task-group batch. Returned with `200 OK` when a ready group
 /// is claimed, or absent (204 No Content) when nothing is ready.
 #[derive(Debug, Serialize, Deserialize)]

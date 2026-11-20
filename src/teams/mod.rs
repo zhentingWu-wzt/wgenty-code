@@ -29,7 +29,7 @@ pub use subagent::{
 pub use subagent_health::{
     FailureMode, HealthPeriod, HealthStatus, SubagentHealth, SubagentHealthAnalyzer,
 };
-pub use subagent_loop::run_subagent_loop_with_permissions;
+pub use subagent_loop::{format_child_result_batch, run_subagent_loop_with_permissions};
 pub use subagent_mailbox::{
     StoredResult, SubagentResponse, SubagentResultMailbox, MAX_INLINE_RESULT_LEN,
 };

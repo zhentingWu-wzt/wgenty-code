@@ -1817,6 +1817,75 @@ async fn execute_tool_session_normal_does_not_inherit_project_yolo() {
 }
 
 #[tokio::test]
+async fn execute_tool_appends_ready_subagent_hint_only_when_a_group_is_ready() {
+    use axum::extract::State;
+    use axum::Json;
+
+    fn echo_request() -> crate::daemon::models::ExecuteToolRequest {
+        crate::daemon::models::ExecuteToolRequest {
+            tool_name: "exec_command".into(),
+            arguments: serde_json::json!({
+                "command": "echo hint-probe",
+                "yield_time_ms": 2000
+            }),
+            session_id: Some("s".into()),
+            turn_id: None,
+        }
+    }
+
+    let state = Arc::new(global_event_test_state().await);
+
+    // No ready group: no hint.
+    let Json(plain) = execute_tool(State(state.clone()), Json(echo_request()))
+        .await
+        .expect("tool executes");
+    let content = plain.content.expect("echo tool returns content");
+    assert!(
+        !content.contains("<reminder>"),
+        "no ready group must not append a hint: {content}"
+    );
+
+    // Make the session's root group ready: reserve a child, finish it.
+    let root = state.root_context("s").await.expect("root context");
+    let group = state
+        .coordinator
+        .create_root_task_group(
+            &root,
+            "turn-1",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("root group");
+    let child = state
+        .coordinator
+        .reserve_child_in_group(&root, crate::agent::SpawnChildRequest::new("work"), group)
+        .await
+        .expect("reserve child");
+    state
+        .coordinator
+        .finish_child(
+            &child.context,
+            crate::agent::ChildTerminal::completed("done"),
+        )
+        .await
+        .expect("finish child");
+
+    let Json(hinted) = execute_tool(State(state), Json(echo_request()))
+        .await
+        .expect("tool executes");
+    let content = hinted.content.expect("echo tool returns content");
+    assert!(
+        content.contains("hint-probe"),
+        "original content must survive: {content}"
+    );
+    assert!(
+        content
+            .contains("<reminder>1 background subagent result(s) are ready and will be delivered"),
+        "ready group must append the hint: {content}"
+    );
+}
+
+#[tokio::test]
 async fn execute_tool_session_yolo_overrides_project_normal() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mut settings = crate::config::Settings::default();
@@ -3237,6 +3306,135 @@ async fn claim_task_group_broadcasts_task_group_result() {
     assert_eq!(ev.data["result_count"], 1);
     // Multi-project dimension: clients filter by `project`.
     assert!(ev.data["project"].is_string(), "data: {}", ev.data);
+}
+
+#[tokio::test]
+async fn await_task_group_delivers_ready_group_without_waiting() {
+    use axum::extract::State;
+    use axum::Json;
+
+    let state = Arc::new(global_event_test_state().await);
+    let root = state.root_context("s").await.expect("root context");
+    let group = state
+        .coordinator
+        .create_root_task_group(
+            &root,
+            "turn-1",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("root group");
+    let child = state
+        .coordinator
+        .reserve_child_in_group(
+            &root,
+            crate::agent::SpawnChildRequest::new("work"),
+            group.clone(),
+        )
+        .await
+        .expect("reserve child");
+    state
+        .coordinator
+        .finish_child(
+            &child.context,
+            crate::agent::ChildTerminal::completed("done"),
+        )
+        .await
+        .expect("finish child");
+
+    // Fast path: the group is already ready, so a zero timeout still delivers.
+    let started = std::time::Instant::now();
+    let Json(resp) = await_task_group(
+        State(state.clone()),
+        Json(crate::daemon::models::AwaitTaskGroupRequest {
+            session_id: "s".to_string(),
+            generation: 0,
+            timeout_ms: Some(0),
+        }),
+    )
+    .await
+    .expect("await should deliver the ready group immediately");
+    assert_eq!(resp.results.len(), 1);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "fast path must not wait"
+    );
+
+    // Exactly-once: a second await (and claim) now finds nothing.
+    let second = await_task_group(
+        State(state.clone()),
+        Json(crate::daemon::models::AwaitTaskGroupRequest {
+            session_id: "s".to_string(),
+            generation: 0,
+            timeout_ms: Some(0),
+        }),
+    )
+    .await;
+    assert!(
+        matches!(second, Err(StatusCode::NO_CONTENT)),
+        "second await must find nothing"
+    );
+    let third = claim_task_group(
+        State(state),
+        Json(ClaimTaskGroupRequest {
+            session_id: "s".to_string(),
+            generation: 0,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(third, Err(StatusCode::NO_CONTENT)),
+        "claim after await must find nothing"
+    );
+}
+
+#[tokio::test]
+async fn await_task_group_times_out_with_no_content_when_nothing_ready() {
+    use axum::extract::State;
+    use axum::Json;
+
+    let state = Arc::new(global_event_test_state().await);
+    let root = state.root_context("s").await.expect("root context");
+    let group = state
+        .coordinator
+        .create_root_task_group(
+            &root,
+            "turn-1",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("root group");
+    let child = state
+        .coordinator
+        .reserve_child_in_group(
+            &root,
+            crate::agent::SpawnChildRequest::new("slow-work"),
+            group,
+        )
+        .await
+        .expect("reserve child");
+    // Child reserved but never finished: the group stays unready.
+    drop(child);
+
+    let started = std::time::Instant::now();
+    let result = await_task_group(
+        State(state),
+        Json(crate::daemon::models::AwaitTaskGroupRequest {
+            session_id: "s".to_string(),
+            generation: 0,
+            timeout_ms: Some(500),
+        }),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(StatusCode::NO_CONTENT)),
+        "nothing-ready await must time out with 204"
+    );
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(400),
+        "the wait must honor the timeout bound (elapsed: {:?})",
+        started.elapsed()
+    );
 }
 
 /// The global events SSE endpoint lives on the protected router: no (or
