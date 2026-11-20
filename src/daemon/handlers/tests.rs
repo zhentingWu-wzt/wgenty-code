@@ -801,6 +801,152 @@ async fn agent_routes_support_recursive_generation_bound_navigation() {
     server.abort();
 }
 
+/// End-to-end regression for the transcript + cancel endpoints: the frontend
+/// only ever receives Navigate grants, so those endpoints must resolve the
+/// presented navigation capability to its stored target instead of matching it
+/// against never-issued Transcript/Cancel grants (the original always-404 bug).
+#[tokio::test]
+async fn transcript_and_cancel_endpoints_work_via_navigation_capability() {
+    use crate::agent::SpawnChildRequest;
+    use crate::config::Settings;
+    use crate::daemon::models::{CreateViewerResponse, LocalAgentViewResponse};
+    use crate::state::AppState;
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.storage.working_dir = temp.path().to_path_buf();
+    settings.storage.transcript.db_path = temp
+        .path()
+        .join("subagent-transcripts.db")
+        .to_string_lossy()
+        .into_owned();
+    let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+    let root = state.root_context("session").await.unwrap();
+    assert_eq!(
+        state.coordinator.advance_generation(&root.session_id).await,
+        1
+    );
+    let child = state
+        .coordinator
+        .reserve_child(&root, SpawnChildRequest::new("child"))
+        .await
+        .unwrap()
+        .context;
+
+    let app = crate::daemon::routes::agent_routes().with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{address}");
+    let client = reqwest::Client::new();
+
+    let viewer = client
+        .post(format!("{base_url}/api/v1/ui/viewers"))
+        .send()
+        .await
+        .unwrap()
+        .json::<CreateViewerResponse>()
+        .await
+        .unwrap()
+        .viewer_token;
+    let root_view = client
+        .get(format!("{base_url}/api/v1/agents/self?session_id=session"))
+        .header(VIEWER_TOKEN_HEADER, &viewer)
+        .send()
+        .await
+        .unwrap()
+        .json::<LocalAgentViewResponse>()
+        .await
+        .unwrap();
+    let capability = &root_view.children[0].navigation_capability;
+
+    // Transcript: the navigation capability must deliver the transcript
+    // (previously always 404 because no Transcript grant is ever issued).
+    let transcript_response = client
+        .get(format!(
+            "{base_url}/api/v1/agents/children/{capability}/transcript?session_id=session"
+        ))
+        .header(VIEWER_TOKEN_HEADER, &viewer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        transcript_response.status(),
+        StatusCode::OK,
+        "navigation capability must authorize the transcript read"
+    );
+    let body: serde_json::Value = transcript_response.json().await.unwrap();
+    let transcript = body["transcript"].as_str().unwrap_or_default();
+    assert!(
+        transcript.contains(child.agent_id.as_str()),
+        "transcript must reference the target child: {transcript}"
+    );
+
+    // Cancel: same capability must cancel the child (204).
+    let cancel_response = client
+        .post(format!(
+            "{base_url}/api/v1/agents/children/{capability}/cancel?session_id=session"
+        ))
+        .header(VIEWER_TOKEN_HEADER, &viewer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cancel_response.status(),
+        StatusCode::NO_CONTENT,
+        "navigation capability must authorize the cancel"
+    );
+
+    // Indistinguishable denial: wrong viewer and forged token stay 404.
+    let wrong_viewer = client
+        .post(format!("{base_url}/api/v1/ui/viewers"))
+        .send()
+        .await
+        .unwrap()
+        .json::<CreateViewerResponse>()
+        .await
+        .unwrap()
+        .viewer_token;
+    for (path, token_viewer, session) in [
+        (
+            format!("/api/v1/agents/children/{capability}/transcript"),
+            wrong_viewer.as_str(),
+            "session",
+        ),
+        (
+            format!("/api/v1/agents/children/forged/transcript"),
+            viewer.as_str(),
+            "session",
+        ),
+        (
+            format!("/api/v1/agents/children/{capability}/transcript"),
+            viewer.as_str(),
+            "other-session",
+        ),
+    ] {
+        let response = client
+            .get(format!("{base_url}{path}?session_id={session}"))
+            .header(VIEWER_TOKEN_HEADER, token_viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+    let forged_cancel = client
+        .post(format!(
+            "{base_url}/api/v1/agents/children/forged/cancel?session_id=session"
+        ))
+        .header(VIEWER_TOKEN_HEADER, &viewer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forged_cancel.status(), StatusCode::NOT_FOUND);
+
+    server.abort();
+}
+
 /// Minimal [`crate::agent::SubagentProgress`] for directory cross-fill
 /// tests: only the fields the handler reads are populated.
 fn directory_progress(

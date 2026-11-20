@@ -404,34 +404,23 @@ pub async fn get_child_transcript(
         .root_context(session_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let view = state
-        .coordinator
-        .list_local(&root)
+    // The frontend only ever receives Navigate grants (assemble_local_view),
+    // so resolve the presented token as a navigation capability to its stored
+    // target, then authorize the transcript read server-side. Matching the
+    // token against a Transcript grant could never succeed: no such grants
+    // are issued, and the old hardcoded `generation: 0` request also missed
+    // the generation dimension.
+    let resolved = state
+        .capability_service
+        .resolve_navigation(&capability, viewer.as_str(), session_id)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    for child in &view.children {
-        let req = crate::agent::capability::CapabilityRequest::transcript(
-            viewer.as_str(),
-            session_id,
-            child.agent_id.as_str(),
-            0,
-        );
-        if state
-            .capability_service
-            .verify(&capability, &req)
-            .await
-            .is_ok()
-        {
-            let transcript = state
-                .coordinator
-                .read_transcript(&root, child.agent_id.clone())
-                .await
-                .map_err(|_| StatusCode::NOT_FOUND)?;
-            return Ok(Json(serde_json::json!({ "transcript": transcript })));
-        }
-    }
-    // Indistinguishable denial.
-    Err(StatusCode::NOT_FOUND)
+    let transcript = state
+        .coordinator
+        .read_transcript(&root, resolved.target)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({ "transcript": transcript })))
 }
 
 /// `POST /api/v1/agents/children/:capability/cancel?session_id=<id>` --
@@ -455,35 +444,19 @@ pub async fn cancel_child(
         .root_context(session_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let view = state
-        .coordinator
-        .list_local(&root)
+    // Same pattern as the transcript endpoint: resolve the presented Navigate
+    // grant to its stored target and authorize the cancel server-side.
+    let resolved = state
+        .capability_service
+        .resolve_navigation(&capability, viewer.as_str(), session_id)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    for child in &view.children {
-        let req = crate::agent::capability::CapabilityRequest::cancel(
-            viewer.as_str(),
-            session_id,
-            child.agent_id.as_str(),
-            0,
-        );
-        if state
-            .capability_service
-            .verify(&capability, &req)
-            .await
-            .is_ok()
-        {
-            let result = state
-                .coordinator
-                .cancel_subtree(&root, child.agent_id.clone())
-                .await;
-            return match result {
-                Ok(()) => Ok(StatusCode::NO_CONTENT),
-                Err(_) => Err(StatusCode::NOT_FOUND),
-            };
-        }
-    }
-    Err(StatusCode::NOT_FOUND)
+    state
+        .coordinator
+        .cancel_subtree(&root, resolved.target)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/v1/agents/task-groups/claim` -- atomically claim one ready
