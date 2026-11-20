@@ -1,5 +1,5 @@
 use crate::api::provider::resolve_provider;
-use crate::config::models::ModelTier;
+use crate::config::models::{extract_host, vendor_for_host, ModelTier};
 use crate::config::Settings;
 use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
@@ -9,11 +9,26 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 const CATALOG_TTL: Duration = Duration::from_secs(300);
-const CATALOG_FETCH_TIMEOUT: Duration = Duration::from_millis(250);
+/// Generous enough for real public HTTPS round trips (DNS + TLS + server
+/// handling commonly lands in the 250–500 ms range) while still failing fast
+/// enough that a hung provider degrades to the manual + builtin catalog
+/// without stalling the picker. Fetches run inside a `join_all` so a slow
+/// provider never blocks the others.
+const CATALOG_FETCH_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Built-in model fallbacks, merged with provider responses and manual settings.
 pub const BUILTIN_CATALOGS: &[(&str, &[&str])] = &[
-    ("kimi", &["kimi-k2.5", "kimi-k2-thinking", "kimi-latest"]),
+    (
+        "kimi",
+        &[
+            "k3",
+            "k3-256k",
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+        ],
+    ),
     ("zhipu", &["glm-5.3", "glm-5.3-flash", "glm-5.3-air"]),
     (
         "deepseek",
@@ -108,17 +123,18 @@ impl ModelCatalogService {
                 });
             }
         }
-        if let Some(builtin) = BUILTIN_CATALOGS
-            .iter()
-            .find_map(|(provider, models)| (*provider == provider_key).then_some(*models))
-        {
-            for name in builtin {
-                models.entry((*name).to_string()).or_insert(MergedModel {
-                    name: (*name).to_string(),
-                    tier: None,
-                    configured: false,
-                });
-            }
+        let builtin = settings
+            .models
+            .providers
+            .get(provider_key)
+            .map(|group| builtin_catalog(group, provider_key))
+            .unwrap_or(&[]);
+        for name in builtin {
+            models.entry(name.to_string()).or_insert(MergedModel {
+                name: name.to_string(),
+                tier: None,
+                configured: false,
+            });
         }
         models.into_values().collect()
     }
@@ -245,6 +261,24 @@ impl ModelCatalogService {
         };
         Some(payload.data.into_iter().map(|model| model.id).collect())
     }
+}
+
+/// Look up the built-in fallback list for a provider group. The group key is
+/// user-defined (any casing, any alias — e.g. `"Kimi"`), so resolve the vendor
+/// from the group's base_url host first; a case-insensitive key match covers
+/// groups whose base_url is empty or unrecognizable.
+fn builtin_catalog(
+    group: &crate::config::models::ProviderGroup,
+    provider_key: &str,
+) -> &'static [&'static str] {
+    let vendor = vendor_for_host(&extract_host(&group.base_url));
+    BUILTIN_CATALOGS
+        .iter()
+        .find_map(|(provider, models)| {
+            (Some(*provider) == vendor || provider.eq_ignore_ascii_case(provider_key))
+                .then_some(*models)
+        })
+        .unwrap_or(&[])
 }
 
 #[derive(Deserialize)]
@@ -647,5 +681,38 @@ mod tests {
             assert!(merged.iter().any(|model| model.name == "new-model"));
         }
         assert_eq!(server.hits(), 1, "concurrent misses must share one fetch");
+    }
+
+    #[tokio::test]
+    async fn builtin_merges_for_case_insensitive_and_vendor_hosted_keys() {
+        let service = ModelCatalogService::new(reqwest::Client::new());
+
+        // User-defined key casing ("Kimi") — builtin must match by key case-
+        // insensitively even when the base_url is not a known vendor host.
+        let cased = settings("Kimi", "http://127.0.0.1:9", "anthropic", Some("k"));
+        let merged = service.merged(&cased, "Kimi").await;
+        assert!(
+            merged.iter().any(|model| model.name == "k3"),
+            "builtin catalog must apply to a differently-cased key"
+        );
+        assert!(!by_name(&merged, "k3").configured);
+
+        // Unrelated key whose base_url host maps to a known vendor.
+        let hosted = settings(
+            "coding",
+            "https://api.kimi.com/coding/v1",
+            "anthropic",
+            Some("k"),
+        );
+        let merged = service.merged(&hosted, "coding").await;
+        assert!(
+            merged.iter().any(|model| model.name == "k3"),
+            "builtin catalog must apply via base_url vendor inference"
+        );
+
+        // Unknown key + unknown host → no builtin rows.
+        let custom = settings("custom", "https://llm.internal.io/v1", "anthropic", Some("k"));
+        let merged = service.merged(&custom, "custom").await;
+        assert_eq!(merged.len(), 1, "only the manual model is present");
     }
 }

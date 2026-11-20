@@ -2538,7 +2538,7 @@ async fn hanging_catalogs_do_not_block_manual_models_and_fetch_concurrently() {
     let run = async {
         let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
         let Json(response) = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(3),
             list_models(
                 State(state.clone()),
                 Query(ListModelsQuery { session_id: None }),

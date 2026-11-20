@@ -974,7 +974,7 @@ impl ModelsConfig {
 
 /// Extract the lowercased host from a URL string, or `"custom"` when the URL
 /// is invalid or has no host.
-fn extract_host(base_url: &str) -> String {
+pub(crate) fn extract_host(base_url: &str) -> String {
     reqwest::Url::parse(base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
