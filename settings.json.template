@@ -27,7 +27,7 @@
     "subagent": {
       "max_depth": 1,
       "max_concurrent": 5,
-      "timeout_secs": 1800,
+      "timeout_secs": 10800,
       "token_budget_k": null,
       "max_rounds": null,
       "plan_mode": null,

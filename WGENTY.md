@@ -199,7 +199,7 @@ Prompt 分层（10+ 层）：base_instructions → context_assembler → permiss
 | `agent.token_budget.subagent_default_k` | usize | 0 | 子代理默认 Token 预算(千) |
 | `agent.subagent.max_depth` | usize | 1 | 子代理最大嵌套深度 |
 | `agent.subagent.max_concurrent` | usize | 5 | 最大并发子代理 |
-| `agent.subagent.timeout_secs` | u64 | 1800 | 子代理超时(秒) |
+| `agent.subagent.timeout_secs` | u64 | 10800 | 子代理超时(秒) |
 | `agent.subagent.permission_mode` | Option | null | 子代理权限 mode 覆盖；null=跟随 root 共享 policy/session_rules |
 | `agent.subagent.ask_strategy` | enum | `escalate_to_user` | 子代理 policy Ask：`escalate_to_user` / `deny` |
 | `agent.subagent.explore_readonly` | bool | true | explore/plan 隐藏 file_write/edit/apply_patch |

@@ -1157,7 +1157,7 @@ fn settings_json_template_matches_settings_default() {
 
     // Spot-check critical product defaults that previously drifted in docs/template.
     assert_eq!(template_settings.agent.subagent.max_depth, 1);
-    assert_eq!(template_settings.agent.subagent.timeout_secs, 1800);
+    assert_eq!(template_settings.agent.subagent.timeout_secs, 10_800);
     assert_eq!(template_settings.models.context_window, 200_000);
     assert_eq!(template_settings.models.main.name, "deepseek-v4-pro");
 }

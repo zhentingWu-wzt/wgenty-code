@@ -16,8 +16,9 @@ pub const DEFAULT_STREAM_MAX_RETRIES: u32 = 2;
 /// argument generation) and sends no bytes for over a minute.
 pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
 
-/// Default subagent wall-clock timeout, in seconds.
-pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 1800;
+/// Default subagent wall-clock timeout, in seconds (3 hours). Long-running
+/// review/audit subagents routinely exceed the previous 1800s cap.
+pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 10_800;
 
 /// Map a configured round cap to its effective value.
 ///
