@@ -26,6 +26,16 @@ impl CheckpointManager {
         }
     }
 
+    /// Preview what undoing `turn_id` would change, without touching files.
+    pub async fn preview_diff(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<Vec<crate::tools::checkpoint_store::DiffPreviewEntry>, String> {
+        self.store
+            .preview_turn_diff(checkpoint_id)
+            .map_err(|e| format!("preview failed: {e:#}"))
+    }
+
     pub fn store(&self) -> &Arc<CheckpointStore> {
         &self.store
     }

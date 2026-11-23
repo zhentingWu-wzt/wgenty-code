@@ -56,13 +56,10 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".wgenty-code");
         Self {
             working_dir: PathBuf::from("."),
             memory: MemorySettings {
                 enabled: true, // ← 这里可以改成 false 关闭总开关
-                path: config_dir.join("memory.json"),
                 consolidation_interval: 24,
                 max_memories: default_max_memories(),
                 importance_threshold: default_importance_threshold(),
@@ -106,7 +103,6 @@ pub struct CodegraphSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySettings {
     pub enabled: bool,
-    pub path: PathBuf,
     pub consolidation_interval: u64,
     #[serde(default = "default_max_memories")]
     pub max_memories: usize,
@@ -145,11 +141,8 @@ pub struct MemorySettings {
 
 impl Default for MemorySettings {
     fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".wgenty-code");
         Self {
             enabled: true,
-            path: config_dir.join("memory.json"),
             consolidation_interval: 24,
             max_memories: default_max_memories(),
             importance_threshold: default_importance_threshold(),
@@ -225,7 +218,8 @@ mod tests {
 
     #[test]
     fn memory_settings_serde_defaults_exploration_and_staleness() {
-        // Legacy configs omit the new keys; serde defaults must apply.
+        // Legacy configs omit the new keys AND still carry the removed
+        // `path` field; serde ignores unknown keys, so defaults must apply.
         let json = r#"{
             "enabled": true,
             "path": "/tmp/memory.json",
@@ -247,8 +241,8 @@ mod tests {
 
     #[test]
     fn memory_settings_legacy_recall_similarity_threshold_alias() {
-        // Existing config files use the pre-rename key `recall_similarity_threshold`.
-        // The serde alias must keep them deserializing into the renamed field.
+        // Existing config files use the pre-rename key `recall_similarity_threshold`
+        // and the removed `path` field; both must keep deserializing.
         let json = r#"{
             "enabled": true,
             "path": "/tmp/memory.json",

@@ -933,6 +933,14 @@ impl DaemonState {
             &app_state.settings,
             app_state.settings.storage.working_dir.clone(),
         ));
+        // Hydrate the main project's memory pool from disk before serving any
+        // request. Without this the pool starts empty: /api/v1/memory lists
+        // nothing, recall injects nothing, and a consolidation would wipe the
+        // on-disk pool via reconcile(). Failures are logged inside load() and
+        // must not block startup.
+        if let Err(e) = memory_manager.load().await {
+            tracing::warn!(error = %e, "Failed to load memories at daemon startup");
+        }
 
         // Multi-project registry + per-project memory routing. Created before
         // the tool registry so `memory_add` can route by invocation workdir.

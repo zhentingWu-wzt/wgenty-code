@@ -550,6 +550,32 @@ export interface CheckpointInfo {
   turn_id: string;
   created_at: number;
   file_count: number;
+  /** First sentence of the user input that started the turn (optional). */
+  user_summary?: string | null;
+  files?: CheckpointFileEntry[];
+}
+
+export interface CheckpointFileEntry {
+  path: string;
+  state: "saved" | "tombstone" | "skipped";
+}
+
+export interface CheckpointDiffEntry {
+  path: string;
+  state: "saved" | "tombstone" | "skipped";
+  /** Unified diff body (blob → current file); empty when not renderable. */
+  diff: string;
+  added: number;
+  removed: number;
+  /** Tombstone + file exists now: undo will delete this file. */
+  will_delete: boolean;
+  /** Binary/oversize at capture time — undo leaves it alone. */
+  skipped: boolean;
+}
+
+export interface CheckpointDiff {
+  turn_id: string;
+  files: CheckpointDiffEntry[];
 }
 
 export interface UndoTurnResult {

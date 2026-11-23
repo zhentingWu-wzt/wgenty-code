@@ -8,6 +8,153 @@
 
 use std::path::{Path, PathBuf};
 
+/// Minimal unified diff between two in-memory buffers, capped for preview use.
+/// Returns (diff body, added lines, removed lines). Non-UTF8 or oversized
+/// inputs yield an empty body with zero counts — previews degrade to "path
+/// only" instead of failing. Lines are aligned via longest-common-subsequence;
+/// the table is skipped when it would exceed 4M cells (preview cutoff, not a
+/// correctness bound — rewind itself never uses this function).
+fn unified_diff(path: &str, old: &[u8], new: &[u8]) -> (String, u64, u64) {
+    let decode = |b: &[u8]| -> Option<Vec<String>> {
+        let s = String::from_utf8(b.to_vec()).ok()?;
+        Some(s.lines().map(|l| l.to_string()).collect())
+    };
+    let (Some(old_lines), Some(new_lines)) = (decode(old), decode(new)) else {
+        return (String::new(), 0, 0);
+    };
+
+    let (n, m) = (old_lines.len(), new_lines.len());
+    const MAX_CELLS: usize = 4_000_000;
+    if n.checked_mul(m).is_none_or(|cells| cells > MAX_CELLS) {
+        return (String::new(), 0, 0);
+    }
+
+    // LCS table over (n+1) x (m+1).
+    let mut lcs = vec![0usize; (n + 1) * (m + 1)];
+    let idx = |i: usize, j: usize| i * (m + 1) + j;
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[idx(i, j)] = if old_lines[i] == new_lines[j] {
+                lcs[idx(i + 1, j + 1)] + 1
+            } else {
+                lcs[idx(i + 1, j)].max(lcs[idx(i, j + 1)])
+            };
+        }
+    }
+
+    // Walk the table emitting tagged lines with 1-based source numbers.
+    #[derive(Clone, Copy)]
+    enum Tag {
+        Keep,
+        Del,
+        Add,
+    }
+    let mut rows: Vec<(Tag, &str, usize, usize)> = Vec::new(); // (tag, line, old_no, new_no)
+    let (mut i, mut j) = (0usize, 0usize);
+    let (mut old_no, mut new_no) = (1usize, 1usize);
+    while i < n || j < m {
+        if i < n && j < m && old_lines[i] == new_lines[j] {
+            rows.push((Tag::Keep, &old_lines[i], old_no, new_no));
+            i += 1;
+            j += 1;
+            old_no += 1;
+            new_no += 1;
+        } else if j >= m || (i < n && lcs[idx(i + 1, j)] >= lcs[idx(i, j + 1)]) {
+            rows.push((Tag::Del, &old_lines[i], old_no, 0));
+            i += 1;
+            old_no += 1;
+        } else {
+            rows.push((Tag::Add, &new_lines[j], 0, new_no));
+            j += 1;
+            new_no += 1;
+        }
+    }
+
+    // Group changed rows into hunks, each padded with up to 3 context lines;
+    // gaps larger than 2*CONTEXT start a new hunk.
+    const CONTEXT: usize = 3;
+    let changed: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !matches!(r.0, Tag::Keep))
+        .map(|(p, _)| p)
+        .collect();
+    if changed.is_empty() {
+        return (String::new(), 0, 0);
+    }
+    let mut hunks: Vec<(usize, usize)> = Vec::new(); // inclusive row range
+    let mut start = changed[0].saturating_sub(CONTEXT);
+    let mut end = (changed[0] + CONTEXT).min(rows.len().saturating_sub(1));
+    for &p in changed.iter().skip(1) {
+        if p <= end + CONTEXT {
+            end = (p + CONTEXT).min(rows.len().saturating_sub(1));
+        } else {
+            hunks.push((start, end));
+            start = p.saturating_sub(CONTEXT);
+            end = (p + CONTEXT).min(rows.len().saturating_sub(1));
+        }
+    }
+    hunks.push((start, end));
+
+    let mut body = String::new();
+    let mut added = 0u64;
+    let mut removed = 0u64;
+    for (hs, he) in hunks {
+        let (mut o_start, mut n_start) = (0usize, 0usize);
+        let (mut o_count, mut n_count) = (0usize, 0usize);
+        let mut hunk = String::new();
+        for r in &rows[hs..=he] {
+            match r.0 {
+                Tag::Keep => {
+                    o_count += 1;
+                    n_count += 1;
+                    hunk.push_str(&format!(" {}\n", r.1));
+                }
+                Tag::Del => {
+                    if o_start == 0 {
+                        o_start = r.2;
+                    }
+                    if n_start == 0 && r.3 > 0 {
+                        n_start = r.3;
+                    }
+                    o_count += 1;
+                    hunk.push_str(&format!("-{}\n", r.1));
+                    removed += 1;
+                }
+                Tag::Add => {
+                    if n_start == 0 {
+                        n_start = r.3;
+                    }
+                    if o_start == 0 && r.2 > 0 {
+                        o_start = r.2;
+                    }
+                    n_count += 1;
+                    hunk.push_str(&format!("+{}\n", r.1));
+                    added += 1;
+                }
+            }
+        }
+        // Header anchor: first row's known line number in each file. Context
+        // rows carry both numbers, so prefer whichever the hunk provides.
+        let first = &rows[hs];
+        let (o0, n0) = match first.0 {
+            Tag::Keep => (first.2, first.3),
+            Tag::Del => (first.2, first.3.max(n_start).max(1)),
+            Tag::Add => (first.2.max(o_start).max(1), first.3),
+        };
+        body.push_str(&format!("--- a/{path}\n+++ b/{path}\n"));
+        body.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            o0.max(o_start.max(1)),
+            o_count,
+            n0.max(n_start.max(1)),
+            n_count
+        ));
+        body.push_str(&hunk);
+    }
+    (body, added, removed)
+}
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +182,11 @@ pub struct ManifestEntry {
 pub struct Manifest {
     pub turn_id: String,
     pub created_at: String,
+    /// First sentence of the user input that started this turn. Optional:
+    /// older manifests and lazy snapshots predate the field. Purely for
+    /// human-readable listings — never read by capture/rewind logic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_summary: Option<String>,
     pub files: Vec<ManifestEntry>,
 }
 
@@ -43,12 +195,17 @@ impl Manifest {
         Self {
             turn_id: turn_id.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            user_summary: None,
             files: Vec::new(),
         }
     }
 
     fn has(&self, path: &str) -> bool {
         self.files.iter().any(|e| e.path == path)
+    }
+
+    fn set_user_summary(&mut self, summary: &str) {
+        self.user_summary = Some(summary.to_string());
     }
 }
 
@@ -57,6 +214,31 @@ pub struct TurnInfo {
     pub turn_id: String,
     pub created_at: String,
     pub file_count: usize,
+    /// First sentence of the user input that started this turn, if recorded.
+    pub user_summary: Option<String>,
+    /// Files touched by this turn, as stored in the manifest. Lets callers
+    /// render "which files" without a second read per turn.
+    pub files: Vec<ManifestEntry>,
+}
+
+/// One file's projected change if this turn were rewound now. Produced by
+/// [`CheckpointStore::preview_turn_diff`] for the confirm-before-undo flow.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffPreviewEntry {
+    pub path: String,
+    pub state: FileState,
+    /// For `Saved`: unified diff body (blob → current file), empty when the
+    /// file is unchanged on disk or content is not renderable. For
+    /// `Tombstone`: empty (see `will_delete`).
+    pub diff: String,
+    /// Lines added/removed by `diff` (0 when diff is empty).
+    pub added: u64,
+    pub removed: u64,
+    /// `Tombstone` + file currently exists: rewind will delete it.
+    pub will_delete: bool,
+    /// Capture was skipped at capture time (binary/oversize) — rewind
+    /// leaves this file alone.
+    pub skipped: bool,
 }
 
 /// Aggregated result of [`CheckpointStore::rewind_range`].
@@ -136,6 +318,26 @@ impl CheckpointStore {
         std::fs::write(&path, data)
             .with_context(|| format!("write manifest: {}", path.display()))?;
         Ok(())
+    }
+
+    /// Attach a human-readable summary to the turn's manifest (best effort:
+    /// a missing/failed manifest is logged and ignored — the summary is
+    /// display-only). Call once right after the turn starts, with the first
+    /// sentence of the user input.
+    pub fn note_user_summary(&self, turn_id: &str, summary: &str) {
+        match self.read_manifest(turn_id) {
+            Ok(mut manifest) => {
+                if manifest.user_summary.is_none() {
+                    manifest.set_user_summary(summary);
+                    if let Err(e) = self.write_manifest(&manifest) {
+                        tracing::warn!(error = %e, turn = %turn_id, "failed to write user_summary");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, turn = %turn_id, "note_user_summary: no manifest");
+            }
+        }
     }
 
     /// Ensure the turn snapshot dir + manifest exist. Returns `true` when the
@@ -413,11 +615,85 @@ impl CheckpointStore {
                     turn_id: manifest.turn_id,
                     created_at: manifest.created_at,
                     file_count: manifest.files.len(),
+                    user_summary: manifest.user_summary,
+                    files: manifest.files,
                 });
             }
         }
         infos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(infos)
+    }
+
+    /// Project what rewinding `turn_id` would do, file by file, WITHOUT
+    /// touching the workspace. `Saved` entries get a unified diff of
+    /// (blob content → current on-disk content); a `Tombstone` entry whose
+    /// file now exists is flagged `will_delete` (rewind removes it). Unknown
+    /// turn ids error; pure-chat turns (no manifest) produce an empty preview.
+    pub fn preview_turn_diff(&self, turn_id: &str) -> Result<Vec<DiffPreviewEntry>> {
+        if !self.manifest_path(turn_id).exists() {
+            if !self.root.join(turn_id).exists() {
+                anyhow::bail!("no such checkpoint: {turn_id}");
+            }
+            return Ok(Vec::new());
+        }
+        let manifest = self.read_manifest(turn_id)?;
+        let mut out = Vec::new();
+        for entry in &manifest.files {
+            let abs = resolve_manifest_path(&self.project_root, &entry.path);
+            match entry.state {
+                FileState::Saved => {
+                    let (diff, added, removed) = match &entry.blob {
+                        Some(blob_name) => {
+                            let blob_path = self.blobs_dir(turn_id).join(blob_name);
+                            match (std::fs::read(&blob_path), std::fs::read(&abs)) {
+                                (Ok(old), Ok(new)) => {
+                                    let (d, a, r) = unified_diff(&entry.path, &old, &new);
+                                    (d, a, r)
+                                }
+                                // Missing blob or missing current file: no
+                                // renderable diff; rewind itself reports the
+                                // failure if it persists at undo time.
+                                _ => (String::new(), 0, 0),
+                            }
+                        }
+                        None => (String::new(), 0, 0),
+                    };
+                    out.push(DiffPreviewEntry {
+                        path: entry.path.clone(),
+                        state: entry.state.clone(),
+                        diff,
+                        added,
+                        removed,
+                        will_delete: false,
+                        skipped: false,
+                    });
+                }
+                FileState::Tombstone => {
+                    let will_delete = abs.exists();
+                    out.push(DiffPreviewEntry {
+                        path: entry.path.clone(),
+                        state: entry.state.clone(),
+                        diff: String::new(),
+                        added: 0,
+                        removed: 0,
+                        will_delete,
+                        skipped: false,
+                    });
+                }
+                FileState::Skipped => {
+                    out.push(DiffPreviewEntry {
+                        path: entry.path.clone(),
+                        state: entry.state.clone(),
+                        diff: String::new(),
+                        added: 0,
+                        removed: 0,
+                        will_delete: false,
+                        skipped: true,
+                    });
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Rewind a range of turns in reverse order (newest first), restoring
@@ -532,6 +808,88 @@ mod tests {
 
     fn read_file(root: &Path, rel: &str) -> Option<String> {
         fs::read_to_string(root.join(rel)).ok()
+    }
+
+    #[test]
+    fn unified_diff_reports_adds_and_dels() {
+        let old = "line1\nline2\nline3\n";
+        let new = "line1\nchanged\nline3\nadded\n";
+        let (body, added, removed) = unified_diff("f.rs", old.as_bytes(), new.as_bytes());
+        assert_eq!(added, 2, "changed + added = 2 additions: {body}");
+        assert_eq!(removed, 1, "changed removes 1 line: {body}");
+        assert!(body.contains("--- a/f.rs"));
+        assert!(body.contains("+++ b/f.rs"));
+        assert!(body.contains("@@ -"));
+        assert!(body.contains("-line2"));
+        assert!(body.contains("+changed"));
+        assert!(body.contains("+added"));
+        assert!(body.contains(" line1"), "context lines preserved: {body}");
+    }
+
+    #[test]
+    fn unified_diff_empty_when_identical_or_non_utf8() {
+        let (body, added, removed) = unified_diff("f.rs", b"same\n", b"same\n");
+        assert_eq!((body.as_str(), added, removed), ("", 0, 0));
+        let (body, added, removed) = unified_diff("f.bin", &[0xFF, 0xFE], b"text");
+        assert_eq!((body.as_str(), added, removed), ("", 0, 0));
+    }
+
+    #[test]
+    fn preview_reports_saved_tombstone_and_skipped() {
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        let turn = "turn-preview";
+        store.begin_turn(turn).unwrap();
+
+        // saved: capture then mutate on disk → diff shows the mutation.
+        write_file(dir.path(), "a.txt", "old content\n");
+        store.try_capture_file(turn, "a.txt").unwrap();
+        write_file(dir.path(), "a.txt", "old content\nnew line\n");
+
+        // tombstone: file did not exist at capture, created afterwards.
+        // Capture a tombstone by referencing a nonexistent path…
+        store.try_capture_file(turn, "new_file.txt").unwrap();
+        write_file(dir.path(), "new_file.txt", "created\n");
+
+        // skipped: binary extension.
+        fs::write(dir.path().join("img.png"), b"\x89PNG").unwrap();
+        store.try_capture_file(turn, "img.png").unwrap();
+
+        let preview = store.preview_turn_diff(turn).unwrap();
+        let find = |p: &str| preview.iter().find(|e| e.path == p).expect("entry");
+
+        let a = find("a.txt");
+        assert!(matches!(a.state, FileState::Saved));
+        assert!(a.diff.contains("+new line"), "diff: {}", a.diff);
+        assert_eq!((a.added, a.removed), (1, 0));
+        assert!(!a.will_delete && !a.skipped);
+
+        let t = find("new_file.txt");
+        assert!(matches!(t.state, FileState::Tombstone));
+        assert!(t.will_delete, "file exists now → undo deletes it");
+
+        let s = find("img.png");
+        assert!(matches!(s.state, FileState::Skipped));
+        assert!(s.skipped);
+    }
+
+    #[test]
+    fn preview_errors_on_unknown_turn_and_note_summary_persists() {
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        assert!(store.preview_turn_diff("nope").is_err());
+
+        store.begin_turn("turn-sum").unwrap();
+        store.note_user_summary("turn-sum", "Fix the parser");
+        let infos = store.list().unwrap();
+        let info = infos.iter().find(|i| i.turn_id == "turn-sum").unwrap();
+        assert_eq!(info.user_summary.as_deref(), Some("Fix the parser"));
+
+        // Idempotent: second note does not overwrite the first summary.
+        store.note_user_summary("turn-sum", "Different text");
+        let infos = store.list().unwrap();
+        let info = infos.iter().find(|i| i.turn_id == "turn-sum").unwrap();
+        assert_eq!(info.user_summary.as_deref(), Some("Fix the parser"));
     }
 
     #[test]

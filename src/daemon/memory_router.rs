@@ -65,6 +65,12 @@ impl MemoryRouter {
             &self.settings,
             root.to_path_buf(),
         ));
+        // Hydrate from disk before first use, mirroring the main manager's
+        // startup load. An un-loaded manager serves an empty pool and, worse,
+        // lets a consolidation reconcile every on-disk memory away.
+        if let Err(e) = mgr.load().await {
+            tracing::warn!(error = %e, root = %root.display(), "Failed to load memories for project manager");
+        }
         if let Some(llm) = self.review_llm.read().await.clone() {
             mgr.set_review_llm(Some(llm)).await;
         }

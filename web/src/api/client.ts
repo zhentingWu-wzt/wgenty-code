@@ -15,6 +15,7 @@ import type {
   AddMcpServerRequest,
   AgentDirectoryResponse,
   CheckpointInfo,
+  CheckpointDiff,
   ConfigResponse,
   CreateSessionRequest,
   CreateViewerResponse,
@@ -419,12 +420,18 @@ export class DaemonClient {
 
   // ── Todos / Tasks ──────────────────────────────────────────────────────────
 
-  async getTodos(): Promise<GetTodosResponse> {
-    return jsonOrThrow(await this.authedFetch(`${this.base}/todos`));
+  async getTodos(sessionId?: string): Promise<GetTodosResponse> {
+    const url = sessionId
+      ? `${this.base}/todos?session_id=${encodeURIComponent(sessionId)}`
+      : `${this.base}/todos`;
+    return jsonOrThrow(await this.authedFetch(url));
   }
 
-  async listTasks(): Promise<ListTasksResponse> {
-    return jsonOrThrow(await this.authedFetch(`${this.base}/tasks`));
+  async listTasks(sessionId?: string): Promise<ListTasksResponse> {
+    const url = sessionId
+      ? `${this.base}/tasks?session_id=${encodeURIComponent(sessionId)}`
+      : `${this.base}/tasks`;
+    return jsonOrThrow(await this.authedFetch(url));
   }
 
   async taskProgress(): Promise<TaskProgressResponse> {
@@ -857,6 +864,12 @@ export class DaemonClient {
 
   async listCheckpoints(): Promise<CheckpointInfo[]> {
     return jsonOrThrow(await this.authedFetch(`${this.base}/checkpoints`));
+  }
+
+  async checkpointDiff(turnId: string): Promise<CheckpointDiff> {
+    return jsonOrThrow(
+      await this.authedFetch(`${this.base}/checkpoints/${encodeURIComponent(turnId)}/diff`),
+    );
   }
 
   async undoTurns(turnIds: string[]): Promise<UndoTurnResult> {

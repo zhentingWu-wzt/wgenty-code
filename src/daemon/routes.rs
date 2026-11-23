@@ -117,6 +117,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // Undo (per-turn file checkpoint rollback)
         .route("/api/v1/tools/undo-turn", post(handlers::undo_turn_range))
         .route("/api/v1/checkpoints", get(handlers::list_checkpoints))
+        .route(
+            "/api/v1/checkpoints/:id/diff",
+            get(handlers::checkpoint_diff),
+        )
         // Permission mode (root agent runtime mode: Yolo/AcceptEdits/Normal)
         .route(
             "/api/v1/permission-mode",

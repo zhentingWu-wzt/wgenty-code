@@ -12,6 +12,43 @@ pub async fn undo_checkpoint(State(state): State<Arc<DaemonState>>) -> Result<St
     }
 }
 
+/// Query for `GET /api/v1/checkpoints/:id/diff`.
+#[derive(serde::Deserialize)]
+pub struct CheckpointDiffQuery {
+    /// Project whose checkpoint store holds the turn (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// GET /api/v1/checkpoints/:id/diff - preview what undoing the turn would
+/// change, WITHOUT touching the workspace. `saved` files carry a unified diff
+/// of (blob → current on-disk content); `tombstone` files that currently
+/// exist are flagged `will_delete` (rewind removes them); `skipped` files
+/// (binary/oversize at capture time) are flagged `skipped`. Read-only.
+pub async fn checkpoint_diff(
+    State(state): State<Arc<DaemonState>>,
+    axum::extract::Path(turn_id): axum::extract::Path<String>,
+    Query(q): Query<CheckpointDiffQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let manager = match &q.project {
+        Some(p) => {
+            let root = state.projects.resolve(p).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project: {p}"),
+            ))?;
+            state.checkpoints_for_project(&root).0
+        }
+        None => state.checkpoint_manager.clone(),
+    };
+    match manager.preview_diff(&turn_id).await {
+        Ok(entries) => Ok(Json(serde_json::json!({
+            "turn_id": turn_id,
+            "files": entries,
+        }))),
+        Err(e) => Err((StatusCode::NOT_FOUND, e)),
+    }
+}
+
 /// Request body for `POST /api/v1/tools/undo-turn`.
 ///
 /// `turn_ids` is oldest-first; the store rewinds them newest-first so the
@@ -64,8 +101,9 @@ pub struct ListCheckpointsQuery {
 }
 
 /// GET /api/v1/checkpoints - list per-turn checkpoint snapshots (newest-first).
-/// Each entry carries the turn id, creation timestamp, and file count, used by
-/// the TUI `/undo` turn-picker to show how many files each turn touched.
+/// Each entry carries the turn id, creation timestamp, file count, the user
+/// input summary (when recorded) and the touched file list, so clients can
+/// render "what this turn changed" instead of a bare UUID.
 pub async fn list_checkpoints(
     State(state): State<Arc<DaemonState>>,
     Query(q): Query<ListCheckpointsQuery>,
@@ -89,6 +127,11 @@ pub async fn list_checkpoints(
                         "turn_id": i.turn_id,
                         "created_at": i.created_at,
                         "file_count": i.file_count,
+                        "user_summary": i.user_summary,
+                        "files": i.files.iter().map(|f| serde_json::json!({
+                            "path": f.path,
+                            "state": f.state,
+                        })).collect::<Vec<_>>(),
                     })
                 })
                 .collect(),

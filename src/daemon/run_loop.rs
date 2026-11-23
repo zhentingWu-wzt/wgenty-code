@@ -2211,6 +2211,29 @@ fn title_from_first_user_message(seed: &[ChatMessage]) -> Option<String> {
     }
 }
 
+/// First sentence (or first 100 chars) of the user input — the checkpoint
+/// manifest's display summary. Mirrors the TUI's `first_sentence`.
+fn first_sentence(input: &str) -> String {
+    let trimmed = input.trim();
+    for (i, ch) in trimmed.char_indices() {
+        if matches!(ch, '.' | '!' | '?') {
+            let after = &trimmed[i + ch.len_utf8()..];
+            if after.is_empty() || after.starts_with(char::is_whitespace) {
+                return trimmed[..i + ch.len_utf8()].to_string();
+            }
+        }
+        if ch == '\n' {
+            return trimmed[..i].trim_end().to_string();
+        }
+    }
+    let capped: String = trimmed.chars().take(100).collect();
+    if capped.chars().count() < trimmed.chars().count() {
+        format!("{capped}…")
+    } else {
+        capped
+    }
+}
+
 /// Body of one spawned run: seed history from the persisted session, run the
 /// shared agent loop against the run's cancel token, then persist the final
 /// history. Terminal events (TurnDone/TurnError) flow through the sink.
@@ -2331,7 +2354,7 @@ async fn run_session_turn(
     // 5. System prompt — same PromptContext chain as the headless runtime,
     // with cwd = the session's effective root. Retain `layers` for the
     // TurnContext inspector event (previously discarded).
-    let cwd = root;
+    let cwd = root.clone();
     let mut prompt_ctx = PromptContext::default()
         .with_cwd(cwd.to_string_lossy().to_string())
         .with_sandbox("workspace-write")
@@ -2436,6 +2459,7 @@ async fn run_session_turn(
     let prompt_layers = assembled.layers; // retained for TurnContext
 
     // 6. Per-run loop config/state; a fresh turn id per run.
+    let turn_id = Uuid::new_v4().to_string();
     let config = RuntimeConfig {
         max_rounds: settings.agent.effective_max_rounds(),
         plan_mode,
@@ -2446,11 +2470,26 @@ async fn run_session_turn(
         ),
         max_tokens: settings.models.transport.max_tokens,
         session_id: session_id.to_string(),
-        turn_id: Some(Uuid::new_v4().to_string()),
+        turn_id: Some(turn_id.clone()),
         agent_generation: 0,
         stream_max_retries: settings.agent.stream_max_retries,
         stream_idle_timeout_secs: settings.agent.effective_stream_idle_timeout_secs(),
     };
+    // Open the per-turn checkpoint snapshot and record a human-readable
+    // summary (first sentence of the user input) so checkpoint listings —
+    // web panel and TUI /undo — can show what each turn was about instead
+    // of a bare UUID. Capture itself stays lazy (first mutating file tool
+    // creates the blob store), but beginning the turn eagerly gives
+    // `note_user_summary` a manifest to write into; a pure-chat turn then
+    // leaves an empty manifest, which list() already tolerates and prune
+    // ignores via its empty-manifest semantics.
+    {
+        let checkpoint_store = state.checkpoints_for_project(&root).1;
+        if let Err(e) = checkpoint_store.begin_turn(&turn_id) {
+            tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
+        }
+        checkpoint_store.note_user_summary(&turn_id, &first_sentence(&message));
+    }
     let store = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
     let history_handle = store.handle();
     // Mid-run persistence bridge (Task 5): from here on, every SaveSession

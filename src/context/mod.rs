@@ -97,6 +97,12 @@ pub struct MemoryManager {
     /// clears the set so reinforcement is not repeated. Session-local like
     /// `recently_explored`.
     last_injected_ids: Arc<RwLock<HashSet<String>>>,
+    /// Whether the memory pools have been hydrated from disk via [`Self::load`].
+    /// An un-loaded manager holds an empty pool; consolidating from that state
+    /// would `reconcile()` every on-disk file away as "orphaned". Loaders
+    /// (daemon startup, headless runtime, CLI `memory` commands) set this via
+    /// [`Self::load`]; consolidation refuses to run while it is false.
+    loaded: std::sync::atomic::AtomicBool,
 }
 
 /// Resolves which [`MemoryManager`] a tool invocation should write to.
@@ -184,6 +190,7 @@ impl MemoryManager {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -227,6 +234,7 @@ impl MemoryManager {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -259,6 +267,7 @@ impl MemoryManager {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -915,6 +924,12 @@ impl MemoryManager {
     }
 
     pub async fn consolidate(&self) -> anyhow::Result<()> {
+        // Data-loss guard: an un-loaded manager holds an empty pool, and
+        // reconcile() below deletes every on-disk file not present in that
+        // pool. Loading first is always safe (idempotent), so do it instead of
+        // refusing — this also covers callers that forgot their own load().
+        self.ensure_loaded().await;
+
         // Acquire a cross-process advisory lock so that two concurrent
         // `wgenty-code memory dream` invocations (each with its own
         // MemoryManager instance) do not race on the same memory directory.
@@ -987,7 +1002,22 @@ impl MemoryManager {
             tracing::warn!(error = %e, "Failed to load command history from disk");
         }
 
+        self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
+
         Ok(())
+    }
+
+    /// Hydrate the memory pools from disk exactly once. Safe to call from
+    /// multiple paths (daemon startup, per-turn recall, consolidation) — the
+    /// atomic flag makes repeat calls no-ops. Errors are logged, not raised:
+    /// a corrupt pool must not block startup or turn execution.
+    async fn ensure_loaded(&self) {
+        if self.loaded.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        if let Err(e) = self.load().await {
+            tracing::warn!(error = %e, "Failed to load memories from disk");
+        }
     }
 
     pub async fn save(&self) -> anyhow::Result<()> {
@@ -1270,6 +1300,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         // Pre-populate with one memory.
@@ -1325,6 +1356,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         // Before consolidation, last_consolidation should be None.
@@ -1376,7 +1408,6 @@ mod tests {
         let mut settings = Settings::default();
         settings.storage.memory = MemorySettings {
             enabled: true,
-            path: std::path::PathBuf::from("/tmp/memory.json"),
             consolidation_interval: 48,
             max_memories: 5000,
             importance_threshold: 0.7,
@@ -1460,6 +1491,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         // Pre-populate a session and a history entry on disk.
@@ -1494,6 +1526,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         // Before load(), the in-memory caches are empty.
@@ -1557,6 +1590,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         // First extraction: a decision captured during compaction.
@@ -1641,6 +1675,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         let entry = MemoryEntry::new(MemoryType::Knowledge, "a brand new fact");
@@ -1682,6 +1717,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         // First entry.
@@ -1734,6 +1770,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         // idx 0: survives consolidation (Knowledge is always kept).
@@ -2501,6 +2538,7 @@ mod tests {
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
             review_llm: RwLock::new(None),
             last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
+            loaded: std::sync::atomic::AtomicBool::new(true),
         };
 
         let entry = MemoryEntry::new(
