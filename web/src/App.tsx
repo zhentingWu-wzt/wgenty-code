@@ -16,6 +16,8 @@ import { SessionTabBar } from "./components/layout/SessionTabBar";
 import { ChatView } from "./features/chat/ChatView";
 import { Composer } from "./features/chat/Composer";
 import { ModelModeChips } from "./features/chat/ModelModeChips";
+import { TodoPill } from "./features/chat/TodoPill";
+import { TodoPillShift } from "./features/chat/TodoPillShift";
 import { PermissionModal } from "./features/permissions/PermissionModal";
 import { QuestionModal } from "./features/permissions/QuestionModal";
 import { CommandModal } from "./features/panels/CommandModal";
@@ -364,7 +366,9 @@ export function App() {
           <SessionStoreContext.Provider value={activeStore}>
             <div className="flex min-w-0 flex-1 flex-col">
               <SessionTabBar />
-              <main className="min-h-0 flex-1 overflow-y-auto">
+              <div className="relative min-h-0 flex-1">
+              <TodoPillShift>
+              <main className="h-full overflow-y-auto">
                 {showWelcome ? (
                   <WelcomeView client={client} />
                 ) : subagentTabMeta ? (
@@ -389,6 +393,15 @@ export function App() {
                   <ChatView />
                 )}
               </main>
+              </TodoPillShift>
+              {/* 计划进度胶囊：聊天视口右上角常驻（有计划时才渲染），
+                  无需打开右侧栏即可看到当轮计划完成度。外层 relative
+                  包裹层锚定 <main>（不含 SessionTabBar），悬浮在消息流
+                  之上但不遮内容流；展开时由 TodoPillShift 让 <main> 右让位。 */}
+              {!showWelcome && !subagentTabMeta && !previewTabMeta && !diffTabMeta && (
+                <TodoPill client={client} sessionId={activeId ?? undefined} />
+              )}
+              </div>
               {/* 权限/问答卡片内嵌在聊天区与输入框之间（非 fixed 悬浮）：
                   出现时 flex 列让聊天区收缩让位，底部消息可滚动查看，
                   不遮挡任何内容。仅活跃会话有待处理项时占位。 */}

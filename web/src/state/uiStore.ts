@@ -13,7 +13,6 @@ export type RightPanelId =
   | "skills"
   | "memory"
   | "checkpoints"
-  | "tasks"
   | "config"
   | "mcp"
   | "subagents"
@@ -55,6 +54,11 @@ interface UiState {
   /** 左栏展开态宽度（px），可拖拽调整，clamp 到 [180, 400]。 */
   leftWidth: number;
   rightPanel: RightPanelId | null;
+  /** 聊天区右上角计划胶囊用户偏好（展开/折叠），由 TodoPill 切换。 */
+  todoPillExpanded: boolean;
+  /** 派生布局事实：胶囊展开且有计划内容时为 true，聊天 <main> 据此右让位。
+   *  由 TodoPill 根据轮询数据计算写入，App 只读。 */
+  todoPillOverlay: boolean;
 
   setTheme: (t: ThemeMode) => void;
   toggleLeft: () => void;
@@ -62,6 +66,8 @@ interface UiState {
   setRightPanel: (p: RightPanelId | null) => void;
   /** 点已激活的图标 = 收起右栏；点其他图标 = 切换面板。 */
   toggleRightPanel: (p: RightPanelId) => void;
+  setTodoPillExpanded: (expanded: boolean) => void;
+  setTodoPillOverlay: (overlay: boolean) => void;
 
   openTabs: string[];
   openTab: (id: string) => void;
@@ -99,6 +105,8 @@ export const useUiStore = create<UiState>((set) => ({
     window.matchMedia("(max-width: 767px)").matches,
   leftWidth: 256,
   rightPanel: null,
+  todoPillExpanded: true,
+  todoPillOverlay: false,
 
   setTheme: (theme) => {
     applyTheme(theme);
@@ -108,6 +116,8 @@ export const useUiStore = create<UiState>((set) => ({
   setLeftWidth: (w) => set({ leftWidth: Math.min(400, Math.max(180, Math.round(w))) }),
   setRightPanel: (rightPanel) => set({ rightPanel }),
   toggleRightPanel: (p) => set((s) => ({ rightPanel: s.rightPanel === p ? null : p })),
+  setTodoPillExpanded: (expanded) => set({ todoPillExpanded: expanded }),
+  setTodoPillOverlay: (overlay) => set({ todoPillOverlay: overlay }),
 
   openTabs: [],
   openTab: (id) => set((s) => (s.openTabs.includes(id) ? s : { openTabs: [...s.openTabs, id] })),

@@ -4,7 +4,6 @@ import {
   FolderTree,
   GitBranch,
   History,
-  ListTodo,
   Network,
   Plug,
   Settings,
@@ -19,7 +18,6 @@ import { SkillsPanel } from "../../features/panels/SkillsPanel";
 import { MemoryPanel } from "../../features/panels/MemoryPanel";
 import { CheckpointsPanel } from "../../features/panels/CheckpointsPanel";
 import { SessionsPanel } from "../../features/panels/SessionsPanel";
-import { TasksPanel } from "../../features/panels/TasksPanel";
 import { ConfigPanel } from "../../features/panels/ConfigPanel";
 import { McpPanel } from "../../features/panels/McpPanel";
 import { SubagentTreePanel } from "../../features/panels/SubagentTreePanel";
@@ -34,7 +32,6 @@ const ITEMS: { id: RightPanelId; icon: LucideIcon; label: string }[] = [
   { id: "skills", icon: Sparkles, label: "Skills" },
   { id: "memory", icon: Brain, label: "Memory" },
   { id: "checkpoints", icon: Undo2, label: "Checkpoints" },
-  { id: "tasks", icon: ListTodo, label: "Tasks" },
   { id: "subagents", icon: Network, label: "Subagents" },
   { id: "inspector", icon: Eye, label: "Inspector" },
   { id: "mcp", icon: Plug, label: "MCP Servers" },
@@ -48,7 +45,6 @@ const PANEL_TITLE: Record<RightPanelId, string> = {
   skills: "Skills",
   memory: "Memory",
   checkpoints: "Checkpoints",
-  tasks: "Tasks",
   subagents: "Subagents",
   inspector: "Inspector",
   mcp: "MCP Servers",
@@ -82,7 +78,6 @@ export function RightRail({ client }: { client: DaemonClient }) {
             {rightPanel === "skills" && <SkillsPanel client={client} />}
             {rightPanel === "memory" && <MemoryPanel client={client} />}
             {rightPanel === "checkpoints" && <CheckpointsPanel client={client} />}
-            {rightPanel === "tasks" && <TasksPanel client={client} />}
             {rightPanel === "mcp" && <McpPanel client={client} />}
             {rightPanel === "config" && <ConfigPanel client={client} />}
             {rightPanel === "subagents" && <SubagentTreePanel />}
